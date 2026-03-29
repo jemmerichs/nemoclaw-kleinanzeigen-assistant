@@ -1,0 +1,15 @@
+apiVersion: nemoclaw.ai/v1
+kind: NetworkPolicy
+metadata:
+  name: kleinanzeigen-network
+spec:
+  egress:
+    - hosts:
+        - "*.kleinanzeigen.de"
+        - "*.ebay-kleinanzeigen.de"
+      methods: [GET, POST, PUT, DELETE, PATCH]
+    - hosts:
+        - "api.telegram.org"
+        - "integrate.api.nvidia.com"
+      methods: [GET, POST]
+  defaultAction: BLOCK

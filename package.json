@@ -1,0 +1,18 @@
+{
+  "name": "nemoclaw-kleinanzeigen",
+  "version": "1.0.0",
+  "description": "Kleinanzeigen-Manager mit Telegram-Gateway",
+  "main": "workspace/agent.js",
+  "scripts": {
+    "start": "node workspace/agent.js",
+    "setup": "bash scripts/setup.sh",
+    "launch": "bash scripts/start.sh"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "playwright": "^1.58.2"
+  }
+}
