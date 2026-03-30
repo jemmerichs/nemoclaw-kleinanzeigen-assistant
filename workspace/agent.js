@@ -133,7 +133,7 @@ const TOOLS = {
     fn: (a) => tg.sendPhoto(a.chatId, a.filePath, a.caption || ""),
   },
   processImages: {
-    description: "Fotos via nano-banana aufbereiten — minimale, ehrliche Bearbeitung (Hintergrund, Helligkeit), keine Mängel verstecken",
+    description: "Fotos via Gemini aufbereiten — minimale, ehrliche Bearbeitung (Hintergrund, Helligkeit), keine Mängel verstecken",
     args: "{ paths: string[], instructions?: string }",
     fn: (a) => processImages({ paths: a.paths, instructions: a.instructions || "" }),
   },
