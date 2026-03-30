@@ -15,7 +15,7 @@ const path = require("path");
 const { spawnSync, execSync } = require("child_process");
 const TelegramGateway      = require("../tools/telegram");
 const KleinanzeigenClient  = require("../tools/kleinanzeigen");
-const { login }            = require("../tools/auth");
+const { login, saveToEnv } = require("../tools/auth");
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
@@ -24,12 +24,18 @@ if (!TOKEN) { console.error("[agent] TELEGRAM_BOT_TOKEN fehlt."); process.exit(1
 const tg = new TelegramGateway(TOKEN);
 let ka;  // initialised after login
 
+function makeClient(cookies) {
+  // Tokens are extracted from cookies by the client automatically.
+  // KA_BEARER_TOKEN may be set after a token refresh to override the cookie value.
+  return new KleinanzeigenClient(cookies, process.env.KA_BEARER_TOKEN || null);
+}
+
 async function ensureLogin() {
   let cookies = process.env.KA_COOKIES || "";
 
   if (!cookies) {
     console.log("[agent] Keine Cookies — versuche automatischen Login...");
-    cookies = await login({
+    const creds = await login({
       email:    process.env.KA_EMAIL,
       password: process.env.KA_PASSWORD,
       headless: true,
@@ -42,21 +48,33 @@ async function ensureLogin() {
         headless: false,
       });
     });
-    process.env.KA_COOKIES = cookies;
+    process.env.KA_COOKIES = creds.cookies;
+    cookies = creds.cookies;
   }
 
-  ka = new KleinanzeigenClient(cookies);
+  ka = makeClient(cookies);
 }
 
 async function relogin() {
   console.log("[agent] Session abgelaufen — erneuere Login...");
-  const cookies = await login({
+  const creds = await login({
     email:    process.env.KA_EMAIL,
     password: process.env.KA_PASSWORD,
     headless: true,
   });
-  process.env.KA_COOKIES = cookies;
-  ka = new KleinanzeigenClient(cookies);
+  process.env.KA_COOKIES      = creds.cookies;
+  process.env.KA_BEARER_TOKEN = ""; // cleared — fresh token now in cookies
+  saveToEnv({ KA_COOKIES: creds.cookies, KA_BEARER_TOKEN: null });
+  ka = makeClient(creds.cookies);
+}
+
+async function refreshBearer() {
+  console.log("[agent] Bearer token abgelaufen — erneuere via Refresh-Token...");
+  const data = await ka.refreshBearerToken();
+  // Persist so next restart uses the refreshed token (cookie still has old one)
+  saveToEnv({ KA_BEARER_TOKEN: data.access_token });
+  process.env.KA_BEARER_TOKEN = data.access_token;
+  console.log("[agent] Bearer token erneuert.");
 }
 
 // ── Hard skills — tool registry ───────────────────────────────────────────────
@@ -79,11 +97,26 @@ const TOOLS = {
     fn:   (a) => ka.sendMessage(a.conversationId, a.text),
   },
   getMyAds: {
-    description: "Eigene aktive Kleinanzeigen-Anzeigen auflisten",
+    description: "Eigene aktive Kleinanzeigen-Anzeigen auflisten (cookie-auth)",
     args: "{ limit?: number }",
     fn:   (a) => ka.getMyAds(a),
   },
-  // Hard skills to be added by Claude Code: createAd, uploadPhoto, deleteAd, setAdStatus, searchAds
+  getAdBundles: {
+    description: "Alle eigenen Anzeigen abrufen inkl. aktive und pausierte (Bearer-auth, gateway)",
+    args: "{}",
+    fn:   () => ka.getAdBundles(),
+  },
+  getDrafts: {
+    description: "Eigene Anzeigen-Entwürfe abrufen (Bearer-auth, gateway)",
+    args: "{}",
+    fn:   () => ka.getDrafts(),
+  },
+  searchAds: {
+    description: "Öffentliche Kleinanzeigen nach Keyword und/oder Kategorie durchsuchen — für Preisrecherche",
+    args: "{ keyword: string, categoryId?: number, categorySlug?: string, page?: number, limit?: number }",
+    fn: (a) => ka.searchAds(a),
+  },
+  // Hard skills to be added by Claude Code: createAd, uploadPhoto, deleteAd, setAdStatus
 };
 
 function toolManifest() {
@@ -94,11 +127,7 @@ function toolManifest() {
 
 // ── Claude ────────────────────────────────────────────────────────────────────
 function findClaude() {
-  const candidates = [
-    "/Users/jannikemmerichs/Library/Application Support/Claude/claude-code/2.1.87/claude.app/Contents/MacOS/claude",
-    "claude",
-  ];
-  for (const c of candidates) {
+  for (const c of ["claude"]) {
     try { execSync(`"${c}" --version`, { stdio: "pipe" }); return c; } catch (_) {}
   }
   return null;
@@ -167,8 +196,11 @@ async function runAgent(chatId, userMessage) {
         try {
           result = await tool.fn(response.action.args || {});
         } catch (e) {
-          if (e.message.includes("401") || e.message.includes("403") || e.message.includes("Session abgelaufen")) {
+          if (e.message.includes("Session abgelaufen")) {
             await relogin();
+            result = await tool.fn(response.action.args || {}); // retry once
+          } else if (e.message.includes("Bearer token abgelaufen")) {
+            await refreshBearer();
             result = await tool.fn(response.action.args || {}); // retry once
           } else {
             throw e;
