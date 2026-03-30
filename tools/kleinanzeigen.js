@@ -233,11 +233,14 @@ class KleinanzeigenClient {
    * @param {number}  [opts.page=1]
    * @param {number}  [opts.limit=20]     max items to return from the page
    */
-  async searchAds({ keyword, categoryId, categorySlug = "anzeigen", page = 1, limit = 20 } = {}) {
+  async searchAds({ keyword, categoryId, page = 1, limit = 20 } = {}) {
+    // URL format: /s-{keyword}/seite:N/k0c{catId}  (keyword present)
+    //             /s-k0c{catId}                     (category only)
     const pageSegment = page > 1 ? `/seite:${page}` : "";
-    const kwSegment   = keyword ? `/${encodeURIComponent(keyword)}` : "";
-    const catSegment  = categoryId ? `c${categoryId}` : "";
-    const path        = `/s-${categorySlug}${pageSegment}${kwSegment}/k0${catSegment}`;
+    const catSuffix   = categoryId ? `c${categoryId}` : "";
+    const path = keyword
+      ? `/s-${encodeURIComponent(keyword)}${pageSegment}/k0${catSuffix}`
+      : `/s-k0${catSuffix}`;
 
     const { body } = await this._wwwRequest("GET", path);
     const list = body?.result?.resultList || [];

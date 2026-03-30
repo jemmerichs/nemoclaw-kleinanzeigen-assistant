@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node workspace/agent.js",
     "setup": "bash scripts/setup.sh",
-    "launch": "bash scripts/start.sh"
+    "launch": "bash scripts/start.sh",
+    "test": "node scripts/test-tools.js"
   },
   "engines": {
     "node": ">=18.0.0"
