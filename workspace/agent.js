@@ -16,6 +16,7 @@ const { spawnSync, execSync } = require("child_process");
 const TelegramGateway      = require("../tools/telegram");
 const KleinanzeigenClient  = require("../tools/kleinanzeigen");
 const { login, saveToEnv } = require("../tools/auth");
+const { saveTemp, processImages } = require("../tools/image");
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
@@ -116,7 +117,42 @@ const TOOLS = {
     args: "{ keyword: string, categoryId?: number, categorySlug?: string, page?: number, limit?: number }",
     fn: (a) => ka.searchAds(a),
   },
-  // Hard skills to be added by Claude Code: createAd, uploadPhoto, deleteAd, setAdStatus
+  // ── Foto-Verwaltung ───────────────────────────────────────────────────────
+  downloadTelegramPhoto: {
+    description: "Telegram-Foto anhand seiner file_id herunterladen und lokal speichern — gibt lokalen Dateipfad zurück",
+    args: "{ fileId: string }",
+    fn: async (a) => {
+      const buffer = await tg.downloadPhoto(a.fileId);
+      const localPath = saveTemp(buffer, ".jpg");
+      return { path: localPath };
+    },
+  },
+  sendTelegramPhoto: {
+    description: "Lokales Bild via Telegram an Jannik senden (für Vorschau im Proposal)",
+    args: "{ chatId: string, filePath: string, caption?: string }",
+    fn: (a) => tg.sendPhoto(a.chatId, a.filePath, a.caption || ""),
+  },
+  processImages: {
+    description: "Fotos via Gemini aufbereiten — minimale, ehrliche Bearbeitung (Hintergrund, Helligkeit), keine Mängel verstecken",
+    args: "{ paths: string[], instructions?: string }",
+    fn: (a) => processImages({ paths: a.paths, instructions: a.instructions || "" }),
+  },
+
+  // ── Anzeige erstellen / verwalten ─────────────────────────────────────────
+  createAd: {
+    description: "Neue Kleinanzeigen-Anzeige erstellen — NUR nach explizitem Go von Jannik",
+    args: "{ title: string, description: string, categoryId: number, price: number, priceType?: string, zipCode?: string }",
+    fn: (a) => ka.createAd(a),
+  },
+  uploadPhoto: {
+    description: "Foto (lokaler Dateipfad) zu einer bestehenden KA-Anzeige hochladen",
+    args: "{ adId: string, filePath: string, filename?: string }",
+    fn: async (a) => {
+      const buffer = require("fs").readFileSync(a.filePath);
+      return ka.uploadPhoto(a.adId, buffer, a.filename || require("path").basename(a.filePath));
+    },
+  },
+  // Hard skills to be added: deleteAd, setAdStatus
 };
 
 function toolManifest() {
@@ -144,7 +180,7 @@ function callClaude(prompt) {
   try { return JSON.parse(raw); } catch { return { message: raw }; }
 }
 
-// ── Context: agent identity + skill docs + tool manifest ──────────────────────
+// ── Context: agent identity + skill docs + tool manifest ─────────────────────
 function loadContext() {
   const agentMd   = fs.readFileSync(path.join(__dirname, "agent.md"), "utf8");
   const skillsDir = path.join(__dirname, "skills");
@@ -248,7 +284,16 @@ function randomPollIntervalMs() {
         await tg.send(defaultChatId, "Kleinanzeigen-Manager bereit. Schreib mir einfach was du brauchst.");
       }
 
-      if (msg.text) await runAgent(msg.chat.id, msg.text);
+      if (msg.text) {
+        await runAgent(msg.chat.id, msg.text);
+      } else if (msg.photo) {
+        // Telegram sends one message per photo in an album, each with all resolutions.
+        // Pick the highest resolution (last in array).
+        const best = msg.photo[msg.photo.length - 1];
+        const caption = msg.caption ? ` ${msg.caption}` : "";
+        // Pass the file_id as a structured token so Claude can call downloadTelegramPhoto.
+        await runAgent(msg.chat.id, `[FOTO file_id:${best.file_id}]${caption}`);
+      }
     }
   }
 

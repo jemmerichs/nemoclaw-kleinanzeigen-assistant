@@ -283,6 +283,111 @@ class KleinanzeigenClient {
     return body;
   }
 
+  // ── Internal: multipart upload (cookie auth) ─────────────────────────────
+
+  _multipartRequest(hostname, path, fileBuffer, filename, mimeType = "image/jpeg") {
+    return new Promise((resolve, reject) => {
+      const boundary = "----KABoundary" + Math.random().toString(36).slice(2);
+      const pre  = Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="picture"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`
+      );
+      const post = Buffer.from(`\r\n--${boundary}--\r\n`);
+      const body = Buffer.concat([pre, fileBuffer, post]);
+
+      const opts = {
+        hostname,
+        path,
+        method: "POST",
+        headers: {
+          "Content-Type":   `multipart/form-data; boundary=${boundary}`,
+          "Content-Length": body.length,
+          "Cookie":         this.cookies,
+          "User-Agent":     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+          "Referer":        "https://www.kleinanzeigen.de/",
+        },
+      };
+      const req = https.request(opts, (res) => {
+        let raw = "";
+        res.on("data", (c) => (raw += c));
+        res.on("end", () => {
+          if (res.statusCode === 401 || res.statusCode === 403) {
+            return reject(new Error(`Session abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' erneut ausführen.`));
+          }
+          try { resolve({ status: res.statusCode, body: raw ? JSON.parse(raw) : {} }); }
+          catch { resolve({ status: res.statusCode, body: raw }); }
+        });
+      });
+      req.on("error", reject);
+      req.write(body);
+      req.end();
+    });
+  }
+
+  // ── Ad creation ───────────────────────────────────────────────────────────
+
+  /**
+   * Create a new Kleinanzeigen listing.
+   * Only call after explicit "Go" from Jannik.
+   *
+   * @param {object} adData
+   * @param {string}  adData.title
+   * @param {string}  adData.description
+   * @param {number}  adData.categoryId     e.g. 217 = Fahrräder
+   * @param {number}  adData.price          in EUR (integer or float)
+   * @param {string}  [adData.priceType]    "FIXED" | "NEGOTIABLE" | "GIVE_AWAY" — defaults to "NEGOTIABLE"
+   * @param {string}  [adData.zipCode]      seller's zip (defaults to account zip)
+   * @returns {{ id: string, link: string }}
+   *
+   * TODO: verify exact request schema against a live POST once cookies are set up.
+   * The body shape follows the eBay Classifieds Group REST API convention used by KA.
+   */
+  async createAd({ title, description, categoryId, price, priceType = "NEGOTIABLE", zipCode }) {
+    const body = {
+      ad: {
+        title,
+        description,
+        categoryId,
+        priceAmount:  price,
+        priceType,
+        ...(zipCode ? { zipCode } : {}),
+      },
+    };
+    const { status, body: resp } = await this._request("POST", "/ads.json", body);
+    if (status !== 200 && status !== 201) {
+      throw new Error(`createAd fehlgeschlagen (${status}): ${JSON.stringify(resp)}`);
+    }
+    const created = resp.ad || resp;
+    return {
+      id:   String(created.id || created.adId || ""),
+      link: created.link || `https://www.kleinanzeigen.de/s-anzeige/${created.id}`,
+    };
+  }
+
+  /**
+   * Attach a photo to an existing ad.
+   * Call once per image; KA supports up to 20 per listing.
+   *
+   * @param {string} adId        ID returned by createAd
+   * @param {Buffer} fileBuffer  raw image bytes
+   * @param {string} filename    e.g. "foto1.jpg"
+   * @returns {{ pictureId: string }}
+   *
+   * TODO: verify endpoint path; some KA API versions use /api/pictures.json first,
+   * then PATCH the ad to associate the pictureId.
+   */
+  async uploadPhoto(adId, fileBuffer, filename = "photo.jpg") {
+    const { status, body } = await this._multipartRequest(
+      "api.kleinanzeigen.de",
+      `/api/ads/${adId}/pictures.json`,
+      fileBuffer,
+      filename
+    );
+    if (status !== 200 && status !== 201) {
+      throw new Error(`uploadPhoto fehlgeschlagen (${status}): ${JSON.stringify(body)}`);
+    }
+    return { pictureId: String((body.picture || body).id || "") };
+  }
+
   /**
    * Draft ads.
    * Endpoint: GET https://www.kleinanzeigen.de/users/{userId}/ad-drafts.json
