@@ -18,10 +18,15 @@ Automatisch via `searchAds` durchführen. Einen konkreten Preis empfehlen (keine
 
 ```
 downloadTelegramPhoto({ fileId }) → { path }   // einmal pro FOTO-Token
-processImages({ paths: [...], instructions: "item description, mention visible flaws" })
 ```
 
 Bis zu 3 Bilder auswählen (Gesamtansicht, Detail, Zustand). Rohfotos die komplett unbrauchbar sind überspringen.
+
+`processImages` nur aufrufen wenn nötig — schlechte Beleuchtung, unruhiger Hintergrund, schiefes Bild. Handyfotos die schon okay sind direkt verwenden. API-Aufrufe sparen.
+
+```
+processImages({ paths: [...], instructions: "item description, mention visible flaws" })
+```
 
 ## Proposal
 
