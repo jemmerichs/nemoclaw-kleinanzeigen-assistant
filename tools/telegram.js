@@ -32,7 +32,8 @@ class TelegramGateway {
   }
 
   async send(chatId, text) {
-    await this._request("sendMessage", { chat_id: chatId, text, parse_mode: "Markdown" });
+    const res = await this._request("sendMessage", { chat_id: chatId, text });
+    if (!res.ok) console.error(`[tg] sendMessage Fehler: ${JSON.stringify(res)}`);
   }
 
   async getUpdates() {
