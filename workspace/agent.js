@@ -218,15 +218,21 @@ async function runAgent(chatId, userMessage) {
       `Ohne Tool-Aufruf: {"message":"..."}\n` +
       `message ist was Jannik sieht (darf leer sein wenn du nur ein Tool aufrufst).`;
 
+    console.log(`[claude →] thinking... (step ${i + 1})`);
     const response = callClaude(prompt);
 
     if (response.action) {
       const tool = TOOLS[response.action.tool];
       if (!tool) {
+        console.warn(`[tool ✗] unknown tool: ${response.action.tool}`);
         history.push(`System: Unbekanntes Tool "${response.action.tool}"`);
         break;
       }
-      if (response.message) await tg.send(chatId, response.message);
+      console.log(`[tool →] ${response.action.tool}(${JSON.stringify(response.action.args || {})})`);
+      if (response.message) {
+        console.log(`[tg →] ${response.message}`);
+        await tg.send(chatId, response.message);
+      }
       try {
         let result;
         try {
@@ -242,14 +248,18 @@ async function runAgent(chatId, userMessage) {
             throw e;
           }
         }
-        history.push(`Tool(${response.action.tool}): ${JSON.stringify(result)}`);
+        const resultStr = JSON.stringify(result);
+        console.log(`[tool ←] ${response.action.tool}: ${resultStr.slice(0, 200)}${resultStr.length > 200 ? "…" : ""}`);
+        history.push(`Tool(${response.action.tool}): ${resultStr}`);
       } catch (e) {
+        console.error(`[tool ✗] ${response.action.tool}: ${e.message}`);
         history.push(`Tool(${response.action.tool}) Fehler: ${e.message}`);
       }
       continue;
     }
 
     if (response.message) {
+      console.log(`[tg →] ${response.message}`);
       await tg.send(chatId, response.message);
       history.push(`Agent: ${response.message}`);
     }
@@ -285,12 +295,14 @@ function randomPollIntervalMs() {
       }
 
       if (msg.text) {
+        console.log(`[tg ←] ${msg.text}`);
         await runAgent(msg.chat.id, msg.text);
       } else if (msg.photo) {
         // Telegram sends one message per photo in an album, each with all resolutions.
         // Pick the highest resolution (last in array).
         const best = msg.photo[msg.photo.length - 1];
         const caption = msg.caption ? ` ${msg.caption}` : "";
+        console.log(`[tg ←] [FOTO]${caption}`);
         // Pass the file_id as a structured token so Claude can call downloadTelegramPhoto.
         await runAgent(msg.chat.id, `[FOTO file_id:${best.file_id}]${caption}`);
       }
