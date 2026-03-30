@@ -17,7 +17,7 @@ const path   = require("path");
 const crypto = require("crypto");
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const GEMINI_MODEL   = "gemini-2.0-flash-exp";
+const GEMINI_MODEL   = "gemini-3.1-flash-image-preview";
 const TEMP_DIR       = process.env.NEMOCLAW_TEMP_DIR || "/tmp/nemoclaw";
 
 function ensureTemp() {
@@ -92,9 +92,10 @@ function _callGemini(imageBuffer, extra = "") {
         try {
           const json  = JSON.parse(raw);
           const parts = json.candidates?.[0]?.content?.parts || [];
-          const img   = parts.find((p) => p.inline_data?.mime_type?.startsWith("image/"));
+          const img   = parts.find((p) => (p.inline_data || p.inlineData)?.mimeType?.startsWith("image/") || p.inline_data?.mime_type?.startsWith("image/"));
           if (!img) return reject(new Error("Gemini hat kein Bild zurückgegeben: " + raw.slice(0, 300)));
-          resolve(Buffer.from(img.inline_data.data, "base64"));
+          const imgData = img.inline_data || img.inlineData;
+          resolve(Buffer.from(imgData.data, "base64"));
         } catch (e) {
           reject(new Error("Gemini Parse-Fehler: " + e.message));
         }
