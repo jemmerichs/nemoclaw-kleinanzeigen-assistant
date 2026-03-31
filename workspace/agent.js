@@ -118,20 +118,6 @@ const TOOLS = {
     fn: (a) => ka.searchAds(a),
   },
   // ── Foto-Verwaltung ───────────────────────────────────────────────────────
-  downloadTelegramPhoto: {
-    description: "Telegram-Foto anhand seiner file_id herunterladen und lokal speichern — gibt lokalen Dateipfad zurück",
-    args: "{ fileId: string }",
-    fn: async (a) => {
-      const buffer = await tg.downloadPhoto(a.fileId);
-      const localPath = saveTemp(buffer, ".jpg");
-      return { path: localPath };
-    },
-  },
-  sendTelegramPhoto: {
-    description: "Lokales Bild via Telegram an Jannik senden (für Vorschau im Proposal)",
-    args: "{ chatId: string, filePath: string, caption?: string }",
-    fn: (a) => tg.sendPhoto(a.chatId, a.filePath, a.caption || ""),
-  },
   processImages: {
     description: "Fotos via Gemini aufbereiten — minimale, ehrliche Bearbeitung (Hintergrund, Helligkeit), keine Mängel verstecken",
     args: "{ paths: string[], instructions?: string }",
@@ -229,6 +215,7 @@ async function runAgent(chatId, userMessage) {
       `## Konversation\n${history.join("\n")}\n\n` +
       `Antworte ausschließlich als JSON:\n` +
       `Mit Tool-Aufruf: {"message":"...","action":{"tool":"TOOLNAME","args":{...}}}\n` +
+      `Mit Foto-Antwort: {"message":"...","photo":"/lokaler/pfad.jpg"}\n` +
       `Ohne Tool-Aufruf: {"message":"..."}\n` +
       `message ist was Jannik sieht (darf leer sein wenn du nur ein Tool aufrufst).`;
 
@@ -272,7 +259,11 @@ async function runAgent(chatId, userMessage) {
       continue;
     }
 
-    if (response.message) {
+    if (response.photo) {
+      console.log(`[tg →] [FOTO] ${response.photo}`);
+      await tg.sendPhoto(chatId, response.photo, response.message || "");
+      history.push(`Agent: [Foto gesendet: ${response.photo}]${response.message ? " " + response.message : ""}`);
+    } else if (response.message) {
       console.log(`[tg →] ${response.message}`);
       await tg.send(chatId, response.message);
       history.push(`Agent: ${response.message}`);
@@ -312,13 +303,13 @@ function randomPollIntervalMs() {
         console.log(`[tg ←] ${msg.text}`);
         await runAgent(msg.chat.id, msg.text);
       } else if (msg.photo) {
-        // Telegram sends one message per photo in an album, each with all resolutions.
-        // Pick the highest resolution (last in array).
+        // Pick highest resolution, auto-download to local disk.
         const best = msg.photo[msg.photo.length - 1];
         const caption = msg.caption ? ` ${msg.caption}` : "";
-        console.log(`[tg ←] [FOTO]${caption}`);
-        // Pass the file_id as a structured token so Claude can call downloadTelegramPhoto.
-        await runAgent(msg.chat.id, `[FOTO file_id:${best.file_id}]${caption}`);
+        const buffer = await tg.downloadPhoto(best.file_id);
+        const localPath = saveTemp(buffer, ".jpg");
+        console.log(`[tg ←] [FOTO → ${localPath}]${caption}`);
+        await runAgent(msg.chat.id, `[FOTO path:${localPath}]${caption}`);
       }
     }
   }
