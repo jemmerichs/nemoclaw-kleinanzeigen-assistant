@@ -29,13 +29,12 @@ function getDb() {
       updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     );
 
-    -- One row per KA listing attempt. An asset can have many listings
-    -- (expired → re-posted → expired → ...).
-    CREATE TABLE IF NOT EXISTS listings (
+    -- One row per KA listing attempt. An asset can have many (expired → re-posted → ...).
+    CREATE TABLE IF NOT EXISTS ka_listings (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       asset_id    INTEGER NOT NULL REFERENCES assets(id),
       ka_id       TEXT UNIQUE,          -- KA ad ID; NULL for manually added history
-      ka_link     TEXT,                 -- full KA URL
+      ka_link     TEXT,
       price_cents INTEGER,              -- price at time of posting
       status      TEXT NOT NULL DEFAULT 'active', -- active | expired | removed | draft
       posted_at   TEXT,
@@ -61,29 +60,12 @@ function getDb() {
       recommended_cents INTEGER
     );
 
-    CREATE INDEX IF NOT EXISTS idx_assets_status   ON assets(status);
-    CREATE INDEX IF NOT EXISTS idx_listings_asset  ON listings(asset_id);
-    CREATE INDEX IF NOT EXISTS idx_listings_status ON listings(status);
-    CREATE INDEX IF NOT EXISTS idx_listings_ka_id  ON listings(ka_id);
-    CREATE INDEX IF NOT EXISTS idx_ph_asset        ON price_history(asset_id);
-    CREATE INDEX IF NOT EXISTS idx_mr_asset        ON market_research(asset_id);
-
-    -- Assets with an active listing right now
-    CREATE VIEW IF NOT EXISTS active_listings AS
-      SELECT a.id AS asset_id, a.name, a.asking_price_cents, a.status AS asset_status,
-             l.id AS listing_id, l.ka_id, l.ka_link, l.price_cents, l.posted_at
-      FROM assets a
-      JOIN listings l ON l.asset_id = a.id AND l.status = 'active';
-
-    -- Available assets that have NO active listing → candidates for re-posting
-    CREATE VIEW IF NOT EXISTS needs_repost AS
-      SELECT a.id, a.name, a.asking_price_cents, a.notes,
-             MAX(l.expired_at) AS last_expired_at
-      FROM assets a
-      LEFT JOIN listings l ON l.asset_id = a.id
-      WHERE a.status = 'available'
-        AND a.id NOT IN (SELECT asset_id FROM listings WHERE status = 'active')
-      GROUP BY a.id;
+    CREATE INDEX IF NOT EXISTS idx_assets_status      ON assets(status);
+    CREATE INDEX IF NOT EXISTS idx_ka_listings_asset  ON ka_listings(asset_id);
+    CREATE INDEX IF NOT EXISTS idx_ka_listings_status ON ka_listings(status);
+    CREATE INDEX IF NOT EXISTS idx_ka_listings_ka_id  ON ka_listings(ka_id);
+    CREATE INDEX IF NOT EXISTS idx_ph_asset           ON price_history(asset_id);
+    CREATE INDEX IF NOT EXISTS idx_mr_asset           ON market_research(asset_id);
   `);
   return _db;
 }
