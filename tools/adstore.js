@@ -42,10 +42,21 @@ function getDb() {
       created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     );
 
+    -- Price and view snapshots over a listing's lifetime.
+    -- Insert one row whenever the agent reads ad data from KA.
+    CREATE TABLE IF NOT EXISTS ka_snapshots (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      listing_id  INTEGER NOT NULL REFERENCES ka_listings(id),
+      price_cents INTEGER,
+      views       INTEGER,
+      recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_assets_status      ON assets(status);
     CREATE INDEX IF NOT EXISTS idx_ka_listings_asset  ON ka_listings(asset_id);
     CREATE INDEX IF NOT EXISTS idx_ka_listings_status ON ka_listings(status);
     CREATE INDEX IF NOT EXISTS idx_ka_listings_ka_id  ON ka_listings(ka_id);
+    CREATE INDEX IF NOT EXISTS idx_ka_snapshots_listing ON ka_snapshots(listing_id);
   `);
   return _db;
 }

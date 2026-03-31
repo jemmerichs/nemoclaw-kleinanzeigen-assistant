@@ -142,7 +142,7 @@ const TOOLS = {
 
   // ── Datenbank ─────────────────────────────────────────────────────────────
   db_query: {
-    description: "SQL auf der lokalen Asset-Datenbank ausführen. Tabellen: assets, ka_listings. SELECT/INSERT/UPDATE erlaubt.",
+    description: "SQL auf der lokalen Asset-Datenbank ausführen. Tabellen: assets, ka_listings, ka_snapshots (Preis+Views-Verlauf). SELECT/INSERT/UPDATE erlaubt.",
     args: "{ sql: string, params?: any[] }",
     fn: (a) => dbQuery({ sql: a.sql, params: a.params || [] }),
   },
