@@ -83,88 +83,81 @@ async function refreshBearer() {
 // Each entry: description (shown to Claude), args schema, fn (executed by bridge)
 // To add a hard skill: add API method to tools/kleinanzeigen.js + register here + add/update skill doc
 const TOOLS = {
-  getConversations: {
+  // ── Kleinanzeigen ─────────────────────────────────────────────────────────
+  ka_get_conversations: {
     description: "Ungelesene Konversationen aus dem KA-Postfach abrufen",
     args: "{ limit?: number }",
     fn:   (a) => ka.getConversations(a),
   },
-  getMessages: {
+  ka_get_messages: {
     description: "Nachrichten einer Konversation abrufen",
     args: "{ conversationId: string, limit?: number }",
     fn:   (a) => ka.getMessages(a.conversationId, a),
   },
-  sendKAMessage: {
+  ka_send_message: {
     description: "Nachricht auf Kleinanzeigen senden — NUR nach explizitem Go von Jannik",
     args: "{ conversationId: string, text: string }",
     fn:   (a) => ka.sendMessage(a.conversationId, a.text),
   },
-  getMyAds: {
-    description: "Eigene aktive Kleinanzeigen-Anzeigen auflisten (cookie-auth)",
+  ka_get_my_ads: {
+    description: "Eigene aktive Anzeigen auflisten (cookie-auth)",
     args: "{ limit?: number }",
     fn:   (a) => ka.getMyAds(a),
   },
-  getAdBundles: {
-    description: "Alle eigenen Anzeigen abrufen inkl. aktive und pausierte (Bearer-auth, gateway)",
+  ka_get_ad_bundles: {
+    description: "Alle eigenen Anzeigen inkl. pausierte abrufen (Bearer-auth)",
     args: "{}",
     fn:   () => ka.getAdBundles(),
   },
-  getDrafts: {
-    description: "Eigene Anzeigen-Entwürfe abrufen (Bearer-auth, gateway)",
+  ka_get_drafts: {
+    description: "Eigene Anzeigen-Entwürfe abrufen (Bearer-auth)",
     args: "{}",
     fn:   () => ka.getDrafts(),
   },
-  searchAds: {
-    description: "Öffentliche Kleinanzeigen nach Keyword und/oder Kategorie durchsuchen — für Preisrecherche",
+  ka_search_ads: {
+    description: "Öffentliche Anzeigen nach Keyword/Kategorie durchsuchen — für Preisrecherche",
     args: "{ keyword: string, categoryId?: number, categorySlug?: string, page?: number, limit?: number }",
-    fn: (a) => ka.searchAds(a),
+    fn:   (a) => ka.searchAds(a),
   },
-  // ── Foto-Verwaltung ───────────────────────────────────────────────────────
-  downloadTelegramPhoto: {
-    description: "Telegram-Foto anhand seiner file_id herunterladen und lokal speichern — gibt lokalen Dateipfad zurück",
-    args: "{ fileId: string }",
-    fn: async (a) => {
-      const buffer = await tg.downloadPhoto(a.fileId);
-      const localPath = saveTemp(buffer, ".jpg");
-      return { path: localPath };
+  ka_create_ad: {
+    description: "Neue Anzeige erstellen — NUR nach explizitem Go von Jannik",
+    args: "{ title: string, description: string, categoryId: number, price: number, priceType?: string, zipCode?: string }",
+    fn:   (a) => ka.createAd(a),
+  },
+  ka_upload_photo: {
+    description: "Foto (lokaler Dateipfad) zu einer bestehenden KA-Anzeige hochladen",
+    args: "{ adId: string, filePath: string, filename?: string }",
+    fn:   async (a) => {
+      const buffer = fs.readFileSync(a.filePath);
+      return ka.uploadPhoto(a.adId, buffer, a.filename || path.basename(a.filePath));
     },
   },
-  sendTelegramPhoto: {
-    description: "Lokales Bild via Telegram an Jannik senden (für Vorschau im Proposal)",
-    args: "{ chatId: string, filePath: string, caption?: string }",
-    fn: (a) => tg.sendPhoto(a.chatId, a.filePath, a.caption || ""),
-  },
+
+  // ── Foto-Aufbereitung ─────────────────────────────────────────────────────
   processImages: {
     description: "Fotos via Gemini aufbereiten — minimale, ehrliche Bearbeitung (Hintergrund, Helligkeit), keine Mängel verstecken",
     args: "{ paths: string[], instructions?: string }",
-    fn: (a) => processImages({ paths: a.paths, instructions: a.instructions || "" }),
+    fn:   (a) => processImages({ paths: a.paths, instructions: a.instructions || "" }),
   },
 
-  // ── Anzeige erstellen / verwalten ─────────────────────────────────────────
-  createAd: {
-    description: "Neue Kleinanzeigen-Anzeige erstellen — NUR nach explizitem Go von Jannik",
-    args: "{ title: string, description: string, categoryId: number, price: number, priceType?: string, zipCode?: string }",
-    fn: (a) => ka.createAd(a),
-  },
-  uploadPhoto: {
-    description: "Foto (lokaler Dateipfad) zu einer bestehenden KA-Anzeige hochladen",
-    args: "{ adId: string, filePath: string, filename?: string }",
-    fn: async (a) => {
-      const buffer = require("fs").readFileSync(a.filePath);
-      return ka.uploadPhoto(a.adId, buffer, a.filename || require("path").basename(a.filePath));
-    },
-  },
-  // Hard skills to be added: deleteAd, setAdStatus
-
-  // ── Ad-Store ──────────────────────────────────────────────────────────────
-  db: {
-    description: "Lokale SQLite-Anzeigendatenbank — SELECT/INSERT/UPDATE/WITH. KEIN DELETE, nur soft-delete via status='deleted'. Tabellen: ads, price_history, market_research. Preise als Cent-Integer (1€=100). Siehe Skill manage-ads für Schema.",
+  // ── Datenbank ─────────────────────────────────────────────────────────────
+  db_query: {
+    description: "SQL auf der lokalen Asset-Datenbank ausführen. Tabellen: assets, ka_listings, ka_snapshots (Preis+Views-Verlauf). SELECT/INSERT/UPDATE erlaubt.",
     args: "{ sql: string, params?: any[] }",
+    fn: (a) => dbQuery({ sql: a.sql, params: a.params || [] }),
+  },
+
+  // ── Skill-Verwaltung ──────────────────────────────────────────────────────
+  updateSkillFile: {
+    description: "Skill-Datei in workspace/skills/ schreiben — NUR nach explizitem Go von Jannik. Immer zuerst den geplanten Inhalt zeigen und warten.",
+    args: "{ filename: string, content: string }",
     fn: (a) => {
-      const upper = a.sql.trimStart().toUpperCase();
-      if (upper.startsWith("DELETE") || upper.startsWith("DROP") || upper.startsWith("TRUNCATE")) {
-        throw new Error("DELETE/DROP/TRUNCATE not allowed — use status='deleted' for soft-delete");
-      }
-      return dbQuery({ sql: a.sql, params: a.params });
+      const allowed = path.resolve(__dirname, "skills");
+      const target  = path.resolve(allowed, path.basename(a.filename));
+      if (!target.startsWith(allowed + path.sep)) throw new Error("Ungültiger Dateipfad");
+      if (!target.endsWith(".md")) throw new Error("Nur .md-Dateien erlaubt");
+      fs.writeFileSync(target, a.content, "utf8");
+      return { written: path.basename(target) };
     },
   },
 
@@ -297,6 +290,7 @@ async function runAgent(chatId, userMessage) {
       `## Konversation\n${history.join("\n")}\n\n` +
       `Antworte ausschließlich als JSON:\n` +
       `Mit Tool-Aufruf: {"message":"...","action":{"tool":"TOOLNAME","args":{...}}}\n` +
+      `Mit Foto-Antwort: {"message":"...","photo":"/lokaler/pfad.jpg"}\n` +
       `Ohne Tool-Aufruf: {"message":"..."}\n` +
       `message ist was Jannik sieht (darf leer sein wenn du nur ein Tool aufrufst).`;
 
@@ -339,7 +333,11 @@ async function runAgent(chatId, userMessage) {
       continue;
     }
 
-    if (response.message) {
+    if (response.photo) {
+      console.log(`[tg →] [FOTO] ${response.photo}`);
+      await tg.sendPhoto(chatId, response.photo, response.message || "");
+      history.push(`Agent: [Foto gesendet: ${response.photo}]${response.message ? " " + response.message : ""}`);
+    } else if (response.message) {
       console.log(`[tg →] ${response.message}`);
       await tg.send(chatId, response.message);
       history.push(`Agent: ${response.message}`);
@@ -380,13 +378,13 @@ function randomPollIntervalMs() {
         console.log(`[tg ←] ${msg.text}`);
         await runAgent(msg.chat.id, msg.text);
       } else if (msg.photo) {
-        // Telegram sends one message per photo in an album, each with all resolutions.
-        // Pick the highest resolution (last in array).
+        // Pick highest resolution, auto-download to local disk.
         const best = msg.photo[msg.photo.length - 1];
         const caption = msg.caption ? ` ${msg.caption}` : "";
-        console.log(`[tg ←] [FOTO]${caption}`);
-        // Pass the file_id as a structured token so Claude can call downloadTelegramPhoto.
-        await runAgent(msg.chat.id, `[FOTO file_id:${best.file_id}]${caption}`);
+        const buffer = await tg.downloadPhoto(best.file_id);
+        const localPath = saveTemp(buffer, ".jpg");
+        console.log(`[tg ←] [FOTO → ${localPath}]${caption}`);
+        await runAgent(msg.chat.id, `[FOTO path:${localPath}]${caption}`);
       }
     }
   }
