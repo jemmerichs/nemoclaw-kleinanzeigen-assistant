@@ -17,6 +17,7 @@ const TelegramGateway      = require("../tools/telegram");
 const KleinanzeigenClient  = require("../tools/kleinanzeigen");
 const { login, saveToEnv } = require("../tools/auth");
 const { saveTemp, processImages } = require("../tools/image");
+const { query: dbQuery }          = require("../tools/adstore");
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
@@ -154,6 +155,19 @@ const TOOLS = {
   },
   // Hard skills to be added: deleteAd, setAdStatus
 
+  // ── Ad-Store ──────────────────────────────────────────────────────────────
+  db: {
+    description: "Lokale SQLite-Anzeigendatenbank — SELECT/INSERT/UPDATE/WITH. KEIN DELETE, nur soft-delete via status='deleted'. Tabellen: ads, price_history, market_research. Preise als Cent-Integer (1€=100). Siehe Skill manage-ads für Schema.",
+    args: "{ sql: string, params?: any[] }",
+    fn: (a) => {
+      const upper = a.sql.trimStart().toUpperCase();
+      if (upper.startsWith("DELETE") || upper.startsWith("DROP") || upper.startsWith("TRUNCATE")) {
+        throw new Error("DELETE/DROP/TRUNCATE not allowed — use status='deleted' for soft-delete");
+      }
+      return dbQuery({ sql: a.sql, params: a.params });
+    },
+  },
+
   // ── Memory ────────────────────────────────────────────────────────────────
   memoryWrite: {
     description: "Erkenntnis oder Fakt dauerhaft speichern (überschreibt vorhandene Datei mit gleichem key). key = kurzer Dateiname ohne Endung, z.B. 'buyer-prefs' oder 'price-insights'.",
@@ -276,7 +290,7 @@ async function runAgent(chatId, userMessage) {
 
   const context = loadContext();
 
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 10; i++) {
     const prompt =
       `${context}\n\n` +
       `## Session\nJannik's Telegram Chat-ID: ${chatId}\n\n` +
@@ -298,8 +312,7 @@ async function runAgent(chatId, userMessage) {
       }
       console.log(`[tool →] ${response.action.tool}(${JSON.stringify(response.action.args || {})})`);
       if (response.message) {
-        console.log(`[tg →] ${response.message}`);
-        await tg.send(chatId, response.message);
+        console.log(`[claude interim] ${response.message}`); // not sent to Telegram
       }
       try {
         let result;
