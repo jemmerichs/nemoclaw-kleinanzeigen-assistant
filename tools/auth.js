@@ -78,19 +78,24 @@ async function login({ email, password, headless = true } = {}) {
       );
     } catch (_) {}
 
-    // Fill credentials
-    await page.fill('input[name="loginname"], #loginname', email);
-    await page.fill('input[name="password"], #password', password);
-    await page.click('button[type="submit"], input[type="submit"]');
+    // Auth0 two-step login: email first, then password
+    // Step 1: fill email and press Enter (submit button is aria-hidden, use keyboard)
+    await page.fill('#username', email);
+    await page.press('#username', 'Enter');
 
-    await page.waitForURL((url) => !url.toString().includes("m-einloggen"), { timeout: 12000 })
+    // Step 2: wait for password field and fill it
+    await page.waitForSelector('input[type="password"]', { timeout: 10000 });
+    await page.fill('input[type="password"]', password);
+    await page.press('input[type="password"]', 'Enter');
+
+    await page.waitForURL((url) => !url.toString().includes("login.kleinanzeigen.de"), { timeout: 15000 })
       .catch(() => {});
 
     // Verify by visiting inbox
     await page.goto(INBOX_URL, { waitUntil: "domcontentloaded" });
     const finalUrl = page.url();
 
-    if (finalUrl.includes("einloggen") || finalUrl.includes("login")) {
+    if (finalUrl.includes("einloggen") || finalUrl.includes("login.kleinanzeigen.de")) {
       if (!headless) {
         console.log("[auth] Captcha erkannt oder Login fehlgeschlagen.");
         console.log("[auth] Bitte manuell einloggen und Captcha lösen.");

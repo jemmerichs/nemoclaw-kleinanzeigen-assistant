@@ -35,6 +35,10 @@ workspace/
     price-research.md
 ```
 
+## OpenClaw
+
+nemoclaw runs on [OpenClaw](https://openclaw.ai) — an open-source autonomous agent daemon. OpenClaw's Brain executes a ReAct loop and can only do what registered tools expose. This is the hard boundary: tool handlers define what the agent *can* access; anything not in `TOOLS` is simply unreachable. Finer-grained restrictions (e.g. no DELETE on the SQLite db) live as guards inside individual tool handlers. See [docs.openclaw.ai](https://docs.openclaw.ai) for the full architecture.
+
 ## Adding a skill
 
 - **Soft skill** (reasoning only): add a `.md` to `workspace/skills/` — agent picks it up automatically
