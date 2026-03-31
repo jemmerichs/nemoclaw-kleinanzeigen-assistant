@@ -82,63 +82,62 @@ async function refreshBearer() {
 // Each entry: description (shown to Claude), args schema, fn (executed by bridge)
 // To add a hard skill: add API method to tools/kleinanzeigen.js + register here + add/update skill doc
 const TOOLS = {
-  getConversations: {
+  // ── Kleinanzeigen ─────────────────────────────────────────────────────────
+  ka_get_conversations: {
     description: "Ungelesene Konversationen aus dem KA-Postfach abrufen",
     args: "{ limit?: number }",
     fn:   (a) => ka.getConversations(a),
   },
-  getMessages: {
+  ka_get_messages: {
     description: "Nachrichten einer Konversation abrufen",
     args: "{ conversationId: string, limit?: number }",
     fn:   (a) => ka.getMessages(a.conversationId, a),
   },
-  sendKAMessage: {
+  ka_send_message: {
     description: "Nachricht auf Kleinanzeigen senden — NUR nach explizitem Go von Jannik",
     args: "{ conversationId: string, text: string }",
     fn:   (a) => ka.sendMessage(a.conversationId, a.text),
   },
-  getMyAds: {
-    description: "Eigene aktive Kleinanzeigen-Anzeigen auflisten (cookie-auth)",
+  ka_get_my_ads: {
+    description: "Eigene aktive Anzeigen auflisten (cookie-auth)",
     args: "{ limit?: number }",
     fn:   (a) => ka.getMyAds(a),
   },
-  getAdBundles: {
-    description: "Alle eigenen Anzeigen abrufen inkl. aktive und pausierte (Bearer-auth, gateway)",
+  ka_get_ad_bundles: {
+    description: "Alle eigenen Anzeigen inkl. pausierte abrufen (Bearer-auth)",
     args: "{}",
     fn:   () => ka.getAdBundles(),
   },
-  getDrafts: {
-    description: "Eigene Anzeigen-Entwürfe abrufen (Bearer-auth, gateway)",
+  ka_get_drafts: {
+    description: "Eigene Anzeigen-Entwürfe abrufen (Bearer-auth)",
     args: "{}",
     fn:   () => ka.getDrafts(),
   },
-  searchAds: {
-    description: "Öffentliche Kleinanzeigen nach Keyword und/oder Kategorie durchsuchen — für Preisrecherche",
+  ka_search_ads: {
+    description: "Öffentliche Anzeigen nach Keyword/Kategorie durchsuchen — für Preisrecherche",
     args: "{ keyword: string, categoryId?: number, categorySlug?: string, page?: number, limit?: number }",
-    fn: (a) => ka.searchAds(a),
+    fn:   (a) => ka.searchAds(a),
   },
-  // ── Foto-Verwaltung ───────────────────────────────────────────────────────
+  ka_create_ad: {
+    description: "Neue Anzeige erstellen — NUR nach explizitem Go von Jannik",
+    args: "{ title: string, description: string, categoryId: number, price: number, priceType?: string, zipCode?: string }",
+    fn:   (a) => ka.createAd(a),
+  },
+  ka_upload_photo: {
+    description: "Foto (lokaler Dateipfad) zu einer bestehenden KA-Anzeige hochladen",
+    args: "{ adId: string, filePath: string, filename?: string }",
+    fn:   async (a) => {
+      const buffer = fs.readFileSync(a.filePath);
+      return ka.uploadPhoto(a.adId, buffer, a.filename || path.basename(a.filePath));
+    },
+  },
+
+  // ── Foto-Aufbereitung ─────────────────────────────────────────────────────
   processImages: {
     description: "Fotos via Gemini aufbereiten — minimale, ehrliche Bearbeitung (Hintergrund, Helligkeit), keine Mängel verstecken",
     args: "{ paths: string[], instructions?: string }",
-    fn: (a) => processImages({ paths: a.paths, instructions: a.instructions || "" }),
+    fn:   (a) => processImages({ paths: a.paths, instructions: a.instructions || "" }),
   },
-
-  // ── Anzeige erstellen / verwalten ─────────────────────────────────────────
-  createAd: {
-    description: "Neue Kleinanzeigen-Anzeige erstellen — NUR nach explizitem Go von Jannik",
-    args: "{ title: string, description: string, categoryId: number, price: number, priceType?: string, zipCode?: string }",
-    fn: (a) => ka.createAd(a),
-  },
-  uploadPhoto: {
-    description: "Foto (lokaler Dateipfad) zu einer bestehenden KA-Anzeige hochladen",
-    args: "{ adId: string, filePath: string, filename?: string }",
-    fn: async (a) => {
-      const buffer = require("fs").readFileSync(a.filePath);
-      return ka.uploadPhoto(a.adId, buffer, a.filename || require("path").basename(a.filePath));
-    },
-  },
-  // Hard skills to be added: deleteAd, setAdStatus
 
   // ── Skill-Verwaltung ──────────────────────────────────────────────────────
   updateSkillFile: {
