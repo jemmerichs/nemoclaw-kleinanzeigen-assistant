@@ -17,6 +17,7 @@ const TelegramGateway      = require("../tools/telegram");
 const KleinanzeigenClient  = require("../tools/kleinanzeigen");
 const { login, saveToEnv } = require("../tools/auth");
 const { saveTemp, processImages } = require("../tools/image");
+const { query: dbQuery }          = require("../tools/adstore");
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
@@ -137,6 +138,13 @@ const TOOLS = {
     description: "Fotos via Gemini aufbereiten — minimale, ehrliche Bearbeitung (Hintergrund, Helligkeit), keine Mängel verstecken",
     args: "{ paths: string[], instructions?: string }",
     fn:   (a) => processImages({ paths: a.paths, instructions: a.instructions || "" }),
+  },
+
+  // ── Datenbank ─────────────────────────────────────────────────────────────
+  db_query: {
+    description: "SQL auf der lokalen Asset-Datenbank ausführen (assets, listings, price_history, market_research). SELECT/INSERT/UPDATE erlaubt. Views: active_listings, needs_repost.",
+    args: "{ sql: string, params?: any[] }",
+    fn: (a) => dbQuery({ sql: a.sql, params: a.params || [] }),
   },
 
   // ── Skill-Verwaltung ──────────────────────────────────────────────────────
