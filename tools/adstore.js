@@ -42,30 +42,10 @@ function getDb() {
       created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     );
 
-    CREATE TABLE IF NOT EXISTS price_history (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      asset_id    INTEGER NOT NULL REFERENCES assets(id),
-      price_cents INTEGER NOT NULL,
-      changed_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-      note        TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS market_research (
-      id                INTEGER PRIMARY KEY AUTOINCREMENT,
-      asset_id          INTEGER REFERENCES assets(id),
-      query             TEXT NOT NULL,
-      category_id       INTEGER,
-      researched_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-      median_cents      INTEGER,
-      recommended_cents INTEGER
-    );
-
     CREATE INDEX IF NOT EXISTS idx_assets_status      ON assets(status);
     CREATE INDEX IF NOT EXISTS idx_ka_listings_asset  ON ka_listings(asset_id);
     CREATE INDEX IF NOT EXISTS idx_ka_listings_status ON ka_listings(status);
     CREATE INDEX IF NOT EXISTS idx_ka_listings_ka_id  ON ka_listings(ka_id);
-    CREATE INDEX IF NOT EXISTS idx_ph_asset           ON price_history(asset_id);
-    CREATE INDEX IF NOT EXISTS idx_mr_asset           ON market_research(asset_id);
   `);
   return _db;
 }
