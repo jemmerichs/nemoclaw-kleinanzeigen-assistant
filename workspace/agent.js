@@ -153,6 +153,20 @@ const TOOLS = {
     },
   },
   // Hard skills to be added: deleteAd, setAdStatus
+
+  // ── Skill-Verwaltung ──────────────────────────────────────────────────────
+  updateSkillFile: {
+    description: "Skill-Datei in workspace/skills/ schreiben — NUR nach explizitem Go von Jannik. Immer zuerst den geplanten Inhalt zeigen und warten.",
+    args: "{ filename: string, content: string }",
+    fn: (a) => {
+      const allowed = path.resolve(__dirname, "skills");
+      const target  = path.resolve(allowed, path.basename(a.filename));
+      if (!target.startsWith(allowed + path.sep)) throw new Error("Ungültiger Dateipfad");
+      if (!target.endsWith(".md")) throw new Error("Nur .md-Dateien erlaubt");
+      fs.writeFileSync(target, a.content, "utf8");
+      return { written: path.basename(target) };
+    },
+  },
 };
 
 function toolManifest() {
