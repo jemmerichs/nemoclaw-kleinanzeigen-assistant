@@ -24,6 +24,14 @@ Reference for building hard skills. Auth is handled transparently by `kleinanzei
 | GET | `gateway.kleinanzeigen.de/private-bundles/me/ads/bundles` | bearer | `getAdBundles` ✓ (empty until live ad exists) |
 | GET | `gateway.kleinanzeigen.de/messagebox/api/users/{uid}/conversations/{id}?contentWarnings=true` | bearer | — needs `x-ecg-user-agent: messagebox-1` header |
 
+## TODO: Gateway migration
+
+`gateway.kleinanzeigen.de` is the newer microservice and appears to be a superset of the legacy `api.kleinanzeigen.de` surface. Currently only `getAdBundles` uses it. Worth auditing whether messaging, search, and drafts are also available there — if so, we can consolidate to gateway-only and drop the legacy cookie calls.
+
+Blocked on: more live API data points (need to capture real gateway traffic for each operation).
+
+---
+
 ## Needed (skills blocked)
 
 | Skill | Endpoint (guessed / TBD) | Notes |
