@@ -42,7 +42,12 @@ async function ensureLogin() {
 }
 
 async function relogin() {
-  throw new Error("Session abgelaufen. Bitte 'node scripts/login.js' ausführen und den Agenten neu starten.");
+  // Re-read .env so fresh cookies from 'node scripts/login.js' are picked up without restart
+  require("dotenv").config({ path: require("path").resolve(__dirname, "../.env"), override: true });
+  const cookies = process.env.KA_COOKIES || "";
+  if (!cookies) throw new Error("KA_COOKIES fehlt — bitte 'node scripts/login.js' ausführen.");
+  ka = makeClient(cookies);
+  console.log("[agent] Cookies neu geladen aus .env");
 }
 
 async function refreshBearer() {
