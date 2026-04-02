@@ -15,18 +15,18 @@ function getDb() {
     -- Physical item Jannik owns and wants to sell.
     -- Survives across multiple KA listing attempts.
     CREATE TABLE IF NOT EXISTS assets (
-      id               INTEGER PRIMARY KEY AUTOINCREMENT,
-      name             TEXT NOT NULL,
-      description      TEXT,
-      category_id      INTEGER,
-      zip_code         TEXT,
-      asking_price_cents INTEGER,
-      status           TEXT NOT NULL DEFAULT 'available', -- available | sold
-      sold_at          TEXT,
-      sold_price_cents INTEGER,
-      notes            TEXT,
-      created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-      updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      name                TEXT NOT NULL,
+      listing_name        TEXT,
+      description         TEXT,
+      category_id         INTEGER,
+      last_price_cents    INTEGER,
+      has_active_listing  INTEGER NOT NULL DEFAULT 0, -- 0 | 1
+      status              TEXT NOT NULL DEFAULT 'available', -- available | sold
+      sold_at             TEXT,
+      sold_price_cents    INTEGER,
+      created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+      updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     );
 
     -- One row per KA listing attempt. An asset can have many (expired → re-posted → ...).

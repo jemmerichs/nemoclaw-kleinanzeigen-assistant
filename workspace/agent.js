@@ -15,7 +15,7 @@ const path = require("path");
 const { spawnSync, execSync } = require("child_process");
 const TelegramGateway      = require("../tools/telegram");
 const KleinanzeigenClient  = require("../tools/kleinanzeigen");
-const { login, saveToEnv } = require("../tools/auth");
+const { saveToEnv } = require("../tools/auth");
 const { saveTemp, processImages } = require("../tools/image");
 const { query: dbQuery }          = require("../tools/adstore");
 
@@ -33,41 +33,16 @@ function makeClient(cookies) {
 }
 
 async function ensureLogin() {
-  let cookies = process.env.KA_COOKIES || "";
-
+  const cookies = process.env.KA_COOKIES || "";
   if (!cookies) {
-    console.log("[agent] Keine Cookies — versuche automatischen Login...");
-    const creds = await login({
-      email:    process.env.KA_EMAIL,
-      password: process.env.KA_PASSWORD,
-      headless: true,
-    }).catch(async (e) => {
-      console.warn(`[agent] Headless-Login fehlgeschlagen: ${e.message}`);
-      console.log("[agent] Versuche mit sichtbarem Browser...");
-      return login({
-        email:    process.env.KA_EMAIL,
-        password: process.env.KA_PASSWORD,
-        headless: false,
-      });
-    });
-    process.env.KA_COOKIES = creds.cookies;
-    cookies = creds.cookies;
+    console.error("[agent] KA_COOKIES fehlt — bitte 'node scripts/login.js' ausführen.");
+    process.exit(1);
   }
-
   ka = makeClient(cookies);
 }
 
 async function relogin() {
-  console.log("[agent] Session abgelaufen — erneuere Login...");
-  const creds = await login({
-    email:    process.env.KA_EMAIL,
-    password: process.env.KA_PASSWORD,
-    headless: true,
-  });
-  process.env.KA_COOKIES      = creds.cookies;
-  process.env.KA_BEARER_TOKEN = ""; // cleared — fresh token now in cookies
-  saveToEnv({ KA_COOKIES: creds.cookies, KA_BEARER_TOKEN: null });
-  ka = makeClient(creds.cookies);
+  throw new Error("Session abgelaufen. Bitte 'node scripts/login.js' ausführen und den Agenten neu starten.");
 }
 
 async function refreshBearer() {
@@ -216,9 +191,12 @@ function findClaude() {
 const CLAUDE_BIN = findClaude();
 if (!CLAUDE_BIN) { console.error("[agent] claude CLI nicht gefunden."); process.exit(1); }
 
-function callClaude(prompt) {
-  const r = spawnSync(CLAUDE_BIN, ["-p", prompt, "--model", "claude-sonnet-4-6"],
-    { encoding: "utf8", timeout: 120000, stdio: ["ignore", "pipe", "pipe"] });
+function callClaude(systemPrompt, userPrompt) {
+  const r = spawnSync(
+    CLAUDE_BIN,
+    ["-p", userPrompt, "--model", "claude-sonnet-4-6", "--system-prompt", systemPrompt, "--tools", ""],
+    { encoding: "utf8", timeout: 120000, stdio: ["ignore", "pipe", "pipe"], cwd: "/tmp" }
+  );
   if (r.error) throw new Error(r.error.message);
   const raw = (r.stdout || "").trim().replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
   try { return JSON.parse(raw); } catch { return { message: raw }; }
@@ -281,11 +259,10 @@ async function runAgent(chatId, userMessage) {
   const history = getHistory(chatId);
   history.push(`Jannik: ${userMessage}`);
 
-  const context = loadContext();
+  const systemPrompt = loadContext();
 
   for (let i = 0; i < 10; i++) {
-    const prompt =
-      `${context}\n\n` +
+    const userPrompt =
       `## Session\nJannik's Telegram Chat-ID: ${chatId}\n\n` +
       `## Konversation\n${history.join("\n")}\n\n` +
       `Antworte ausschließlich als JSON:\n` +
@@ -295,7 +272,7 @@ async function runAgent(chatId, userMessage) {
       `message ist was Jannik sieht (darf leer sein wenn du nur ein Tool aufrufst).`;
 
     console.log(`[claude →] thinking... (step ${i + 1})`);
-    const response = callClaude(prompt);
+    const response = callClaude(systemPrompt, userPrompt);
 
     if (response.action) {
       const tool = TOOLS[response.action.tool];
@@ -328,7 +305,7 @@ async function runAgent(chatId, userMessage) {
         history.push(`Tool(${response.action.tool}): ${resultStr}`);
       } catch (e) {
         console.error(`[tool ✗] ${response.action.tool}: ${e.message}`);
-        history.push(`Tool(${response.action.tool}) Fehler: ${e.message}`);
+        history.push(`System: Tool "${response.action.tool}" fehlgeschlagen — ${e.message}. Erneut versuchen oder Jannik informieren.`);
       }
       continue;
     }
