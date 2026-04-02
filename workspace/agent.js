@@ -187,10 +187,7 @@ function toolManifest() {
 
 // ── Claude ────────────────────────────────────────────────────────────────────
 function findClaude() {
-  for (const c of ["claude"]) {
-    try { execSync(`"${c}" --version`, { stdio: "pipe" }); return c; } catch (_) {}
-  }
-  return null;
+  try { execSync('"claude" --version', { stdio: "pipe" }); return "claude"; } catch (_) { return null; }
 }
 
 const CLAUDE_BIN = findClaude();

@@ -1,14 +1,11 @@
 /**
  * Kleinanzeigen API client
  *
- * Three hostnames, two auth mechanisms:
+ *   www.kleinanzeigen.de     cookie auth   getMyAds, getDrafts, searchAds, createAd, uploadPhoto
+ *   gateway.kleinanzeigen.de Bearer JWT    getConversations, getMessages, sendMessage, getAdBundles
  *
- *   api.kleinanzeigen.de     cookie auth   getConversations, getMessages, sendMessage, getMyAds
- *   www.kleinanzeigen.de     cookie auth   getDrafts  (access_token cookie doubles as bearer)
- *   gateway.kleinanzeigen.de Bearer JWT    getAdBundles
- *
- * Tokens are stored as cookies by the browser, so Playwright captures them automatically.
- * bearerToken / refreshToken are extracted from the cookie string if not passed explicitly.
+ * api.kleinanzeigen.de uses HTTP Digest auth — not used.
+ * Tokens (access_token, refresh_token) are extracted from the cookie string automatically.
  */
 
 "use strict";
@@ -343,8 +340,7 @@ class KleinanzeigenClient {
    * @param {string}  [adData.zipCode]      seller's zip (defaults to account zip)
    * @returns {{ id: string, link: string }}
    *
-   * TODO: verify exact request schema against a live POST once cookies are set up.
-   * The body shape follows the eBay Classifieds Group REST API convention used by KA.
+   * ⚠️ Endpoint unverified — needs a live test with an active account.
    */
   async createAd({ title, description, categoryId, price, priceType = "NEGOTIABLE", zipCode }) {
     const body = {
@@ -377,8 +373,7 @@ class KleinanzeigenClient {
    * @param {string} filename    e.g. "foto1.jpg"
    * @returns {{ pictureId: string }}
    *
-   * TODO: verify endpoint path; some KA API versions use /api/pictures.json first,
-   * then PATCH the ad to associate the pictureId.
+   * ⚠️ Uses api.kleinanzeigen.de (Digest auth) — endpoint unverified, likely needs migration to www or gateway.
    */
   async uploadPhoto(adId, fileBuffer, filename = "photo.jpg") {
     const { status, body } = await this._multipartRequest(

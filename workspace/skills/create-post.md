@@ -8,17 +8,13 @@
 
 ## Kontext
 
-Fotos kommen als `[FOTO file_id:xxx]` Tokens in der Konversation an. Artikel und Zustand entweder aus Caption oder nachfragen (max. 1 Rückfrage).
+Fotos kommen als `[FOTO path:/tmp/...]` Tokens an (Bridge lädt sie vor). Artikel und Zustand entweder aus Caption oder nachfragen (max. 1 Rückfrage).
 
 ## Preisrecherche
 
-Automatisch via `searchAds` durchführen. Einen konkreten Preis empfehlen (keine Spanne).
+Automatisch via `ka_search_ads` durchführen. Einen konkreten Preis empfehlen (keine Spanne).
 
 ## Fotos aufbereiten
-
-```
-downloadTelegramPhoto({ fileId }) → { path }   // einmal pro FOTO-Token
-```
 
 Bis zu 3 Bilder auswählen (Gesamtansicht, Detail, Zustand). Rohfotos die komplett unbrauchbar sind überspringen.
 
@@ -30,7 +26,7 @@ processImages({ paths: [...], instructions: "item description, mention visible f
 
 ## Proposal
 
-Zuerst die aufbereiteten Fotos senden (`sendTelegramPhoto`), dann den Anzeigentext als Nachricht.
+Fotos senden: `"photo": "/pfad/zum/bild"` Feld in der Antwort (eines pro Nachricht), dann Anzeigentext.
 
 **Beschreibung:** Natürliche Sprache, kein Marketing. Zustand ehrlich beschreiben inkl. Mängel. Kurz halten.
 
@@ -42,21 +38,20 @@ Klar kommunizieren was Jannik mit "Go" bestätigt und was er noch ändern kann.
 
 **Vor "Go" — Entwurf anlegen:**
 ```
-db({ sql: "INSERT INTO ads (title, description, category_id, price_cents, status, facts) VALUES (?,?,?,?,?,?)",
-     params: [title, description, categoryId, priceInCents, "draft", JSON.stringify({ condition, notes })] })
-→ { lastInsertRowid }  // localAdId merken
-
-db({ sql: "INSERT INTO price_history (ad_id, price_cents, note) VALUES (?,?,?)",
-     params: [localAdId, priceInCents, "initial"] })
+db_query({ sql: "INSERT INTO assets (name, listing_name, description, last_price_cents) VALUES (?,?,?,?)",
+           params: [name, title, description, priceInCents] })
+→ lastInsertRowid = assetId
 ```
 
 **Nach "Go" — KA erstellen + DB aktualisieren:**
 ```
-createAd({ title, description, categoryId, price, priceType: "NEGOTIABLE" }) → { id: kaId, link }
-uploadPhoto({ adId, filePath })  // einmal pro Bild
+ka_create_ad({ title, description, categoryId, price, priceType: "NEGOTIABLE" }) → { id: kaId, link }
+ka_upload_photo({ adId: kaId, filePath })  // einmal pro Bild
 
-db({ sql: "UPDATE ads SET ka_id=?, ka_link=?, status='active', updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?",
-     params: [kaId, link, localAdId] })
+db_query({ sql: "INSERT INTO ka_listings (asset_id, ka_id, ka_link, price_cents, status, posted_at) VALUES (?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
+           params: [assetId, kaId, link, priceInCents, "active"] })
+db_query({ sql: "UPDATE assets SET has_active_listing=1, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?",
+           params: [assetId] })
 ```
 
 Preise als Cent-Integer (45€ → 4500).
@@ -74,4 +69,4 @@ Preise als Cent-Integer (45€ → 4500).
 | Möbel             | 83         | moebel             |
 | Sportartikel      | 221        | sportartikel       |
 
-Kategorie unbekannt → `searchAds` aufrufen, Ergebnisse zeigen die richtige Kategorie.
+Kategorie unbekannt → `ka_search_ads` aufrufen, Ergebnisse zeigen die richtige Kategorie.
