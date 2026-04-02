@@ -1,8 +1,8 @@
-# Skill: Anzeigen-Store verwalten
+# Skill: Asset-Datenbank verwalten
 
-Lokale Anzeigendatenbank abfragen und pflegen.
+Lokale Datenbank abfragen und pflegen.
 
-**Wann:** Jannik fragt nach abgelaufenen Anzeigen, Preisverlauf, möchte eine als verkauft markieren oder Infos ergänzen.
+**Wann:** Jannik fragt nach seinen Sachen, möchte etwas eintragen, als verkauft markieren, oder Infos ergänzen.
 
 ---
 
@@ -10,53 +10,73 @@ Lokale Anzeigendatenbank abfragen und pflegen.
 
 | Tabelle | Zweck |
 |---|---|
-| `ads` | Alle Anzeigen, auch abgelaufene und verkaufte |
-| `price_history` | Preisverlauf (eine Zeile pro Änderung) |
-| `market_research` | Recherche-Ergebnisse zu Preisen |
+| `assets` | Physische Gegenstände die Jannik besitzt/vermietet |
+| `ka_listings` | KA-Inserat-Versuche pro Asset (1 Asset → viele Listings) |
+| `ka_snapshots` | Preis- und Aufrufe-Verlauf pro Listing |
 
-**Wichtige Spalten in `ads`:** `id`, `ka_id`, `title`, `status` (draft/active/paused/expired/sold), `price_cents` (÷100 = €), `facts` (JSON-String), `ka_link`, `sold_at`, `sold_price_cents`
+### assets
+`id`, `name` (NOT NULL, interner Name), `listing_name` (Titel der KA-Anzeige), `description`, `category_id`, `last_price_cents` (letzter bekannter Preis, ÷100=€), `has_active_listing` (0|1), `status` (`available`|`sold`), `sold_at`, `sold_price_cents`, `created_at`, `updated_at`
 
-⚠️ **Kein DELETE verwenden** — immer `UPDATE ... SET status='deleted'` für soft-delete.
+### ka_listings
+`id`, `asset_id` → assets(id), `ka_id` (KA-Anzeigen-ID, UNIQUE, NULL wenn manuell), `ka_link`, `price_cents`, `status` (`active`|`expired`|`removed`|`draft`), `posted_at`, `expired_at`, `created_at`
+
+### ka_snapshots
+`id`, `listing_id` → ka_listings(id), `price_cents`, `views`, `recorded_at`
+
+⚠️ **Kein DELETE** — stattdessen `status` aktualisieren.
 
 ---
+
+## Asset eintragen (ohne aktives KA-Inserat)
+
+```
+db_query({ sql: "INSERT INTO assets (name, listing_name, description, last_price_cents) VALUES (?,?,?,?)",
+           params: ["Klettersteigset", "Klettersteigset zu vermieten", "Beschreibung...", 5000] })
+```
+
+## Asset + KA-Listing eintragen
+
+```
+db_query({ sql: "INSERT INTO assets (name, listing_name, description, last_price_cents, has_active_listing) VALUES (?,?,?,?,1)",
+           params: ["Fahrrad", "Fahrrad 28 Zoll", "...", 15000] })
+// lastInsertRowid = asset_id
+db_query({ sql: "INSERT INTO ka_listings (asset_id, ka_id, ka_link, price_cents, status, posted_at) VALUES (?,?,?,?,?,?)",
+           params: [assetId, "ka123", "https://...", 15000, "active", "2024-01-01T00:00:00Z"] })
+```
 
 ## Typische Abfragen
 
 ```sql
--- Aktive Anzeigen
-SELECT id, title, price_cents/100.0 AS eur, ka_link FROM ads WHERE status='active'
+-- Alle verfügbaren Assets
+SELECT id, name, listing_name, last_price_cents/100.0 AS eur, has_active_listing FROM assets WHERE status='available'
 
--- Abgelaufene
-SELECT id, title, price_cents/100.0 AS eur, updated_at FROM ads WHERE status='expired' ORDER BY updated_at DESC
+-- Asset mit aktiven KA-Listings
+SELECT a.name, l.ka_id, l.ka_link, l.price_cents/100.0 AS eur
+FROM assets a JOIN ka_listings l ON l.asset_id=a.id
+WHERE l.status='active'
 
--- Preisverlauf
-SELECT ph.changed_at, ph.price_cents/100.0 AS eur, ph.note
-FROM price_history ph JOIN ads a ON a.id=ph.ad_id WHERE a.ka_id=?
-ORDER BY ph.changed_at
+-- Preis-/Aufrufe-Verlauf
+SELECT s.recorded_at, s.price_cents/100.0 AS eur, s.views
+FROM ka_snapshots s WHERE s.listing_id=?
+ORDER BY s.recorded_at
 ```
 
 ## Als verkauft markieren
 
 ```
-db({ sql: "UPDATE ads SET status='sold', sold_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'), sold_price_cents=?, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE ka_id=?",
-     params: [soldPriceCents, kaId] })
+db_query({ sql: "UPDATE assets SET status='sold', has_active_listing=0, sold_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'), sold_price_cents=?, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?",
+           params: [soldPriceCents, assetId] })
+db_query({ sql: "UPDATE ka_listings SET status='removed' WHERE asset_id=? AND status='active'",
+           params: [assetId] })
 ```
 
-## Facts aktualisieren
+## Snapshot schreiben
 
-facts ist freies JSON. Lesen → mergen → schreiben:
+Nach jedem KA-Datenabruf und nach jeder Preisänderung:
 ```
-db({ sql: "SELECT id, facts FROM ads WHERE title LIKE ?", params: ["%stichwort%"] })
-// facts parsen, Felder ergänzen, dann:
-db({ sql: "UPDATE ads SET facts=?, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?",
-     params: [JSON.stringify(updatedFacts), id] })
+db_query({ sql: "INSERT INTO ka_snapshots (listing_id, price_cents, views) VALUES (?,?,?)",
+           params: [listingId, priceCents, views] })
+// Auch last_price_cents im Asset aktualisieren:
+db_query({ sql: "UPDATE assets SET last_price_cents=?, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?",
+           params: [priceCents, assetId] })
 ```
-
-## Marktrecherche speichern
-
-Nach `searchAds` optional persistieren (besonders wenn eine Anzeige dazu existiert):
-```
-db({ sql: "INSERT INTO market_research (query, category_id, median_cents, recommended_cents, ad_id) VALUES (?,?,?,?,?)",
-     params: [keyword, categoryId, medianCents, recommendedCents, localAdId] })
-```
-`ad_id` = null bei eigenständiger Recherche ohne zugehörige Anzeige.
