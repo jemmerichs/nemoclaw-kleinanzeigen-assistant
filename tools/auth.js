@@ -67,6 +67,7 @@ async function login({ email, password, headless = true } = {}) {
     }
   });
 
+
   try {
     await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
 

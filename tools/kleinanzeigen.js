@@ -182,34 +182,36 @@ class KleinanzeigenClient {
   // ── Inbox ─────────────────────────────────────────────────────────────────
 
   async getConversations({ limit = 20, offset = 0 } = {}) {
-    const { body } = await this._request("GET", `/users/${this.userId}/conversations?limit=${limit}&offset=${offset}`);
-    return (body.conversations || body._embedded?.conversations || []).map(c => ({
+    const { body } = await this._gatewayRequest("GET", `/messagebox/api/users/${this.userId}/conversations?limit=${limit}&offset=${offset}`);
+    const isMe = (c) => c.userIdBuyer === Number(this.userId) ? c.role === "buyer" : c.role === "seller";
+    return (body.conversations || []).map(c => ({
       id:          c.id,
-      adId:        c.adId || c.ad?.id,
-      adTitle:     c.adTitle || c.ad?.title || "",
-      otherParty:  c.interlocutorSummary?.userProfile?.displayName || c.buyerName || "",
-      lastMessage: c.latestMessage?.text || "",
-      unread:      c.unreadMessageCount > 0,
-      updatedAt:   c.latestMessage?.sentAt || c.modificationDate,
+      adId:        c.adId,
+      adTitle:     c.adTitle || "",
+      adStatus:    c.adStatus,
+      otherParty:  isMe(c) ? c.sellerName : c.buyerName,
+      lastMessage: c.textShortTrimmed || "",
+      unread:      c.unread || false,
+      updatedAt:   c.receivedDate,
     }));
   }
 
   async getMessages(conversationId, { limit = 20 } = {}) {
-    const { body } = await this._request("GET", `/users/${this.userId}/conversations/${conversationId}/messages?limit=${limit}`);
-    return (body.messages || body._embedded?.messages || []).map(m => ({
+    const { body } = await this._gatewayRequest("GET", `/messagebox/api/users/${this.userId}/conversations/${conversationId}/messages?limit=${limit}`);
+    return (body.messages || []).map(m => ({
       id:     m.id,
       text:   m.text || "",
       sentAt: m.sentAt,
-      isMe:   m.senderUserId === this.userId,
+      isMe:   String(m.senderUserId) === String(this.userId),
     }));
   }
 
   /** Only after explicit "Go" from Jannik */
   async sendMessage(conversationId, text) {
-    const { status, body } = await this._request(
+    const { status, body } = await this._gatewayRequest(
       "POST",
-      `/users/${this.userId}/conversations/${conversationId}/messages`,
-      { text }
+      `/messagebox/api/users/${this.userId}/conversations/${conversationId}/messages`,
+      { message: text }
     );
     if (status !== 200 && status !== 201) {
       throw new Error(`sendMessage fehlgeschlagen (${status}): ${JSON.stringify(body)}`);
@@ -264,10 +266,10 @@ class KleinanzeigenClient {
 
   // ── My Ads ────────────────────────────────────────────────────────────────
 
-  /** Active published ads (cookie auth, api subdomain) */
-  async getMyAds({ limit = 20, offset = 0 } = {}) {
-    const { body } = await this._request("GET", `/users/${this.userId}/ads?limit=${limit}&offset=${offset}`);
-    return (body.ads || body._embedded?.ads || []).map(a => ({
+  /** Active published ads (cookie auth, www JSON endpoint) */
+  async getMyAds({ limit = 20 } = {}) {
+    const { body } = await this._wwwRequest("GET", "/m-meine-anzeigen-verwalten.json");
+    return (body.ads || []).slice(0, limit).map(a => ({
       id:       a.id,
       title:    a.title,
       price:    a.priceAmount,
