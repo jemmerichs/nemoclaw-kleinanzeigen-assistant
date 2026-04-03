@@ -36,27 +36,27 @@ Klar kommunizieren was Jannik mit "Go" bestätigt und was er noch ändern kann.
 
 ## Ad-Store (vor und nach "Go")
 
-**Vor "Go" — Entwurf anlegen + Bildpfade speichern:**
+**Vor "Go" — Entwurf anlegen:**
 ```
-db_query({ sql: "INSERT INTO assets (name, listing_name, description, last_price_cents, image_paths) VALUES (?,?,?,?,?)",
-           params: [name, title, description, priceInCents, JSON.stringify(finalPaths)] })
+db_query({ sql: "INSERT INTO assets (name, listing_name, description, last_price_cents) VALUES (?,?,?,?)",
+           params: [name, title, description, priceInCents] })
 → lastInsertRowid = assetId
 ```
-`finalPaths` = optimierte Pfade falls `processImages` aufgerufen wurde, sonst Rohpfade.
 
-**Bildpfade nachträglich aktualisieren** (falls Asset schon existiert):
+**Bildpfade speichern / aktualisieren** (nach Foto-Eingang oder processImages):
 ```
-db_query({ sql: "UPDATE assets SET image_paths=?, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?",
-           params: [JSON.stringify(finalPaths), assetId] })
+saveImages({ assetId, paths: ["/absoluter/pfad/foto1.jpg", ...] })
+→ { assetId, imageCount, paths }
 ```
+Merged automatisch mit bestehenden Pfaden — kein JSON.stringify, kein manuelles Lesen nötig.
 
 **Vor "Go" prüfen:** Falls `image_paths` bereits gesetzt ist, Pfade aus DB laden — kein erneuter Download nötig (Neustart-sicher).
 
 **Nach "Go" — KA erstellen + DB aktualisieren:**
 ```
 // Bildpfade aus DB holen:
-db_query({ sql: "SELECT image_paths FROM assets WHERE id=?", params: [assetId] })
-→ JSON.parse(row.image_paths) = paths[]
+saveImages({ assetId, paths: [] })  // oder db_query SELECT image_paths
+→ paths[] direkt verwenden
 
 ka_create_ad({ title, description, categoryId, price, priceType: "NEGOTIABLE" }) → { id: kaId, link }
 ka_upload_photo({ adId: kaId, filePath })  // einmal pro Pfad aus image_paths

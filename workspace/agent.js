@@ -53,10 +53,19 @@ async function relogin() {
 async function refreshBearer() {
   console.log("[agent] Bearer token abgelaufen — erneuere via Refresh-Token...");
   const data = await ka.refreshBearerToken();
-  // Persist so next restart uses the refreshed token (cookie still has old one)
-  saveToEnv({ KA_BEARER_TOKEN: data.access_token });
-  process.env.KA_BEARER_TOKEN = data.access_token;
-  console.log("[agent] Bearer token erneuert.");
+
+  // Patch access_token (and refresh_token if rotated) in KA_COOKIES so that
+  // www.kleinanzeigen.de cookie-auth stays valid — same token, two delivery paths.
+  let cookies = process.env.KA_COOKIES || "";
+  cookies = cookies.replace(/(^|; )access_token=[^;]+/, `$1access_token=${data.access_token}`);
+  if (data.refresh_token) {
+    cookies = cookies.replace(/(^|; )refresh_token=[^;]+/, `$1refresh_token=${data.refresh_token}`);
+  }
+  process.env.KA_COOKIES = cookies;
+  // KA_BEARER_TOKEN override no longer needed — token is now current in cookies
+  saveToEnv({ KA_COOKIES: cookies, KA_BEARER_TOKEN: null });
+  ka = makeClient(cookies);
+  console.log("[agent] Bearer token erneuert, Cookies aktualisiert.");
 }
 
 // ── Hard skills — tool registry ───────────────────────────────────────────────
@@ -125,6 +134,19 @@ const TOOLS = {
     description: "SQL auf der lokalen Asset-Datenbank ausführen. Tabellen: assets, ka_listings, ka_snapshots (Preis+Views-Verlauf). SELECT/INSERT/UPDATE erlaubt.",
     args: "{ sql: string, params?: any[] }",
     fn: (a) => dbQuery({ sql: a.sql, params: a.params || [] }),
+  },
+  saveImages: {
+    description: "Bildpfade zu einem Asset speichern (append). Liest bestehende image_paths, merged, schreibt zurück. Kein JSON.stringify nötig.",
+    args: "{ assetId: number, paths: string[] }",
+    fn: (a) => {
+      const rows    = dbQuery({ sql: "SELECT image_paths FROM assets WHERE id=?", params: [a.assetId] });
+      if (!rows.length) throw new Error(`Asset ${a.assetId} nicht gefunden`);
+      const existing = rows[0].image_paths ? JSON.parse(rows[0].image_paths) : [];
+      const merged   = [...new Set([...existing, ...a.paths])];
+      dbQuery({ sql: "UPDATE assets SET image_paths=?, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?",
+                params: [JSON.stringify(merged), a.assetId] });
+      return { assetId: a.assetId, imageCount: merged.length, paths: merged };
+    },
   },
 
   // ── Skill-Verwaltung ──────────────────────────────────────────────────────
@@ -292,10 +314,8 @@ async function runAgent(chatId, userMessage) {
         try {
           result = await tool.fn(response.action.args || {});
         } catch (e) {
-          if (e.message.includes("Session abgelaufen")) {
-            await relogin();
-            result = await tool.fn(response.action.args || {}); // retry once
-          } else if (e.message.includes("Bearer token abgelaufen")) {
+          if (e.message.includes("Session abgelaufen") || e.message.includes("Bearer token abgelaufen")) {
+            // Try refresh token first — avoids full re-login for normal token expiry
             await refreshBearer();
             result = await tool.fn(response.action.args || {}); // retry once
           } else {
