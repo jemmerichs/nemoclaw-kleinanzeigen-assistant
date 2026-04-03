@@ -8,7 +8,7 @@
 
 ## Kontext
 
-Fotos kommen als `[FOTO path:/tmp/...]` Tokens an (Bridge lädt sie vor). Artikel und Zustand entweder aus Caption oder nachfragen (max. 1 Rückfrage).
+Fotos kommen als `[FOTO path:/absoluter/pfad/workspace/images/raw/photo_....jpg]` Tokens an (Bridge speichert sie persistent als absoluten Pfad vor). Artikel und Zustand entweder aus Caption oder nachfragen (max. 1 Rückfrage).
 
 ## Preisrecherche
 
@@ -36,17 +36,30 @@ Klar kommunizieren was Jannik mit "Go" bestätigt und was er noch ändern kann.
 
 ## Ad-Store (vor und nach "Go")
 
-**Vor "Go" — Entwurf anlegen:**
+**Vor "Go" — Entwurf anlegen + Bildpfade speichern:**
 ```
-db_query({ sql: "INSERT INTO assets (name, listing_name, description, last_price_cents) VALUES (?,?,?,?)",
-           params: [name, title, description, priceInCents] })
+db_query({ sql: "INSERT INTO assets (name, listing_name, description, last_price_cents, image_paths) VALUES (?,?,?,?,?)",
+           params: [name, title, description, priceInCents, JSON.stringify(finalPaths)] })
 → lastInsertRowid = assetId
 ```
+`finalPaths` = optimierte Pfade falls `processImages` aufgerufen wurde, sonst Rohpfade.
+
+**Bildpfade nachträglich aktualisieren** (falls Asset schon existiert):
+```
+db_query({ sql: "UPDATE assets SET image_paths=?, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?",
+           params: [JSON.stringify(finalPaths), assetId] })
+```
+
+**Vor "Go" prüfen:** Falls `image_paths` bereits gesetzt ist, Pfade aus DB laden — kein erneuter Download nötig (Neustart-sicher).
 
 **Nach "Go" — KA erstellen + DB aktualisieren:**
 ```
+// Bildpfade aus DB holen:
+db_query({ sql: "SELECT image_paths FROM assets WHERE id=?", params: [assetId] })
+→ JSON.parse(row.image_paths) = paths[]
+
 ka_create_ad({ title, description, categoryId, price, priceType: "NEGOTIABLE" }) → { id: kaId, link }
-ka_upload_photo({ adId: kaId, filePath })  // einmal pro Bild
+ka_upload_photo({ adId: kaId, filePath })  // einmal pro Pfad aus image_paths
 
 db_query({ sql: "INSERT INTO ka_listings (asset_id, ka_id, ka_link, price_cents, status, posted_at) VALUES (?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
            params: [assetId, kaId, link, priceInCents, "active"] })

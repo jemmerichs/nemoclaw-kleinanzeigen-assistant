@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Image processing via Gemini (gemini-2.0-flash-exp).
+ * Image processing via Gemini (gemini-3.1-flash-image-preview).
  *
  * Sends listing photos to Gemini with a minimal-edit prompt and writes the
  * result back to disk. Pass-through if GEMINI_API_KEY is not set.
@@ -16,18 +16,20 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const GEMINI_MODEL   = "gemini-3.1-flash-image-preview";
-const TEMP_DIR       = process.env.NEMOCLAW_TEMP_DIR || "/tmp/nemoclaw";
+const GEMINI_API_KEY  = process.env.GEMINI_API_KEY || "";
+const GEMINI_MODEL    = "gemini-3.1-flash-image-preview";
+const RAW_DIR         = path.resolve(__dirname, "../workspace/images/raw");
+const OPTIMIZED_DIR   = path.resolve(__dirname, "../workspace/images/optimized");
 
-function ensureTemp() {
-  if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
+function ensureDirs() {
+  if (!fs.existsSync(RAW_DIR))       fs.mkdirSync(RAW_DIR,       { recursive: true });
+  if (!fs.existsSync(OPTIMIZED_DIR)) fs.mkdirSync(OPTIMIZED_DIR, { recursive: true });
 }
 
 function saveTemp(buffer, ext = ".jpg") {
-  ensureTemp();
+  ensureDirs();
   const name = `photo_${Date.now()}_${crypto.randomBytes(4).toString("hex")}${ext}`;
-  const file = path.join(TEMP_DIR, name);
+  const file = path.join(RAW_DIR, name);
   fs.writeFileSync(file, buffer);
   return file;
 }
@@ -38,13 +40,15 @@ async function processImages({ paths: inputPaths, instructions = "" }) {
     return { paths: inputPaths };
   }
 
-  ensureTemp();
+  ensureDirs();
   const outputPaths = [];
 
   for (const inputPath of inputPaths) {
     const inputBuffer  = fs.readFileSync(inputPath);
     const outputBuffer = await _callGemini(inputBuffer, instructions);
-    const outputPath   = inputPath.replace(/(\.\w+)$/, "_processed$1");
+    const basename     = path.basename(inputPath, path.extname(inputPath));
+    const ext          = path.extname(inputPath) || ".jpg";
+    const outputPath   = path.join(OPTIMIZED_DIR, `${basename}_opt${ext}`);
     fs.writeFileSync(outputPath, outputBuffer);
     outputPaths.push(outputPath);
   }
