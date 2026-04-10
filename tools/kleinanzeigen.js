@@ -302,7 +302,7 @@ class KleinanzeigenClient {
     return { boundary, body };
   }
 
-  async uploadImage(fileBuffer, filename = "photo.jpg", mimeType = "image/jpeg") {
+  async uploadImage(fileBuffer, filename = "photo.jpg", mimeType = "image/jpeg", { forDraft = false } = {}) {
     const boundary = "----KABoundary" + Math.random().toString(36).slice(2);
     const body = Buffer.concat([
       Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="type"\r\n\r\n${mimeType}`),
@@ -310,10 +310,13 @@ class KleinanzeigenClient {
       fileBuffer,
       Buffer.from(`\r\n--${boundary}--\r\n`),
     ]);
+    const referer = forDraft
+      ? "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html?createDraft=true"
+      : "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html";
     const { status, body: parsed } = await this._csrfWwwRequest("POST", "/p-bild-hochladen.html", body, {
       "Accept":   "*/*",
       "Content-Type": `multipart/form-data; boundary=${boundary}`,
-      "Referer":  "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
+      "Referer":  referer,
     });
     const img      = parsed.yamsAdImage || parsed;
     const anyUrl   = img.largeUrl || img.largeTeaserUrl || img.thumbnailUrl || img.XLargeUrl || "";
@@ -383,8 +386,7 @@ class KleinanzeigenClient {
   }
 
   /** Save a KA draft (no Go needed — not published). Returns draftId.
-   *  Note: KA drafts do not support image attachments — imageUrls are returned
-   *  as-is for the caller to persist separately (e.g. via saveImages). */
+   *  imageUrls from uploadImage({ forDraft: true }) are attached to the draft. */
   async saveDraft({ title = "", description = "", categoryId = null, priceAmount = null, priceType = "NEGOTIABLE", adType = "OFFER", zipCode = "", locationId = "", imageUrls = [], attributes = {} } = {}) {
     const body = {
       adType, title, description, priceType,
@@ -393,6 +395,7 @@ class KleinanzeigenClient {
       ...(categoryId  !== null ? { categoryId:  Number(categoryId)      } : {}),
       ...(priceAmount !== null ? { priceAmount: Math.round(priceAmount) } : {}),
       ...(Object.keys(attributes).length ? { attributeMap: attributes } : {}),
+      ...(imageUrls.length ? { adImages: imageUrls } : {}),
     };
     const { status, body: parsed } = await this._csrfWwwRequest("POST", `/users/${this.userId}/ad-drafts.json`, body, {
       "Referer": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
@@ -401,7 +404,7 @@ class KleinanzeigenClient {
       throw new Error(`saveDraft fehlgeschlagen (${status}): ${JSON.stringify(parsed).slice(0, 300)}`);
     if (!parsed?.result?.actionSuccessful)
       throw new Error(`saveDraft fehlgeschlagen: ${JSON.stringify(parsed).slice(0, 300)}`);
-    return { draftId: String(parsed.adDraft?.id || ""), imageUrls };
+    return { draftId: String(parsed.adDraft?.id || ""), imageCount: imageUrls.length };
   }
 
   async getDrafts() {
