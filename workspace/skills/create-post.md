@@ -43,13 +43,15 @@ db_query({ sql: "INSERT INTO assets (name, listing_name, description, last_price
            params: [name, title, description, priceInCents] })
 → lastInsertRowid = assetId
 
-// 2. Entwurf auf KA speichern (kein Go nötig — nicht veröffentlicht):
+// 2. Bilder hochladen (forDraft:true) und Entwurf auf KA speichern (kein Go nötig — nicht veröffentlicht):
+ka_upload_image({ filePath: "/absoluter/pfad/foto.jpg", forDraft: true }) → { imageId, imageUrl }
 ka_save_draft({ title, description, categoryId, priceAmount: price,
                 zipCode: "80636", locationId: "16360",
-                imageUrls: ["https://img.kleinanzeigen.de/..."] })  // optional — werden NICHT auf KA gespeichert
-→ { draftId, imageUrls }   // imageUrls kommen unverändert zurück — KA-Drafts unterstützen keine Bilder
+                imageUrls: ["https://img.kleinanzeigen.de/..."] })  // Bilder werden am Entwurf gespeichert
+→ { draftId, imageCount }
+// Link teilen: https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html?draftId=<draftId>
 
-// imageUrls via saveImages in DB persistieren (damit sie beim Go abrufbar sind):
+// Lokale Bildpfade in DB persistieren (damit sie beim Go abrufbar sind):
 saveImages({ assetId, paths: ["/absoluter/pfad/foto1.jpg", ...] })
 
 // draftId in DB als Referenz speichern (optional):
@@ -80,6 +82,7 @@ ka_create_ad({
   imageUrls: ["https://img.kleinanzeigen.de/..."],
   attributes: { "kategorie_slug.condition": "used" }  // kategoriespezifisch, weglassen wenn unbekannt
 }) → { id: kaId, link }
+// Link teilen: link aus Response an Jannik senden
 
 db_query({ sql: "INSERT INTO ka_listings (asset_id, ka_id, ka_link, price_cents, status, posted_at) VALUES (?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
            params: [assetId, kaId, link, priceInCents, "active"] })
