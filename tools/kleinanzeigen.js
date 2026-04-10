@@ -513,12 +513,44 @@ class KleinanzeigenClient {
 
   /**
    * Delete an existing ad by its KA ad ID.
-   * Uses the stealth browser profile (Playwright) — the REST API requires Digest auth.
+   * Endpoint: POST https://www.kleinanzeigen.de/m-anzeigen-loeschen.json?ids={adId}
+   * No request body — ad ID is passed as query param.
    * @param {string} adId  KA ad ID (numeric string)
    */
   async deleteAd(adId) {
-    const { deleteAdBrowser } = require("./auth");
-    return deleteAdBrowser(adId);
+    const csrfToken = this._extractCsrfToken();
+    if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies.");
+    const { status, body } = await new Promise((resolve, reject) => {
+      const opts = {
+        hostname: "www.kleinanzeigen.de",
+        path:     `/m-anzeigen-loeschen.json?ids=${encodeURIComponent(adId)}`,
+        method:   "POST",
+        headers: {
+          "Accept":         "application/json, text/plain, */*",
+          "Content-Length": "0",
+          "Cookie":         this.cookies,
+          "x-csrf-token":   csrfToken,
+          "x-xsrf-token":   csrfToken,
+          "Origin":         "https://www.kleinanzeigen.de",
+          "Referer":        "https://www.kleinanzeigen.de/m-meine-anzeigen.html?tab=PROJECTS",
+          "User-Agent":     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        },
+      };
+      const req = https.request(opts, res => {
+        let raw = "";
+        res.on("data", c => (raw += c));
+        res.on("end", () => {
+          try { resolve({ status: res.statusCode, body: raw ? JSON.parse(raw) : {} }); }
+          catch { resolve({ status: res.statusCode, body: raw }); }
+        });
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    if (status !== 200 && status !== 204) {
+      throw new Error(`deleteAd fehlgeschlagen (${status}): ${JSON.stringify(body).slice(0, 200)}`);
+    }
+    return { deleted: adId, status };
   }
 
   /**
