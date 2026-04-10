@@ -92,4 +92,34 @@ async function refreshCookies() {
   }
 }
 
-module.exports = { login, saveToEnv, refreshCookies };
+/**
+ * Delete an ad by its KA ID using the stealth browser profile.
+ * Navigates to the ad management page and clicks the delete button.
+ * @param {string} adId  KA ad ID (numeric string)
+ */
+async function deleteAdBrowser(adId) {
+  if (!fs.existsSync(PROFILE_DIR)) {
+    throw new Error("No browser profile found — run 'node scripts/login.js' first.");
+  }
+  const context = await launchProfile(true);
+  try {
+    await context.route("**/*", (route, req) => {
+      if (["image", "font", "media", "stylesheet"].includes(req.resourceType())) return route.abort();
+      route.continue();
+    });
+    const page = await context.newPage();
+    await page.goto(`https://www.kleinanzeigen.de/m-anzeigen/${adId}/loeschen.html`, { waitUntil: "domcontentloaded" });
+    // Click the confirmation/submit button if present
+    const confirmBtn = page.locator("button[type='submit'], input[type='submit']").first();
+    if (await confirmBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await confirmBtn.click();
+      await page.waitForLoadState("domcontentloaded");
+    }
+    console.log(`[auth] Ad ${adId} deleted via browser.`);
+    return { deleted: adId };
+  } finally {
+    await context.close();
+  }
+}
+
+module.exports = { login, saveToEnv, refreshCookies, deleteAdBrowser };

@@ -373,9 +373,14 @@ class KleinanzeigenClient {
             return reject(new Error(`CSRF abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' ausführen.`));
           }
           try {
-            const parsed   = raw ? JSON.parse(raw) : {};
-            const imageId  = String(parsed.imageId  || parsed.id       || parsed.pictureId || parsed.uuid || "");
-            const imageUrl = String(parsed.url       || parsed.imageUrl || parsed.link      || "");
+            const parsed = raw ? JSON.parse(raw) : {};
+            // Response may be wrapped in yamsAdImage
+            const img    = parsed.yamsAdImage || parsed;
+            // Extract UUID from any URL field (e.g. largeUrl, thumbnailUrl)
+            const anyUrl = img.largeUrl || img.largeTeaserUrl || img.thumbnailUrl || img.XLargeUrl || "";
+            const uuidMatch = anyUrl.match(/\/([0-9a-f-]{36})\?/);
+            const imageId  = String(parsed.imageId || parsed.id || parsed.pictureId || parsed.uuid || (uuidMatch ? uuidMatch[1] : "") || "");
+            const imageUrl = String(img.largeUrl || img.largeTeaserUrl || parsed.url || parsed.imageUrl || parsed.link || "");
             if (!imageId && !imageUrl) return reject(new Error(`uploadImage: kein imageId/url in Antwort (${res.statusCode}): ${raw.slice(0, 200)}`));
             resolve({ imageId, imageUrl, status: res.statusCode });
           } catch {
@@ -466,6 +471,32 @@ class KleinanzeigenClient {
             if (res.statusCode !== 200 && res.statusCode !== 201) {
               return reject(new Error(`createAd fehlgeschlagen (${res.statusCode}): ${raw.slice(0, 300)}`));
             }
+            // Success response is an indexed array:
+            // [{"success":1,"redirectUrl":2}, true, "/p-anzeige-aufgeben-bestaetigung.html?adId=123&..."]
+            // Error response: [{"errors":1}, [...], ...]
+            if (Array.isArray(parsed)) {
+              const meta = parsed[0];
+              if (meta && meta.errors !== undefined) {
+                // Decode error messages from indexed format
+                const msgs = [];
+                const indices = parsed[meta.errors] || [];
+                for (const idx of indices) {
+                  const errObj = parsed[idx];
+                  if (errObj && errObj.field !== undefined && errObj.message !== undefined) {
+                    msgs.push(`${parsed[errObj.field]}: ${parsed[errObj.message]}`);
+                  }
+                }
+                return reject(new Error(`createAd Validierungsfehler: ${msgs.join("; ") || raw.slice(0, 200)}`));
+              }
+              if (meta && meta.redirectUrl !== undefined) {
+                const redirectUrl = String(parsed[meta.redirectUrl] || "");
+                const adIdMatch   = redirectUrl.match(/[?&]adId=(\d+)/);
+                const adId        = adIdMatch ? adIdMatch[1] : "";
+                resolve({ id: adId, link: `https://www.kleinanzeigen.de/s-anzeige/${adId}` });
+                return;
+              }
+            }
+            // Fallback: plain JSON object
             const adUrl = parsed.url || parsed.adLink || parsed.link || "";
             const adId  = String(parsed.id || parsed.adId || (adUrl.match(/\/(\d+)(?:[/?]|$)/) || [])[1] || "");
             resolve({ id: adId, link: adUrl || `https://www.kleinanzeigen.de/s-anzeige/${adId}` });
@@ -478,6 +509,16 @@ class KleinanzeigenClient {
       req.write(body);
       req.end();
     });
+  }
+
+  /**
+   * Delete an existing ad by its KA ad ID.
+   * Uses the stealth browser profile (Playwright) — the REST API requires Digest auth.
+   * @param {string} adId  KA ad ID (numeric string)
+   */
+  async deleteAd(adId) {
+    const { deleteAdBrowser } = require("./auth");
+    return deleteAdBrowser(adId);
   }
 
   /**
