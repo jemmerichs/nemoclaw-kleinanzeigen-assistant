@@ -84,7 +84,7 @@ const TOOLS = {
     fn:   () => ka.getAdBundles(),
   },
   ka_save_draft: {
-    description: "Anzeigen-Entwurf auf KA speichern (kein Go nötig — wird NICHT veröffentlicht). Gibt draftId zurück.",
+    description: "Anzeigen-Entwurf auf KA speichern (kein Go nötig — wird NICHT veröffentlicht). Bilder zuerst mit ka_upload_image(forDraft:true) hochladen, imageUrls hier übergeben.",
     args: "{ title?: string, description?: string, categoryId?: number, priceAmount?: number, priceType?: string, zipCode?: string, locationId?: string, imageUrls?: string[], attributes?: Record<string,string> }",
     fn:   (a) => ka.saveDraft(a),
   },
@@ -104,12 +104,12 @@ const TOOLS = {
     fn:   (a) => ka.searchAds(a),
   },
   ka_upload_image: {
-    description: "Bild vor der Anzeigenerstellung hochladen — gibt imageId und imageUrl zurück (imageUrl für ka_create_ad)",
-    args: "{ filePath: string, filename?: string, mimeType?: string }",
+    description: "Bild hochladen — gibt imageId und imageUrl zurück. imageUrl für ka_create_ad oder ka_save_draft. forDraft:true setzen wenn für Entwurf.",
+    args: "{ filePath: string, filename?: string, mimeType?: string, forDraft?: boolean }",
     fn:   async (a) => {
       const buffer = fs.readFileSync(a.filePath);
       const mime   = a.mimeType || { png: "image/png", webp: "image/webp", gif: "image/gif", bmp: "image/bmp" }[a.filePath.match(/\.(\w+)$/i)?.[1]?.toLowerCase()] || "image/jpeg";
-      return ka.uploadImage(buffer, a.filename || path.basename(a.filePath), mime);
+      return ka.uploadImage(buffer, a.filename || path.basename(a.filePath), mime, { forDraft: !!a.forDraft });
     },
   },
   ka_create_ad: {
