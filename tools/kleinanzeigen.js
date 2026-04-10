@@ -76,6 +76,44 @@ class KleinanzeigenClient {
     return this._cookieRequest("www.kleinanzeigen.de", path, method, body);
   }
 
+  _csrfWwwRequest(method, path, body = null, extraHeaders = {}) {
+    const csrfToken = this._extractCsrfToken();
+    if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies. Bitte 'node scripts/login.js' ausführen.");
+    const data = body instanceof Buffer ? body : (body ? Buffer.from(JSON.stringify(body)) : null);
+    return new Promise((resolve, reject) => {
+      const opts = {
+        hostname: "www.kleinanzeigen.de",
+        path,
+        method,
+        headers: {
+          "Accept":       "application/json",
+          "Content-Type": "application/json",
+          "Cookie":       this.cookies,
+          "x-csrf-token": csrfToken,
+          "x-xsrf-token": csrfToken,
+          "Origin":       "https://www.kleinanzeigen.de",
+          "Referer":      "https://www.kleinanzeigen.de/",
+          "User-Agent":   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+          ...(data ? { "Content-Length": data.length } : {}),
+          ...extraHeaders,
+        },
+      };
+      const req = https.request(opts, res => {
+        let raw = "";
+        res.on("data", c => (raw += c));
+        res.on("end", () => {
+          if (res.statusCode === 401 || res.statusCode === 403)
+            return reject(new Error(`CSRF abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' ausführen.`));
+          try { resolve({ status: res.statusCode, body: raw ? JSON.parse(raw) : {} }); }
+          catch { resolve({ status: res.statusCode, body: raw }); }
+        });
+      });
+      req.on("error", reject);
+      if (data) req.write(data);
+      req.end();
+    });
+  }
+
   _gatewayRequest(method, path, body = null) {
     if (!this.bearerToken) throw new Error("Bearer token fehlt. Bitte 'node scripts/login.js' ausführen.");
     return new Promise((resolve, reject) => {
@@ -264,261 +302,106 @@ class KleinanzeigenClient {
     return { boundary, body };
   }
 
-  uploadImage(fileBuffer, filename = "photo.jpg", mimeType = "image/jpeg") {
-    const csrfToken = this._extractCsrfToken();
-    if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies. Bitte 'node scripts/login.js' ausführen.");
-
+  async uploadImage(fileBuffer, filename = "photo.jpg", mimeType = "image/jpeg") {
     const boundary = "----KABoundary" + Math.random().toString(36).slice(2);
-
-    const typePart = Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="type"\r\n\r\n${mimeType}`
-    );
-    const filePre  = Buffer.from(
-      `\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`
-    );
-    const filePost = Buffer.from(`\r\n--${boundary}--\r\n`);
-    const body = Buffer.concat([typePart, filePre, fileBuffer, filePost]);
-
-    return new Promise((resolve, reject) => {
-      const opts = {
-        hostname: "www.kleinanzeigen.de",
-        path:     "/p-bild-hochladen.html",
-        method:   "POST",
-        headers: {
-          "Accept":         "*/*",
-          "Content-Type":   `multipart/form-data; boundary=${boundary}`,
-          "Content-Length": body.length,
-          "Cookie":         this.cookies,
-          "x-csrf-token":   csrfToken,
-          "x-xsrf-token":   csrfToken,
-          "User-Agent":     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-          "Origin":         "https://www.kleinanzeigen.de",
-          "Referer":        "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
-        },
-      };
-      const req = https.request(opts, (res) => {
-        let raw = "";
-        res.on("data", (c) => (raw += c));
-        res.on("end", () => {
-          if (res.statusCode === 401 || res.statusCode === 403) {
-            return reject(new Error(`CSRF abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' ausführen.`));
-          }
-          try {
-            const parsed  = raw ? JSON.parse(raw) : {};
-            const img     = parsed.yamsAdImage || parsed;
-            const anyUrl  = img.largeUrl || img.largeTeaserUrl || img.thumbnailUrl || img.XLargeUrl || "";
-            const uuidMatch = anyUrl.match(/\/([0-9a-f-]{36})\?/);
-            const imageId  = String(parsed.imageId || parsed.id || parsed.pictureId || parsed.uuid || (uuidMatch ? uuidMatch[1] : "") || "");
-            const imageUrl = String(img.largeUrl || img.largeTeaserUrl || parsed.url || parsed.imageUrl || parsed.link || "");
-            if (!imageId && !imageUrl) return reject(new Error(`uploadImage: kein imageId/url in Antwort (${res.statusCode}): ${raw.slice(0, 200)}`));
-            resolve({ imageId, imageUrl, status: res.statusCode });
-          } catch {
-            reject(new Error(`uploadImage: ungültige Antwort (${res.statusCode}): ${raw.slice(0, 200)}`));
-          }
-        });
-      });
-      req.on("error", reject);
-      req.write(body);
-      req.end();
+    const body = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="type"\r\n\r\n${mimeType}`),
+      Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`),
+      fileBuffer,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    const { status, body: parsed } = await this._csrfWwwRequest("POST", "/p-bild-hochladen.html", body, {
+      "Accept":   "*/*",
+      "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      "Referer":  "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
     });
+    const img      = parsed.yamsAdImage || parsed;
+    const anyUrl   = img.largeUrl || img.largeTeaserUrl || img.thumbnailUrl || img.XLargeUrl || "";
+    const uuidMatch = anyUrl.match(/\/([0-9a-f-]{36})\?/);
+    const imageId  = String(parsed.imageId || parsed.id || parsed.pictureId || parsed.uuid || (uuidMatch ? uuidMatch[1] : "") || "");
+    const imageUrl = String(img.largeUrl || img.largeTeaserUrl || parsed.url || parsed.imageUrl || parsed.link || "");
+    if (!imageId && !imageUrl) throw new Error(`uploadImage: kein imageId/url in Antwort (${status}): ${JSON.stringify(parsed).slice(0, 200)}`);
+    return { imageId, imageUrl, status };
   }
 
   /** Only after explicit "Go" from Jannik. price in EUR. imageUrls from uploadImage. */
-  createAd({ title, description, categoryId, price, priceType = "NEGOTIABLE", zipCode, locationId, contactName, imageUrls = [], attributes = {} }) {
+  async createAd({ title, description, categoryId, price, priceType = "NEGOTIABLE", zipCode, locationId, contactName, imageUrls = [], attributes = {} }) {
     const csrfToken = this._extractCsrfToken();
     if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies. Bitte 'node scripts/login.js' ausführen.");
 
     const fields = {
-      adType:                 "OFFER",
-      title,
-      description,
-      categoryId:             String(categoryId),
-      priceAmount:            String(Math.round(price)),
-      priceType,
-      buyNowEligible:         "false",
-      zipCode:                zipCode    || "",
-      locationId:             locationId || "",
-      contactName:            contactName || "",
-      adId:                   "",
-      trackingId:             crypto.randomUUID(),
-      postAdWenkseSessionId:  crypto.randomUUID(),
-      _csrf:                  csrfToken,
+      adType: "OFFER", title, description,
+      categoryId: String(categoryId), priceAmount: String(Math.round(price)),
+      priceType, buyNowEligible: "false",
+      zipCode: zipCode || "", locationId: locationId || "", contactName: contactName || "",
+      adId: "", trackingId: crypto.randomUUID(), postAdWenkseSessionId: crypto.randomUUID(),
+      _csrf: csrfToken,
     };
-
-    for (const [key, value] of Object.entries(attributes)) {
-      fields[`attributeMap[${key}]`] = value;
-    }
+    for (const [key, value] of Object.entries(attributes)) fields[`attributeMap[${key}]`] = value;
     imageUrls.forEach((url, i) => { fields[`adImages[${i}].url`] = url; });
 
     const { boundary, body } = this._buildMultipartTextBody(fields);
-
-    return new Promise((resolve, reject) => {
-      const opts = {
-        hostname: "www.kleinanzeigen.de",
-        path:     "/_actions/postListingWeb.submitListing/",
-        method:   "POST",
-        headers: {
-          "Accept":         "application/json",
-          "Content-Type":   `multipart/form-data; boundary=${boundary}`,
-          "Content-Length": body.length,
-          "Cookie":         this.cookies,
-          "x-csrf-token":   csrfToken,
-          "x-xsrf-token":   csrfToken,
-          "Origin":         "https://www.kleinanzeigen.de",
-          "Referer":        "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
-          "User-Agent":     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-        },
-      };
-      const req = https.request(opts, (res) => {
-        let raw = "";
-        res.on("data", (c) => (raw += c));
-        res.on("end", () => {
-          if (res.statusCode === 401 || res.statusCode === 403) {
-            return reject(new Error(`CSRF abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' ausführen.`));
-          }
-          try {
-            const parsed = raw ? JSON.parse(raw) : {};
-            if (res.statusCode !== 200 && res.statusCode !== 201) {
-              return reject(new Error(`createAd fehlgeschlagen (${res.statusCode}): ${raw.slice(0, 300)}`));
-            }
-            // Response is an indexed array — [{"success":1,"redirectUrl":2}, true, "/...?adId=123"]
-            // or on error: [{"errors":1}, [...], ...]
-            if (Array.isArray(parsed)) {
-              const meta = parsed[0];
-              if (meta && meta.errors !== undefined) {
-                const msgs = [];
-                const indices = parsed[meta.errors] || [];
-                for (const idx of indices) {
-                  const errObj = parsed[idx];
-                  if (errObj && errObj.field !== undefined && errObj.message !== undefined) {
-                    msgs.push(`${parsed[errObj.field]}: ${parsed[errObj.message]}`);
-                  }
-                }
-                return reject(new Error(`createAd Validierungsfehler: ${msgs.join("; ") || raw.slice(0, 200)}`));
-              }
-              if (meta && meta.redirectUrl !== undefined) {
-                const redirectUrl = String(parsed[meta.redirectUrl] || "");
-                const adIdMatch   = redirectUrl.match(/[?&]adId=(\d+)/);
-                const adId        = adIdMatch ? adIdMatch[1] : "";
-                resolve({ id: adId, link: `https://www.kleinanzeigen.de/s-anzeige/${adId}` });
-                return;
-              }
-            }
-            // fallback: plain JSON
-            const adUrl = parsed.url || parsed.adLink || parsed.link || "";
-            const adId  = String(parsed.id || parsed.adId || (adUrl.match(/\/(\d+)(?:[/?]|$)/) || [])[1] || "");
-            resolve({ id: adId, link: adUrl || `https://www.kleinanzeigen.de/s-anzeige/${adId}` });
-          } catch {
-            reject(new Error(`createAd Parse-Fehler (${res.statusCode}): ${raw.slice(0, 200)}`));
-          }
-        });
-      });
-      req.on("error", reject);
-      req.write(body);
-      req.end();
+    const { status, body: parsed } = await this._csrfWwwRequest("POST", "/_actions/postListingWeb.submitListing/", body, {
+      "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      "Referer":      "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
     });
+
+    if (status !== 200 && status !== 201)
+      throw new Error(`createAd fehlgeschlagen (${status}): ${JSON.stringify(parsed).slice(0, 300)}`);
+
+    // Response is an indexed array — [{"success":1,"redirectUrl":2}, true, "/...?adId=123"]
+    // or on error: [{"errors":1}, [...], ...]
+    if (Array.isArray(parsed)) {
+      const meta = parsed[0];
+      if (meta?.errors !== undefined) {
+        const msgs = (parsed[meta.errors] || []).map(idx => {
+          const e = parsed[idx];
+          return (e?.field !== undefined && e?.message !== undefined) ? `${parsed[e.field]}: ${parsed[e.message]}` : null;
+        }).filter(Boolean);
+        throw new Error(`createAd Validierungsfehler: ${msgs.join("; ") || JSON.stringify(parsed).slice(0, 200)}`);
+      }
+      if (meta?.redirectUrl !== undefined) {
+        const redirectUrl = String(parsed[meta.redirectUrl] || "");
+        const adId = (redirectUrl.match(/[?&]adId=(\d+)/) || [])[1] || "";
+        return { id: adId, link: `https://www.kleinanzeigen.de/s-anzeige/${adId}` };
+      }
+    }
+    // fallback: plain JSON
+    const adUrl = parsed.url || parsed.adLink || parsed.link || "";
+    const adId  = String(parsed.id || parsed.adId || (adUrl.match(/\/(\d+)(?:[/?]|$)/) || [])[1] || "");
+    return { id: adId, link: adUrl || `https://www.kleinanzeigen.de/s-anzeige/${adId}` };
   }
 
   async deleteAd(adId) {
-    const csrfToken = this._extractCsrfToken();
-    if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies.");
-    const { status, body } = await new Promise((resolve, reject) => {
-      const opts = {
-        hostname: "www.kleinanzeigen.de",
-        path:     `/m-anzeigen-loeschen.json?ids=${encodeURIComponent(adId)}`,
-        method:   "POST",
-        headers: {
-          "Accept":         "application/json, text/plain, */*",
-          "Content-Length": "0",
-          "Cookie":         this.cookies,
-          "x-csrf-token":   csrfToken,
-          "x-xsrf-token":   csrfToken,
-          "Origin":         "https://www.kleinanzeigen.de",
-          "Referer":        "https://www.kleinanzeigen.de/m-meine-anzeigen.html?tab=PROJECTS",
-          "User-Agent":     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-        },
-      };
-      const req = https.request(opts, res => {
-        let raw = "";
-        res.on("data", c => (raw += c));
-        res.on("end", () => {
-          try { resolve({ status: res.statusCode, body: raw ? JSON.parse(raw) : {} }); }
-          catch { resolve({ status: res.statusCode, body: raw }); }
-        });
-      });
-      req.on("error", reject);
-      req.end();
+    const { status, body } = await this._csrfWwwRequest("POST", `/m-anzeigen-loeschen.json?ids=${encodeURIComponent(adId)}`, null, {
+      "Accept":  "application/json, text/plain, */*",
+      "Referer": "https://www.kleinanzeigen.de/m-meine-anzeigen.html?tab=PROJECTS",
     });
-    if (status !== 200 && status !== 204) {
+    if (status !== 200 && status !== 204)
       throw new Error(`deleteAd fehlgeschlagen (${status}): ${JSON.stringify(body).slice(0, 200)}`);
-    }
     return { deleted: adId, status };
   }
 
-  /** Save or update a KA draft (no Go needed — not published). Returns draftId. */
+  /** Save a KA draft (no Go needed — not published). Returns draftId.
+   *  Note: KA drafts do not support image attachments — imageUrls are returned
+   *  as-is for the caller to persist separately (e.g. via saveImages). */
   async saveDraft({ title = "", description = "", categoryId = null, priceAmount = null, priceType = "NEGOTIABLE", adType = "OFFER", zipCode = "", locationId = "", imageUrls = [], attributes = {} } = {}) {
-    const csrfToken = this._extractCsrfToken();
-    if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies. Bitte 'node scripts/login.js' ausführen.");
-
-    const draftData = {
-      adType,
-      title,
-      description,
-      categoryId:  categoryId  ? String(categoryId)           : "",
-      priceAmount: priceAmount !== null ? String(Math.round(priceAmount)) : "",
-      priceType,
-      zipCode:     zipCode     || "",
-      locationId:  locationId  || "",
+    const body = {
+      adType, title, description, priceType,
+      zipCode:    zipCode    || "",
+      locationId: locationId || "",
+      ...(categoryId  !== null ? { categoryId:  Number(categoryId)      } : {}),
+      ...(priceAmount !== null ? { priceAmount: Math.round(priceAmount) } : {}),
+      ...(Object.keys(attributes).length ? { attributeMap: attributes } : {}),
     };
-    if (imageUrls.length) {
-      draftData.adImages = imageUrls.map((url, i) => ({ position: i, url }));
-    }
-    if (Object.keys(attributes).length) {
-      draftData.attributeMap = attributes;
-    }
-
-    const payload = JSON.stringify({ draftData });
-
-    return new Promise((resolve, reject) => {
-      const opts = {
-        hostname: "www.kleinanzeigen.de",
-        path:     "/_actions/postListingWeb.drafts.saveDraft/",
-        method:   "POST",
-        headers: {
-          "Accept":         "application/json",
-          "Content-Type":   "application/json",
-          "Content-Length": Buffer.byteLength(payload),
-          "Cookie":         this.cookies,
-          "x-csrf-token":   csrfToken,
-          "x-xsrf-token":   csrfToken,
-          "Origin":         "https://www.kleinanzeigen.de",
-          "Referer":        "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
-          "User-Agent":     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-        },
-      };
-      const req = https.request(opts, (res) => {
-        let raw = "";
-        res.on("data", (c) => (raw += c));
-        res.on("end", () => {
-          if (res.statusCode === 401 || res.statusCode === 403) {
-            return reject(new Error(`CSRF abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' ausführen.`));
-          }
-          try {
-            const parsed = raw ? JSON.parse(raw) : {};
-            if (res.statusCode !== 200 && res.statusCode !== 201) {
-              return reject(new Error(`saveDraft fehlgeschlagen (${res.statusCode}): ${raw.slice(0, 300)}`));
-            }
-            const draftId = String(parsed.draftId || parsed.id || parsed.draft?.id || "");
-            resolve({ draftId, raw: parsed });
-          } catch {
-            reject(new Error(`saveDraft Parse-Fehler (${res.statusCode}): ${raw.slice(0, 200)}`));
-          }
-        });
-      });
-      req.on("error", reject);
-      req.write(payload);
-      req.end();
+    const { status, body: parsed } = await this._csrfWwwRequest("POST", `/users/${this.userId}/ad-drafts.json`, body, {
+      "Referer": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
     });
+    if (status !== 200 && status !== 201)
+      throw new Error(`saveDraft fehlgeschlagen (${status}): ${JSON.stringify(parsed).slice(0, 300)}`);
+    if (!parsed?.result?.actionSuccessful)
+      throw new Error(`saveDraft fehlgeschlagen: ${JSON.stringify(parsed).slice(0, 300)}`);
+    return { draftId: String(parsed.adDraft?.id || ""), imageUrls };
   }
 
   async getDrafts() {
@@ -533,6 +416,15 @@ class KleinanzeigenClient {
       images:      d.adImages?.length || 0,
       expiresAt:   d.expiryDate,
     }));
+  }
+
+  async deleteDraft(draftId) {
+    const { status } = await this._csrfWwwRequest("DELETE", `/users/${this.userId}/ad-drafts/${draftId}.json`, null, {
+      "Referer": "https://www.kleinanzeigen.de/m-meine-anzeigen.html",
+    });
+    if (status !== 200 && status !== 204)
+      throw new Error(`deleteDraft fehlgeschlagen (${status})`);
+    return { deleted: draftId };
   }
 
 }

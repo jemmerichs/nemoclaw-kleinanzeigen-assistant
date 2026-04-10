@@ -93,6 +93,11 @@ const TOOLS = {
     args: "{}",
     fn:   () => ka.getDrafts(),
   },
+  ka_delete_draft: {
+    description: "Einen KA-Entwurf löschen. draftId aus ka_get_drafts.",
+    args: "{ draftId: string }",
+    fn:   (a) => ka.deleteDraft(a.draftId),
+  },
   ka_search_ads: {
     description: "Öffentliche Anzeigen nach Keyword/Kategorie durchsuchen — für Preisrecherche",
     args: "{ keyword: string, categoryId?: number, categorySlug?: string, page?: number, limit?: number }",

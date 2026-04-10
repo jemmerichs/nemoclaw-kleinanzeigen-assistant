@@ -45,8 +45,13 @@ db_query({ sql: "INSERT INTO assets (name, listing_name, description, last_price
 
 // 2. Entwurf auf KA speichern (kein Go nötig — nicht veröffentlicht):
 ka_save_draft({ title, description, categoryId, priceAmount: price,
-                zipCode: "80636", locationId: "16360" })
-→ { draftId }
+                zipCode: "80636", locationId: "16360",
+                imageUrls: ["https://img.kleinanzeigen.de/..."] })  // optional — werden NICHT auf KA gespeichert
+→ { draftId, imageUrls }   // imageUrls kommen unverändert zurück — KA-Drafts unterstützen keine Bilder
+
+// imageUrls via saveImages in DB persistieren (damit sie beim Go abrufbar sind):
+saveImages({ assetId, paths: ["/absoluter/pfad/foto1.jpg", ...] })
+
 // draftId in DB als Referenz speichern (optional):
 db_query({ sql: "UPDATE assets SET ka_draft_id=? WHERE id=?", params: [draftId, assetId] })
 ```
