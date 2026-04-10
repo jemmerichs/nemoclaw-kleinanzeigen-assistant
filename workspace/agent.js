@@ -1,11 +1,4 @@
 #!/usr/bin/env node
-/**
- * nemoclaw-kleinanzeigen — thin bridge
- *
- * Telegram ←→ Claude (reasoning + skill docs) ←→ tool execution
- * No skill logic here. Skills live in workspace/skills/*.md
- */
-
 "use strict";
 
 require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") });
@@ -19,7 +12,6 @@ const { saveToEnv } = require("../tools/auth");
 const { saveTemp, processImages } = require("../tools/image");
 const { query: dbQuery }          = require("../tools/adstore");
 
-// ── Config ────────────────────────────────────────────────────────────────────
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 if (!TOKEN) { console.error("[agent] TELEGRAM_BOT_TOKEN fehlt."); process.exit(1); }
 
@@ -27,8 +19,6 @@ const tg = new TelegramGateway(TOKEN);
 let ka;  // initialised after login
 
 function makeClient(cookies) {
-  // Tokens are extracted from cookies by the client automatically.
-  // KA_BEARER_TOKEN may be set after a token refresh to override the cookie value.
   return new KleinanzeigenClient(cookies, process.env.KA_BEARER_TOKEN || null);
 }
 
@@ -42,7 +32,6 @@ async function ensureLogin() {
 }
 
 async function relogin() {
-  // Re-read .env so fresh cookies from 'node scripts/login.js' are picked up without restart
   require("dotenv").config({ path: require("path").resolve(__dirname, "../.env"), override: true });
   const cookies = process.env.KA_COOKIES || "";
   if (!cookies) throw new Error("KA_COOKIES fehlt — bitte 'node scripts/login.js' ausführen.");
@@ -51,37 +40,24 @@ async function relogin() {
 }
 
 async function refreshCsrf() {
-  console.log("[agent] CSRF-TOKEN abgelaufen — refreshe via GET...");
   const newToken = await ka.refreshCsrfToken();
-  // Persist updated cookie string (contains fresh CSRF-TOKEN)
   saveToEnv({ KA_COOKIES: ka.cookies });
   process.env.KA_COOKIES = ka.cookies;
-  console.log(`[agent] CSRF-TOKEN erneuert (${newToken.slice(0, 8)}...)`);
+  console.log(`[agent] CSRF erneuert (${newToken.slice(0, 8)}…)`);
 }
 
 async function refreshBearer() {
-  console.log("[agent] Bearer token abgelaufen — erneuere via Refresh-Token...");
   const data = await ka.refreshBearerToken();
-
-  // Patch access_token (and refresh_token if rotated) in KA_COOKIES so that
-  // www.kleinanzeigen.de cookie-auth stays valid — same token, two delivery paths.
   let cookies = process.env.KA_COOKIES || "";
   cookies = cookies.replace(/(^|; )access_token=[^;]+/, `$1access_token=${data.access_token}`);
-  if (data.refresh_token) {
-    cookies = cookies.replace(/(^|; )refresh_token=[^;]+/, `$1refresh_token=${data.refresh_token}`);
-  }
+  if (data.refresh_token) cookies = cookies.replace(/(^|; )refresh_token=[^;]+/, `$1refresh_token=${data.refresh_token}`);
   process.env.KA_COOKIES = cookies;
-  // KA_BEARER_TOKEN override no longer needed — token is now current in cookies
   saveToEnv({ KA_COOKIES: cookies, KA_BEARER_TOKEN: null });
   ka = makeClient(cookies);
-  console.log("[agent] Bearer token erneuert, Cookies aktualisiert.");
+  console.log("[agent] Bearer erneuert.");
 }
 
-// ── Hard skills — tool registry ───────────────────────────────────────────────
-// Each entry: description (shown to Claude), args schema, fn (executed by bridge)
-// To add a hard skill: add API method to tools/kleinanzeigen.js + register here + add/update skill doc
 const TOOLS = {
-  // ── Kleinanzeigen ─────────────────────────────────────────────────────────
   ka_get_conversations: {
     description: "Ungelesene Konversationen aus dem KA-Postfach abrufen",
     args: "{ limit?: number }",
@@ -132,14 +108,12 @@ const TOOLS = {
     fn:   (a) => ka.createAd(a),
   },
 
-  // ── Foto-Aufbereitung ─────────────────────────────────────────────────────
   processImages: {
     description: "Fotos via Gemini aufbereiten — minimale, ehrliche Bearbeitung (Hintergrund, Helligkeit), keine Mängel verstecken",
     args: "{ paths: string[], instructions?: string }",
     fn:   (a) => processImages({ paths: a.paths, instructions: a.instructions || "" }),
   },
 
-  // ── Datenbank ─────────────────────────────────────────────────────────────
   db_query: {
     description: "SQL auf der lokalen Asset-Datenbank ausführen. Tabellen: assets, ka_listings, ka_snapshots (Preis+Views-Verlauf). SELECT/INSERT/UPDATE erlaubt.",
     args: "{ sql: string, params?: any[] }",
@@ -159,7 +133,6 @@ const TOOLS = {
     },
   },
 
-  // ── Skill-Verwaltung ──────────────────────────────────────────────────────
   updateSkillFile: {
     description: "Skill-Datei in workspace/skills/ schreiben — NUR nach explizitem Go von Jannik. Immer zuerst den geplanten Inhalt zeigen und warten.",
     args: "{ filename: string, content: string }",
@@ -173,7 +146,6 @@ const TOOLS = {
     },
   },
 
-  // ── Memory ────────────────────────────────────────────────────────────────
   memoryWrite: {
     description: "Erkenntnis oder Fakt dauerhaft speichern (überschreibt vorhandene Datei mit gleichem key). key = kurzer Dateiname ohne Endung, z.B. 'buyer-prefs' oder 'price-insights'.",
     args: "{ key: string, content: string }",
@@ -217,7 +189,6 @@ function toolManifest() {
     .join("\n");
 }
 
-// ── Claude ────────────────────────────────────────────────────────────────────
 function findClaude() {
   try { execSync('"claude" --version', { stdio: "pipe" }); return "claude"; } catch (_) { return null; }
 }
@@ -236,7 +207,6 @@ function callClaude(systemPrompt, userPrompt) {
   try { return JSON.parse(raw); } catch { return { message: raw }; }
 }
 
-// ── Context: agent identity + skill docs + tool manifest ─────────────────────
 function loadContext() {
   const agentMd   = fs.readFileSync(path.join(__dirname, "agent.md"), "utf8");
   const skillsDir = path.join(__dirname, "skills");
@@ -259,7 +229,6 @@ function loadContext() {
       if (full.length <= MEMORY_CONTEXT_LIMIT) {
         memory = "\n\n## Dein Gedächtnis (Memory)\n\n" + full;
       } else {
-        // Too large — only show keys, agent can use memoryRead to fetch specific entries
         const keys = entries.map(f => f.replace(".md", "")).join(", ");
         memory = `\n\n## Dein Gedächtnis (Memory)\n\nZu viele Einträge für den Context. Verfügbare Keys: ${keys}\nNutze memoryRead({ key }) um einzelne Einträge abzurufen.`;
       }
@@ -274,7 +243,6 @@ function loadContext() {
   );
 }
 
-// ── Session: conversation history per chatId (persisted to disk) ──────────────
 const SESSION_FILE = path.join(__dirname, "../.sessions.json");
 let sessions = {};
 try { sessions = JSON.parse(fs.readFileSync(SESSION_FILE, "utf8")); } catch (_) {}
@@ -288,7 +256,6 @@ function saveSession(chatId) {
   try { fs.writeFileSync(SESSION_FILE, JSON.stringify(sessions)); } catch (_) {}
 }
 
-// ── Agentic loop: message → Claude → optional tool → Claude → reply ───────────
 async function runAgent(chatId, userMessage) {
   const history = getHistory(chatId);
   history.push(`Jannik: ${userMessage}`);
@@ -317,7 +284,7 @@ async function runAgent(chatId, userMessage) {
       }
       console.log(`[tool →] ${response.action.tool}(${JSON.stringify(response.action.args || {})})`);
       if (response.message) {
-        console.log(`[claude interim] ${response.message}`); // not sent to Telegram
+        console.log(`[claude interim] ${response.message}`);
       }
       try {
         let result;
@@ -326,13 +293,13 @@ async function runAgent(chatId, userMessage) {
         } catch (e) {
           if (e.message.includes("CSRF abgelaufen")) {
             await refreshCsrf();
-            result = await tool.fn(response.action.args || {}); // retry once
+            result = await tool.fn(response.action.args || {});
           } else if (e.message.includes("Bearer token abgelaufen")) {
             await refreshBearer();
-            result = await tool.fn(response.action.args || {}); // retry once
+            result = await tool.fn(response.action.args || {});
           } else if (e.message.includes("Session abgelaufen")) {
             await relogin();
-            result = await tool.fn(response.action.args || {}); // retry once
+            result = await tool.fn(response.action.args || {});
           } else {
             throw e;
           }
@@ -359,17 +326,14 @@ async function runAgent(chatId, userMessage) {
     break;
   }
 
-  // Keep history bounded
   if (history.length > 40) sessions[chatId] = history.slice(-40);
   saveSession(chatId);
 }
 
-// ── Timing ────────────────────────────────────────────────────────────────────
 function randomPollIntervalMs() {
   return Math.floor(3 * 60 * 60 * 1000 + Math.random() * 3 * 60 * 60 * 1000);
 }
 
-// ── Main loop ─────────────────────────────────────────────────────────────────
 (async () => {
   console.log("[agent] nemoclaw-kleinanzeigen gestartet");
   await ensureLogin();
@@ -392,7 +356,6 @@ function randomPollIntervalMs() {
         console.log(`[tg ←] ${msg.text}`);
         await runAgent(msg.chat.id, msg.text);
       } else if (msg.photo) {
-        // Pick highest resolution, auto-download to local disk.
         const best = msg.photo[msg.photo.length - 1];
         const caption = msg.caption ? ` ${msg.caption}` : "";
         const buffer = await tg.downloadPhoto(best.file_id);
@@ -410,7 +373,6 @@ function randomPollIntervalMs() {
   await safeTick();
   setInterval(safeTick, 5000);
 
-  // Inbox heartbeat every 3–6h
   function scheduleHeartbeat() {
     const delay = randomPollIntervalMs();
     console.log(`[agent] Nächster Inbox-Check in ${(delay / 3600000).toFixed(1)}h`);

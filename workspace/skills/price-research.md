@@ -6,7 +6,7 @@ Marktpreise für einen Artikel auf Kleinanzeigen recherchieren.
 
 **Ablauf:**
 1. Artikelname und ggf. Kategorie erfragen falls nicht gegeben
-2. `searchAds` aufrufen mit passendem keyword + categoryId
+2. `ka_search_ads` aufrufen mit passendem keyword + categoryId
 3. Preise der Ergebnisse analysieren — Spanne und Median nennen
 4. Empfehlung geben: unter/über Markt oder passend
 5. Top-Anzeigen (topAd: true) separat kennzeichnen — die sind bezahlt und verzerren ggf. den Preis

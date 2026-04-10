@@ -1,13 +1,4 @@
-/**
- * Kleinanzeigen API client
- *
- *   www.kleinanzeigen.de     cookie auth   getMyAds, getDrafts, searchAds, uploadImage, createAd
- *   gateway.kleinanzeigen.de Bearer JWT    getConversations, getMessages, sendMessage, getAdBundles
- *
- * api.kleinanzeigen.de uses HTTP Digest auth — not used.
- * Tokens (access_token, refresh_token) are extracted from the cookie string automatically.
- */
-
+// Kleinanzeigen API client — cookie auth (www) + Bearer JWT (gateway)
 "use strict";
 
 const https  = require("https");
@@ -16,22 +7,16 @@ const crypto = require("crypto");
 const KA_AUTH0_CLIENT_ID = "aOq74Cm5fUBoM1JifHTHhlZ2JHXlVUCq";
 
 class KleinanzeigenClient {
-  /**
-   * @param {string}      cookieString  KA_COOKIES — written by tools/auth.js
-   * @param {string|null} bearerToken   optional override; extracted from cookies if omitted
-   * @param {string|null} refreshToken  optional override; extracted from cookies if omitted
-   */
   constructor(cookieString, bearerToken = null, refreshToken = null) {
     if (!cookieString) throw new Error("KA_COOKIES fehlt. Bitte 'node scripts/login.js' ausführen.");
     this.cookies = cookieString;
 
-    // Tokens live in cookies — extract them so gateway requests work without extra env vars
     const at = cookieString.match(/(?:^|;\s*)access_token=([^;]+)/);
     const rt = cookieString.match(/(?:^|;\s*)refresh_token=([^;]+)/);
     this.bearerToken  = bearerToken  || (at ? at[1].trim() : null);
     this.refreshToken = refreshToken || (rt ? rt[1].trim() : null);
 
-    // Extract user ID — prefer cookie, fall back to JWT payload
+    // user_id: prefer cookie, fall back to JWT payload
     const uid = cookieString.match(/(?:^|;\s*)user_id=(\d+)/);
     if (uid) {
       this.userId = uid[1];
@@ -44,8 +29,6 @@ class KleinanzeigenClient {
       this.userId = null;
     }
   }
-
-  // ── Internal: shared cookie-auth request ──────────────────────────────────
 
   _cookieRequest(hostname, path, method, body = null) {
     return new Promise((resolve, reject) => {
@@ -93,8 +76,6 @@ class KleinanzeigenClient {
     return this._cookieRequest("www.kleinanzeigen.de", path, method, body);
   }
 
-  // ── Internal: Bearer-auth request (gateway) ───────────────────────────────
-
   _gatewayRequest(method, path, body = null) {
     if (!this.bearerToken) throw new Error("Bearer token fehlt. Bitte 'node scripts/login.js' ausführen.");
     return new Promise((resolve, reject) => {
@@ -135,12 +116,6 @@ class KleinanzeigenClient {
     });
   }
 
-  // ── Token refresh ─────────────────────────────────────────────────────────
-
-  /**
-   * Exchange the stored refresh token for a new Bearer token.
-   * Updates this.bearerToken in place. Caller should persist to .env.
-   */
   refreshBearerToken() {
     if (!this.refreshToken) throw new Error("Refresh token fehlt. Bitte 'node scripts/login.js' ausführen.");
     const body = `grant_type=refresh_token&refresh_token=${encodeURIComponent(this.refreshToken)}&client_id=${KA_AUTH0_CLIENT_ID}`;
@@ -176,8 +151,6 @@ class KleinanzeigenClient {
       req.end();
     });
   }
-
-  // ── Inbox ─────────────────────────────────────────────────────────────────
 
   async getConversations({ limit = 20, offset = 0 } = {}) {
     const { body } = await this._gatewayRequest("GET", `/messagebox/api/users/${this.userId}/conversations?limit=${limit}&offset=${offset}`);
@@ -217,25 +190,8 @@ class KleinanzeigenClient {
     return body;
   }
 
-  // ── Search ────────────────────────────────────────────────────────────────
-
-  /**
-   * Search public listings by keyword and/or category.
-   * Uses the www JSON endpoint (no auth required, but cookies help with personalisation).
-   *
-   * URL pattern: /s-{categorySlug}/seite:{page}/{keyword}/k0c{categoryId}
-   * Falls back to /s-anzeigen/{keyword}/k0 when no category given.
-   *
-   * @param {object} opts
-   * @param {string}  opts.keyword
-   * @param {number}  [opts.categoryId]   e.g. 217 = Fahrräder
-   * @param {string}  [opts.categorySlug] e.g. "fahrraeder" (used in URL, defaults to "anzeigen")
-   * @param {number}  [opts.page=1]
-   * @param {number}  [opts.limit=20]     max items to return from the page
-   */
   async searchAds({ keyword, categoryId, page = 1, limit = 20 } = {}) {
-    // URL format: /s-{keyword}/seite:N/k0c{catId}  (keyword present)
-    //             /s-k0c{catId}                     (category only)
+    // /s-{keyword}/seite:N/k0c{catId}  or  /s-k0c{catId}
     const pageSegment = page > 1 ? `/seite:${page}` : "";
     const catSuffix   = categoryId ? `c${categoryId}` : "";
     const path = keyword
@@ -262,9 +218,6 @@ class KleinanzeigenClient {
       });
   }
 
-  // ── My Ads ────────────────────────────────────────────────────────────────
-
-  /** Active published ads (cookie auth, www JSON endpoint) */
   async getMyAds({ limit = 20 } = {}) {
     const { body } = await this._wwwRequest("GET", "/m-meine-anzeigen-verwalten.json");
     return (body.ads || []).slice(0, limit).map(a => ({
@@ -277,41 +230,26 @@ class KleinanzeigenClient {
     }));
   }
 
-  /**
-   * All ad bundles incl. paused/inactive (Bearer auth, gateway).
-   * Response shape TBD — no live ad available yet to map fields.
-   */
   async getAdBundles() {
     const { body } = await this._gatewayRequest("GET", "/private-bundles/me/ads/bundles");
     return body;
   }
-
-  // ── Internal: CSRF token from cookies ────────────────────────────────────
 
   _extractCsrfToken() {
     const match = this.cookies.match(/(?:^|;\s*)CSRF-TOKEN=([^;]+)/);
     return match ? decodeURIComponent(match[1].trim()) : null;
   }
 
-  /**
-   * Refresh cookies via the persistent stealth browser profile.
-   * Passes Akamai bot detection — no login or 2FA required.
-   * Updates this.cookies in place from the freshly written .env.
-   * @returns {Promise<string>} new CSRF token
-   */
   async refreshCsrfToken() {
     const { refreshCookies } = require("./auth");
     const freshCookies = await refreshCookies();
     this.cookies = freshCookies;
-    // Re-extract bearer token from fresh cookies
     const at = freshCookies.match(/(?:^|;\s*)access_token=([^;]+)/);
     if (at) this.bearerToken = at[1].trim();
     const csrf = this._extractCsrfToken();
     if (!csrf) throw new Error("CSRF-TOKEN nicht nach Refresh gefunden.");
     return csrf;
   }
-
-  // ── Internal: multipart/form-data builder (text fields only) ─────────────
 
   _buildMultipartTextBody(fields) {
     const boundary = "----KABoundary" + Math.random().toString(36).slice(2);
@@ -326,13 +264,6 @@ class KleinanzeigenClient {
     return { boundary, body };
   }
 
-  // ── Ad creation ───────────────────────────────────────────────────────────
-
-  /**
-   * Upload a single image before ad creation — returns imageId to pass to createAd.
-   * Requires CSRF-TOKEN cookie (set by the browser session on login).
-   * @returns {{ imageId: string }}
-   */
   uploadImage(fileBuffer, filename = "photo.jpg", mimeType = "image/jpeg") {
     const csrfToken = this._extractCsrfToken();
     if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies. Bitte 'node scripts/login.js' ausführen.");
@@ -373,11 +304,9 @@ class KleinanzeigenClient {
             return reject(new Error(`CSRF abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' ausführen.`));
           }
           try {
-            const parsed = raw ? JSON.parse(raw) : {};
-            // Response may be wrapped in yamsAdImage
-            const img    = parsed.yamsAdImage || parsed;
-            // Extract UUID from any URL field (e.g. largeUrl, thumbnailUrl)
-            const anyUrl = img.largeUrl || img.largeTeaserUrl || img.thumbnailUrl || img.XLargeUrl || "";
+            const parsed  = raw ? JSON.parse(raw) : {};
+            const img     = parsed.yamsAdImage || parsed;
+            const anyUrl  = img.largeUrl || img.largeTeaserUrl || img.thumbnailUrl || img.XLargeUrl || "";
             const uuidMatch = anyUrl.match(/\/([0-9a-f-]{36})\?/);
             const imageId  = String(parsed.imageId || parsed.id || parsed.pictureId || parsed.uuid || (uuidMatch ? uuidMatch[1] : "") || "");
             const imageUrl = String(img.largeUrl || img.largeTeaserUrl || parsed.url || parsed.imageUrl || parsed.link || "");
@@ -394,26 +323,7 @@ class KleinanzeigenClient {
     });
   }
 
-  /**
-   * Create a new Kleinanzeigen listing.
-   * Only call after explicit "Go" from Jannik.
-   *
-   * Endpoint: POST https://www.kleinanzeigen.de/_actions/postListingWeb.submitListing/
-   * Content-Type: multipart/form-data (text fields only — images pre-uploaded via uploadImage)
-   *
-   * @param {object}            adData
-   * @param {string}            adData.title
-   * @param {string}            adData.description
-   * @param {number}            adData.categoryId        e.g. 217 = Fahrräder
-   * @param {number}            adData.price             in EUR
-   * @param {string}            [adData.priceType]       "FIXED" | "NEGOTIABLE" | "GIVE_AWAY"
-   * @param {string}            [adData.zipCode]         e.g. "80636"
-   * @param {string}            [adData.locationId]      KA internal location ID, e.g. "16360" for München-Neuhausen
-   * @param {string}            [adData.contactName]     display name on the listing
-   * @param {string[]}          [adData.imageUrls]       URLs returned by uploadImage, in order
-   * @param {Record<string,string>} [adData.attributes]  category-specific attributeMap entries
-   * @returns {{ id: string, link: string }}
-   */
+  /** Only after explicit "Go" from Jannik. price in EUR. imageUrls from uploadImage. */
   createAd({ title, description, categoryId, price, priceType = "NEGOTIABLE", zipCode, locationId, contactName, imageUrls = [], attributes = {} }) {
     const csrfToken = this._extractCsrfToken();
     if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies. Bitte 'node scripts/login.js' ausführen.");
@@ -471,13 +381,11 @@ class KleinanzeigenClient {
             if (res.statusCode !== 200 && res.statusCode !== 201) {
               return reject(new Error(`createAd fehlgeschlagen (${res.statusCode}): ${raw.slice(0, 300)}`));
             }
-            // Success response is an indexed array:
-            // [{"success":1,"redirectUrl":2}, true, "/p-anzeige-aufgeben-bestaetigung.html?adId=123&..."]
-            // Error response: [{"errors":1}, [...], ...]
+            // Response is an indexed array — [{"success":1,"redirectUrl":2}, true, "/...?adId=123"]
+            // or on error: [{"errors":1}, [...], ...]
             if (Array.isArray(parsed)) {
               const meta = parsed[0];
               if (meta && meta.errors !== undefined) {
-                // Decode error messages from indexed format
                 const msgs = [];
                 const indices = parsed[meta.errors] || [];
                 for (const idx of indices) {
@@ -496,7 +404,7 @@ class KleinanzeigenClient {
                 return;
               }
             }
-            // Fallback: plain JSON object
+            // fallback: plain JSON
             const adUrl = parsed.url || parsed.adLink || parsed.link || "";
             const adId  = String(parsed.id || parsed.adId || (adUrl.match(/\/(\d+)(?:[/?]|$)/) || [])[1] || "");
             resolve({ id: adId, link: adUrl || `https://www.kleinanzeigen.de/s-anzeige/${adId}` });
@@ -511,12 +419,6 @@ class KleinanzeigenClient {
     });
   }
 
-  /**
-   * Delete an existing ad by its KA ad ID.
-   * Endpoint: POST https://www.kleinanzeigen.de/m-anzeigen-loeschen.json?ids={adId}
-   * No request body — ad ID is passed as query param.
-   * @param {string} adId  KA ad ID (numeric string)
-   */
   async deleteAd(adId) {
     const csrfToken = this._extractCsrfToken();
     if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies.");
@@ -553,10 +455,6 @@ class KleinanzeigenClient {
     return { deleted: adId, status };
   }
 
-  /**
-   * Draft ads.
-   * Endpoint: GET https://www.kleinanzeigen.de/users/{userId}/ad-drafts.json
-   */
   async getDrafts() {
     const { body } = await this._wwwRequest("GET", `/users/${this.userId}/ad-drafts.json`);
     return (body.listOfAdDrafts || []).map(d => ({

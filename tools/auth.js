@@ -1,12 +1,6 @@
 "use strict";
 
-/**
- * Kleinanzeigen authentication
- *
- * - login()          one-time headed setup — log in manually, solve 2FA/captcha
- *                    session + fingerprint saved to workspace/browser-profile
- * - refreshCookies() headless refresh — no login needed, call whenever CSRF is stale
- */
+// login() — one-time headed setup. refreshCookies() — headless, no 2FA needed.
 
 const { chromium } = require("playwright-extra");
 const stealth      = require("puppeteer-extra-plugin-stealth")();
@@ -47,12 +41,11 @@ function launchProfile(headless) {
 }
 
 async function login() {
-  console.log("[auth] Opening browser — log in and complete any 2FA. Cookies are saved automatically.");
+  console.log("[auth] Opening browser. Log in and complete 2FA.");
   const context = await launchProfile(false);
   const page    = await context.newPage();
   await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
 
-  // Wait up to 5 min for the user to finish login + 2FA
   await page.waitForURL(
     url => !url.includes("login.kleinanzeigen.de") && !url.includes("m-einloggen"),
     { timeout: 300_000 }
