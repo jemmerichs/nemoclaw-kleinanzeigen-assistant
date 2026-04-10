@@ -341,9 +341,10 @@ class KleinanzeigenClient {
           try {
             const parsed = raw ? JSON.parse(raw) : {};
             const imageId = String(parsed.imageId || parsed.id || parsed.pictureId || parsed.uuid || "");
+            if (!imageId) return reject(new Error(`uploadImage: kein imageId in Antwort (${res.statusCode}): ${raw.slice(0, 200)}`));
             resolve({ imageId, status: res.statusCode });
           } catch {
-            resolve({ imageId: "", status: res.statusCode });
+            reject(new Error(`uploadImage: ungültige Antwort (${res.statusCode}): ${raw.slice(0, 200)}`));
           }
         });
       });

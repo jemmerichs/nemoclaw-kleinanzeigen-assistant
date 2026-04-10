@@ -315,9 +315,11 @@ async function runAgent(chatId, userMessage) {
         try {
           result = await tool.fn(response.action.args || {});
         } catch (e) {
-          if (e.message.includes("Session abgelaufen") || e.message.includes("Bearer token abgelaufen")) {
-            // Try refresh token first — avoids full re-login for normal token expiry
+          if (e.message.includes("Bearer token abgelaufen")) {
             await refreshBearer();
+            result = await tool.fn(response.action.args || {}); // retry once
+          } else if (e.message.includes("Session abgelaufen")) {
+            await relogin();
             result = await tool.fn(response.action.args || {}); // retry once
           } else {
             throw e;

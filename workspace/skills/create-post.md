@@ -55,8 +55,8 @@ Merged automatisch mit bestehenden Pfaden — kein JSON.stringify, kein manuelle
 **Nach "Go" — KA erstellen + DB aktualisieren:**
 ```
 // Bildpfade aus DB holen:
-saveImages({ assetId, paths: [] })  // oder db_query SELECT image_paths
-→ paths[] direkt verwenden
+db_query({ sql: "SELECT image_paths FROM assets WHERE id=?", params: [assetId] })
+→ JSON.parse(rows[0].image_paths) als paths[]
 
 // Bilder zuerst hochladen (vor der Anzeige):
 ka_upload_image({ filePath })  // einmal pro Pfad → { imageId }
