@@ -42,16 +42,30 @@ async function ensureLogin() {
 }
 
 async function relogin() {
-  throw new Error("Session abgelaufen. Bitte 'node scripts/login.js' ausführen und den Agenten neu starten.");
+  // Re-read .env so fresh cookies from 'node scripts/login.js' are picked up without restart
+  require("dotenv").config({ path: require("path").resolve(__dirname, "../.env"), override: true });
+  const cookies = process.env.KA_COOKIES || "";
+  if (!cookies) throw new Error("KA_COOKIES fehlt — bitte 'node scripts/login.js' ausführen.");
+  ka = makeClient(cookies);
+  console.log("[agent] Cookies neu geladen aus .env");
 }
 
 async function refreshBearer() {
   console.log("[agent] Bearer token abgelaufen — erneuere via Refresh-Token...");
   const data = await ka.refreshBearerToken();
-  // Persist so next restart uses the refreshed token (cookie still has old one)
-  saveToEnv({ KA_BEARER_TOKEN: data.access_token });
-  process.env.KA_BEARER_TOKEN = data.access_token;
-  console.log("[agent] Bearer token erneuert.");
+
+  // Patch access_token (and refresh_token if rotated) in KA_COOKIES so that
+  // www.kleinanzeigen.de cookie-auth stays valid — same token, two delivery paths.
+  let cookies = process.env.KA_COOKIES || "";
+  cookies = cookies.replace(/(^|; )access_token=[^;]+/, `$1access_token=${data.access_token}`);
+  if (data.refresh_token) {
+    cookies = cookies.replace(/(^|; )refresh_token=[^;]+/, `$1refresh_token=${data.refresh_token}`);
+  }
+  process.env.KA_COOKIES = cookies;
+  // KA_BEARER_TOKEN override no longer needed — token is now current in cookies
+  saveToEnv({ KA_COOKIES: cookies, KA_BEARER_TOKEN: null });
+  ka = makeClient(cookies);
+  console.log("[agent] Bearer token erneuert, Cookies aktualisiert.");
 }
 
 // ── Hard skills — tool registry ───────────────────────────────────────────────
@@ -94,18 +108,19 @@ const TOOLS = {
     args: "{ keyword: string, categoryId?: number, categorySlug?: string, page?: number, limit?: number }",
     fn:   (a) => ka.searchAds(a),
   },
-  ka_create_ad: {
-    description: "Neue Anzeige erstellen — NUR nach explizitem Go von Jannik",
-    args: "{ title: string, description: string, categoryId: number, price: number, priceType?: string, zipCode?: string }",
-    fn:   (a) => ka.createAd(a),
-  },
-  ka_upload_photo: {
-    description: "Foto (lokaler Dateipfad) zu einer bestehenden KA-Anzeige hochladen",
-    args: "{ adId: string, filePath: string, filename?: string }",
+  ka_upload_image: {
+    description: "Bild vor der Anzeigenerstellung hochladen — gibt imageId zurück (für ka_create_ad imageIds)",
+    args: "{ filePath: string, filename?: string, mimeType?: string }",
     fn:   async (a) => {
       const buffer = fs.readFileSync(a.filePath);
-      return ka.uploadPhoto(a.adId, buffer, a.filename || path.basename(a.filePath));
+      const mime   = a.mimeType || { png: "image/png", webp: "image/webp", gif: "image/gif", bmp: "image/bmp" }[a.filePath.match(/\.(\w+)$/i)?.[1]?.toLowerCase()] || "image/jpeg";
+      return ka.uploadImage(buffer, a.filename || path.basename(a.filePath), mime);
     },
+  },
+  ka_create_ad: {
+    description: "Neue Anzeige erstellen — NUR nach explizitem Go von Jannik",
+    args: "{ title: string, description: string, categoryId: number, price: number, priceType?: string, zipCode?: string, imageIds?: string[] }",
+    fn:   (a) => ka.createAd(a),
   },
 
   // ── Foto-Aufbereitung ─────────────────────────────────────────────────────
@@ -120,6 +135,19 @@ const TOOLS = {
     description: "SQL auf der lokalen Asset-Datenbank ausführen. Tabellen: assets, ka_listings, ka_snapshots (Preis+Views-Verlauf). SELECT/INSERT/UPDATE erlaubt.",
     args: "{ sql: string, params?: any[] }",
     fn: (a) => dbQuery({ sql: a.sql, params: a.params || [] }),
+  },
+  saveImages: {
+    description: "Bildpfade zu einem Asset speichern (append). Liest bestehende image_paths, merged, schreibt zurück. Kein JSON.stringify nötig.",
+    args: "{ assetId: number, paths: string[] }",
+    fn: (a) => {
+      const rows    = dbQuery({ sql: "SELECT image_paths FROM assets WHERE id=?", params: [a.assetId] });
+      if (!rows.length) throw new Error(`Asset ${a.assetId} nicht gefunden`);
+      const existing = rows[0].image_paths ? JSON.parse(rows[0].image_paths) : [];
+      const merged   = [...new Set([...existing, ...a.paths])];
+      dbQuery({ sql: "UPDATE assets SET image_paths=?, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?",
+                params: [JSON.stringify(merged), a.assetId] });
+      return { assetId: a.assetId, imageCount: merged.length, paths: merged };
+    },
   },
 
   // ── Skill-Verwaltung ──────────────────────────────────────────────────────
@@ -182,10 +210,7 @@ function toolManifest() {
 
 // ── Claude ────────────────────────────────────────────────────────────────────
 function findClaude() {
-  for (const c of ["claude"]) {
-    try { execSync(`"${c}" --version`, { stdio: "pipe" }); return c; } catch (_) {}
-  }
-  return null;
+  try { execSync('"claude" --version', { stdio: "pipe" }); return "claude"; } catch (_) { return null; }
 }
 
 const CLAUDE_BIN = findClaude();
@@ -290,11 +315,11 @@ async function runAgent(chatId, userMessage) {
         try {
           result = await tool.fn(response.action.args || {});
         } catch (e) {
-          if (e.message.includes("Session abgelaufen")) {
-            await relogin();
-            result = await tool.fn(response.action.args || {}); // retry once
-          } else if (e.message.includes("Bearer token abgelaufen")) {
+          if (e.message.includes("Bearer token abgelaufen")) {
             await refreshBearer();
+            result = await tool.fn(response.action.args || {}); // retry once
+          } else if (e.message.includes("Session abgelaufen")) {
+            await relogin();
             result = await tool.fn(response.action.args || {}); // retry once
           } else {
             throw e;

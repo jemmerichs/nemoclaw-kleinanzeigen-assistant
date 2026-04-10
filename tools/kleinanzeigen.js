@@ -1,14 +1,11 @@
 /**
  * Kleinanzeigen API client
  *
- * Three hostnames, two auth mechanisms:
+ *   www.kleinanzeigen.de     cookie auth   getMyAds, getDrafts, searchAds, uploadImage, createAd
+ *   gateway.kleinanzeigen.de Bearer JWT    getConversations, getMessages, sendMessage, getAdBundles
  *
- *   api.kleinanzeigen.de     cookie auth   getConversations, getMessages, sendMessage, getMyAds
- *   www.kleinanzeigen.de     cookie auth   getDrafts  (access_token cookie doubles as bearer)
- *   gateway.kleinanzeigen.de Bearer JWT    getAdBundles
- *
- * Tokens are stored as cookies by the browser, so Playwright captures them automatically.
- * bearerToken / refreshToken are extracted from the cookie string if not passed explicitly.
+ * api.kleinanzeigen.de uses HTTP Digest auth — not used.
+ * Tokens (access_token, refresh_token) are extracted from the cookie string automatically.
  */
 
 "use strict";
@@ -182,34 +179,36 @@ class KleinanzeigenClient {
   // ── Inbox ─────────────────────────────────────────────────────────────────
 
   async getConversations({ limit = 20, offset = 0 } = {}) {
-    const { body } = await this._request("GET", `/users/${this.userId}/conversations?limit=${limit}&offset=${offset}`);
-    return (body.conversations || body._embedded?.conversations || []).map(c => ({
+    const { body } = await this._gatewayRequest("GET", `/messagebox/api/users/${this.userId}/conversations?limit=${limit}&offset=${offset}`);
+    const isMe = (c) => c.userIdBuyer === Number(this.userId) ? c.role === "buyer" : c.role === "seller";
+    return (body.conversations || []).map(c => ({
       id:          c.id,
-      adId:        c.adId || c.ad?.id,
-      adTitle:     c.adTitle || c.ad?.title || "",
-      otherParty:  c.interlocutorSummary?.userProfile?.displayName || c.buyerName || "",
-      lastMessage: c.latestMessage?.text || "",
-      unread:      c.unreadMessageCount > 0,
-      updatedAt:   c.latestMessage?.sentAt || c.modificationDate,
+      adId:        c.adId,
+      adTitle:     c.adTitle || "",
+      adStatus:    c.adStatus,
+      otherParty:  isMe(c) ? c.sellerName : c.buyerName,
+      lastMessage: c.textShortTrimmed || "",
+      unread:      c.unread || false,
+      updatedAt:   c.receivedDate,
     }));
   }
 
   async getMessages(conversationId, { limit = 20 } = {}) {
-    const { body } = await this._request("GET", `/users/${this.userId}/conversations/${conversationId}/messages?limit=${limit}`);
-    return (body.messages || body._embedded?.messages || []).map(m => ({
+    const { body } = await this._gatewayRequest("GET", `/messagebox/api/users/${this.userId}/conversations/${conversationId}/messages?limit=${limit}`);
+    return (body.messages || []).map(m => ({
       id:     m.id,
       text:   m.text || "",
       sentAt: m.sentAt,
-      isMe:   m.senderUserId === this.userId,
+      isMe:   String(m.senderUserId) === String(this.userId),
     }));
   }
 
   /** Only after explicit "Go" from Jannik */
   async sendMessage(conversationId, text) {
-    const { status, body } = await this._request(
+    const { status, body } = await this._gatewayRequest(
       "POST",
-      `/users/${this.userId}/conversations/${conversationId}/messages`,
-      { text }
+      `/messagebox/api/users/${this.userId}/conversations/${conversationId}/messages`,
+      { message: text }
     );
     if (status !== 200 && status !== 201) {
       throw new Error(`sendMessage fehlgeschlagen (${status}): ${JSON.stringify(body)}`);
@@ -264,10 +263,10 @@ class KleinanzeigenClient {
 
   // ── My Ads ────────────────────────────────────────────────────────────────
 
-  /** Active published ads (cookie auth, api subdomain) */
-  async getMyAds({ limit = 20, offset = 0 } = {}) {
-    const { body } = await this._request("GET", `/users/${this.userId}/ads?limit=${limit}&offset=${offset}`);
-    return (body.ads || body._embedded?.ads || []).map(a => ({
+  /** Active published ads (cookie auth, www JSON endpoint) */
+  async getMyAds({ limit = 20 } = {}) {
+    const { body } = await this._wwwRequest("GET", "/m-meine-anzeigen-verwalten.json");
+    return (body.ads || []).slice(0, limit).map(a => ({
       id:       a.id,
       title:    a.title,
       price:    a.priceAmount,
@@ -286,27 +285,50 @@ class KleinanzeigenClient {
     return body;
   }
 
-  // ── Internal: multipart upload (cookie auth) ─────────────────────────────
+  // ── Internal: CSRF token from cookies ────────────────────────────────────
 
-  _multipartRequest(hostname, path, fileBuffer, filename, mimeType = "image/jpeg") {
+  _extractCsrfToken() {
+    const match = this.cookies.match(/(?:^|;\s*)CSRF-TOKEN=([^;]+)/);
+    return match ? decodeURIComponent(match[1].trim()) : null;
+  }
+
+  // ── Ad creation ───────────────────────────────────────────────────────────
+
+  /**
+   * Upload a single image before ad creation — returns imageId to pass to createAd.
+   * Requires CSRF-TOKEN cookie (set by the browser session on login).
+   * @returns {{ imageId: string }}
+   */
+  uploadImage(fileBuffer, filename = "photo.jpg", mimeType = "image/jpeg") {
+    const csrfToken = this._extractCsrfToken();
+    if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies. Bitte 'node scripts/login.js' ausführen.");
+
+    const boundary = "----KABoundary" + Math.random().toString(36).slice(2);
+
+    const typePart = Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="type"\r\n\r\n${mimeType}`
+    );
+    const filePre  = Buffer.from(
+      `\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`
+    );
+    const filePost = Buffer.from(`\r\n--${boundary}--\r\n`);
+    const body = Buffer.concat([typePart, filePre, fileBuffer, filePost]);
+
     return new Promise((resolve, reject) => {
-      const boundary = "----KABoundary" + Math.random().toString(36).slice(2);
-      const pre  = Buffer.from(
-        `--${boundary}\r\nContent-Disposition: form-data; name="picture"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`
-      );
-      const post = Buffer.from(`\r\n--${boundary}--\r\n`);
-      const body = Buffer.concat([pre, fileBuffer, post]);
-
       const opts = {
-        hostname,
-        path,
-        method: "POST",
+        hostname: "www.kleinanzeigen.de",
+        path:     "/p-bild-hochladen.html",
+        method:   "POST",
         headers: {
+          "Accept":         "*/*",
           "Content-Type":   `multipart/form-data; boundary=${boundary}`,
           "Content-Length": body.length,
           "Cookie":         this.cookies,
+          "x-csrf-token":   csrfToken,
+          "x-xsrf-token":   csrfToken,
           "User-Agent":     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-          "Referer":        "https://www.kleinanzeigen.de/",
+          "Origin":         "https://www.kleinanzeigen.de",
+          "Referer":        "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
         },
       };
       const req = https.request(opts, (res) => {
@@ -314,10 +336,16 @@ class KleinanzeigenClient {
         res.on("data", (c) => (raw += c));
         res.on("end", () => {
           if (res.statusCode === 401 || res.statusCode === 403) {
-            return reject(new Error(`Session abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' erneut ausführen.`));
+            return reject(new Error(`Session/CSRF abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' ausführen.`));
           }
-          try { resolve({ status: res.statusCode, body: raw ? JSON.parse(raw) : {} }); }
-          catch { resolve({ status: res.statusCode, body: raw }); }
+          try {
+            const parsed = raw ? JSON.parse(raw) : {};
+            const imageId = String(parsed.imageId || parsed.id || parsed.pictureId || parsed.uuid || "");
+            if (!imageId) return reject(new Error(`uploadImage: kein imageId in Antwort (${res.statusCode}): ${raw.slice(0, 200)}`));
+            resolve({ imageId, status: res.statusCode });
+          } catch {
+            reject(new Error(`uploadImage: ungültige Antwort (${res.statusCode}): ${raw.slice(0, 200)}`));
+          }
         });
       });
       req.on("error", reject);
@@ -326,33 +354,32 @@ class KleinanzeigenClient {
     });
   }
 
-  // ── Ad creation ───────────────────────────────────────────────────────────
-
   /**
    * Create a new Kleinanzeigen listing.
    * Only call after explicit "Go" from Jannik.
    *
    * @param {object} adData
-   * @param {string}  adData.title
-   * @param {string}  adData.description
-   * @param {number}  adData.categoryId     e.g. 217 = Fahrräder
-   * @param {number}  adData.price          in EUR (integer or float)
-   * @param {string}  [adData.priceType]    "FIXED" | "NEGOTIABLE" | "GIVE_AWAY" — defaults to "NEGOTIABLE"
-   * @param {string}  [adData.zipCode]      seller's zip (defaults to account zip)
+   * @param {string}   adData.title
+   * @param {string}   adData.description
+   * @param {number}   adData.categoryId     e.g. 217 = Fahrräder
+   * @param {number}   adData.price          in EUR (integer or float)
+   * @param {string}   [adData.priceType]    "FIXED" | "NEGOTIABLE" | "GIVE_AWAY" — defaults to "NEGOTIABLE"
+   * @param {string}   [adData.zipCode]      seller's zip (defaults to account zip)
+   * @param {string[]} [adData.imageIds]     IDs returned by uploadImage, in order
    * @returns {{ id: string, link: string }}
    *
-   * TODO: verify exact request schema against a live POST once cookies are set up.
-   * The body shape follows the eBay Classifieds Group REST API convention used by KA.
+   * ⚠️ Endpoint unverified — needs a live test with an active account.
    */
-  async createAd({ title, description, categoryId, price, priceType = "NEGOTIABLE", zipCode }) {
+  async createAd({ title, description, categoryId, price, priceType = "NEGOTIABLE", zipCode, imageIds }) {
     const body = {
       ad: {
         title,
         description,
         categoryId,
-        priceAmount:  price,
+        priceAmount: price,
         priceType,
-        ...(zipCode ? { zipCode } : {}),
+        ...(zipCode   ? { zipCode }   : {}),
+        ...(imageIds?.length ? { imageIds } : {}),
       },
     };
     const { status, body: resp } = await this._request("POST", "/ads.json", body);
@@ -364,31 +391,6 @@ class KleinanzeigenClient {
       id:   String(created.id || created.adId || ""),
       link: created.link || `https://www.kleinanzeigen.de/s-anzeige/${created.id}`,
     };
-  }
-
-  /**
-   * Attach a photo to an existing ad.
-   * Call once per image; KA supports up to 20 per listing.
-   *
-   * @param {string} adId        ID returned by createAd
-   * @param {Buffer} fileBuffer  raw image bytes
-   * @param {string} filename    e.g. "foto1.jpg"
-   * @returns {{ pictureId: string }}
-   *
-   * TODO: verify endpoint path; some KA API versions use /api/pictures.json first,
-   * then PATCH the ad to associate the pictureId.
-   */
-  async uploadPhoto(adId, fileBuffer, filename = "photo.jpg") {
-    const { status, body } = await this._multipartRequest(
-      "api.kleinanzeigen.de",
-      `/api/ads/${adId}/pictures.json`,
-      fileBuffer,
-      filename
-    );
-    if (status !== 200 && status !== 201) {
-      throw new Error(`uploadPhoto fehlgeschlagen (${status}): ${JSON.stringify(body)}`);
-    }
-    return { pictureId: String((body.picture || body).id || "") };
   }
 
   /**

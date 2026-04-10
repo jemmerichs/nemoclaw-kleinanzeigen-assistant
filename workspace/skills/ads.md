@@ -5,9 +5,9 @@ Jannik's aktive Anzeigen und Entwürfe anzeigen.
 **Wann:** Jannik fragt nach seinen Anzeigen oder Entwürfen.
 
 **Ablauf:**
-- Aktive Anzeigen: `getMyAds` → Titel, Preis, Aufrufe, Status
-- Alle inkl. pausierte: `getAdBundles`
-- Entwürfe: `getDrafts` → Titel, Kategorie, Preis-Typ, Anzahl Fotos
+- Aktive Anzeigen: `ka_get_my_ads` → Titel, Preis, Aufrufe, Status
+- Alle inkl. pausierte: `ka_get_ad_bundles`
+- Entwürfe: `ka_get_drafts` → Titel, Kategorie, Preis-Typ, Anzahl Fotos
 
 Entwürfe haben ggf. leere Beschreibung und keine Fotos — darauf hinweisen.
 Entwurf zur Bearbeitung ausgewählt → `create-post` Skill.

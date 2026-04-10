@@ -58,6 +58,8 @@ function getDb() {
     CREATE INDEX IF NOT EXISTS idx_ka_listings_ka_id  ON ka_listings(ka_id);
     CREATE INDEX IF NOT EXISTS idx_ka_snapshots_listing ON ka_snapshots(listing_id);
   `);
+  // Migrations — idempotent: SQLite throws if column already exists, safe to swallow
+  try { _db.exec("ALTER TABLE assets ADD COLUMN image_paths TEXT"); } catch (_) {}
   return _db;
 }
 

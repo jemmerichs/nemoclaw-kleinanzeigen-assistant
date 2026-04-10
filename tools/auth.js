@@ -67,6 +67,7 @@ async function login({ email, password, headless = true } = {}) {
     }
   });
 
+
   try {
     await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
 
@@ -117,7 +118,8 @@ async function login({ email, password, headless = true } = {}) {
     // Tokens are embedded in the cookie string (access_token, refresh_token cookies).
     // We also try to capture them explicitly from the OAuth response as a convenience,
     // but the cookie string alone is sufficient for all API calls.
-    saveToEnv({ KA_COOKIES: cookieString });
+    // Clear any stale KA_BEARER_TOKEN — fresh cookies already contain a valid access_token
+    saveToEnv({ KA_COOKIES: cookieString, KA_BEARER_TOKEN: null });
 
     const hasBearer  = capturedBearerToken  || /access_token=/.test(cookieString);
     const hasRefresh = capturedRefreshToken || /refresh_token=/.test(cookieString);
