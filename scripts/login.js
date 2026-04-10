@@ -1,27 +1,20 @@
 #!/usr/bin/env node
 /**
- * Manual login fallback — opens a visible browser.
- * Use this if auto-login fails (captcha, 2FA, etc.)
- *
- * Requires KA_EMAIL and KA_PASSWORD in .env
+ * One-time setup: opens a real Chrome window with a persistent profile.
+ * Log in manually, solve captcha / 2FA. Session is saved permanently.
+ * After this, cookies stay fresh via 'node scripts/refresh-cookies.js' — no re-login needed.
  */
 
 "use strict";
-
-require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") });
 
 const { login } = require("../tools/auth");
 
 (async () => {
   try {
-    await login({
-      email:    process.env.KA_EMAIL,
-      password: process.env.KA_PASSWORD,
-      headless: false,
-    });
-    console.log("Fertig. Starte den Agenten mit: bash scripts/start.sh");
+    await login();
+    console.log("Done. Start the agent with: bash scripts/start.sh");
   } catch (e) {
-    console.error("Login fehlgeschlagen:", e.message);
+    console.error("Login failed:", e.message);
     process.exit(1);
   }
 })();

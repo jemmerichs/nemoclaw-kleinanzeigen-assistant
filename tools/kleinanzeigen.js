@@ -10,7 +10,8 @@
 
 "use strict";
 
-const https = require("https");
+const https  = require("https");
+const crypto = require("crypto");
 
 const KA_AUTH0_CLIENT_ID = "aOq74Cm5fUBoM1JifHTHhlZ2JHXlVUCq";
 
@@ -292,6 +293,39 @@ class KleinanzeigenClient {
     return match ? decodeURIComponent(match[1].trim()) : null;
   }
 
+  /**
+   * Refresh cookies via the persistent stealth browser profile.
+   * Passes Akamai bot detection — no login or 2FA required.
+   * Updates this.cookies in place from the freshly written .env.
+   * @returns {Promise<string>} new CSRF token
+   */
+  async refreshCsrfToken() {
+    const { refreshCookies } = require("./auth");
+    const freshCookies = await refreshCookies();
+    this.cookies = freshCookies;
+    // Re-extract bearer token from fresh cookies
+    const at = freshCookies.match(/(?:^|;\s*)access_token=([^;]+)/);
+    if (at) this.bearerToken = at[1].trim();
+    const csrf = this._extractCsrfToken();
+    if (!csrf) throw new Error("CSRF-TOKEN nicht nach Refresh gefunden.");
+    return csrf;
+  }
+
+  // ── Internal: multipart/form-data builder (text fields only) ─────────────
+
+  _buildMultipartTextBody(fields) {
+    const boundary = "----KABoundary" + Math.random().toString(36).slice(2);
+    const parts = [];
+    for (const [name, value] of Object.entries(fields)) {
+      if (value === null || value === undefined) continue;
+      parts.push(Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`
+      ));
+    }
+    const body = Buffer.concat([...parts, Buffer.from(`--${boundary}--\r\n`)]);
+    return { boundary, body };
+  }
+
   // ── Ad creation ───────────────────────────────────────────────────────────
 
   /**
@@ -336,13 +370,14 @@ class KleinanzeigenClient {
         res.on("data", (c) => (raw += c));
         res.on("end", () => {
           if (res.statusCode === 401 || res.statusCode === 403) {
-            return reject(new Error(`Session/CSRF abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' ausführen.`));
+            return reject(new Error(`CSRF abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' ausführen.`));
           }
           try {
-            const parsed = raw ? JSON.parse(raw) : {};
-            const imageId = String(parsed.imageId || parsed.id || parsed.pictureId || parsed.uuid || "");
-            if (!imageId) return reject(new Error(`uploadImage: kein imageId in Antwort (${res.statusCode}): ${raw.slice(0, 200)}`));
-            resolve({ imageId, status: res.statusCode });
+            const parsed   = raw ? JSON.parse(raw) : {};
+            const imageId  = String(parsed.imageId  || parsed.id       || parsed.pictureId || parsed.uuid || "");
+            const imageUrl = String(parsed.url       || parsed.imageUrl || parsed.link      || "");
+            if (!imageId && !imageUrl) return reject(new Error(`uploadImage: kein imageId/url in Antwort (${res.statusCode}): ${raw.slice(0, 200)}`));
+            resolve({ imageId, imageUrl, status: res.statusCode });
           } catch {
             reject(new Error(`uploadImage: ungültige Antwort (${res.statusCode}): ${raw.slice(0, 200)}`));
           }
@@ -358,39 +393,91 @@ class KleinanzeigenClient {
    * Create a new Kleinanzeigen listing.
    * Only call after explicit "Go" from Jannik.
    *
-   * @param {object} adData
-   * @param {string}   adData.title
-   * @param {string}   adData.description
-   * @param {number}   adData.categoryId     e.g. 217 = Fahrräder
-   * @param {number}   adData.price          in EUR (integer or float)
-   * @param {string}   [adData.priceType]    "FIXED" | "NEGOTIABLE" | "GIVE_AWAY" — defaults to "NEGOTIABLE"
-   * @param {string}   [adData.zipCode]      seller's zip (defaults to account zip)
-   * @param {string[]} [adData.imageIds]     IDs returned by uploadImage, in order
-   * @returns {{ id: string, link: string }}
+   * Endpoint: POST https://www.kleinanzeigen.de/_actions/postListingWeb.submitListing/
+   * Content-Type: multipart/form-data (text fields only — images pre-uploaded via uploadImage)
    *
-   * ⚠️ Endpoint unverified — needs a live test with an active account.
+   * @param {object}            adData
+   * @param {string}            adData.title
+   * @param {string}            adData.description
+   * @param {number}            adData.categoryId        e.g. 217 = Fahrräder
+   * @param {number}            adData.price             in EUR
+   * @param {string}            [adData.priceType]       "FIXED" | "NEGOTIABLE" | "GIVE_AWAY"
+   * @param {string}            [adData.zipCode]         e.g. "80636"
+   * @param {string}            [adData.locationId]      KA internal location ID, e.g. "16360" for München-Neuhausen
+   * @param {string}            [adData.contactName]     display name on the listing
+   * @param {string[]}          [adData.imageUrls]       URLs returned by uploadImage, in order
+   * @param {Record<string,string>} [adData.attributes]  category-specific attributeMap entries
+   * @returns {{ id: string, link: string }}
    */
-  async createAd({ title, description, categoryId, price, priceType = "NEGOTIABLE", zipCode, imageIds }) {
-    const body = {
-      ad: {
-        title,
-        description,
-        categoryId,
-        priceAmount: price,
-        priceType,
-        ...(zipCode   ? { zipCode }   : {}),
-        ...(imageIds?.length ? { imageIds } : {}),
-      },
+  createAd({ title, description, categoryId, price, priceType = "NEGOTIABLE", zipCode, locationId, contactName, imageUrls = [], attributes = {} }) {
+    const csrfToken = this._extractCsrfToken();
+    if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies. Bitte 'node scripts/login.js' ausführen.");
+
+    const fields = {
+      adType:                 "OFFER",
+      title,
+      description,
+      categoryId:             String(categoryId),
+      priceAmount:            String(Math.round(price)),
+      priceType,
+      buyNowEligible:         "false",
+      zipCode:                zipCode    || "",
+      locationId:             locationId || "",
+      contactName:            contactName || "",
+      adId:                   "",
+      trackingId:             crypto.randomUUID(),
+      postAdWenkseSessionId:  crypto.randomUUID(),
+      _csrf:                  csrfToken,
     };
-    const { status, body: resp } = await this._request("POST", "/ads.json", body);
-    if (status !== 200 && status !== 201) {
-      throw new Error(`createAd fehlgeschlagen (${status}): ${JSON.stringify(resp)}`);
+
+    for (const [key, value] of Object.entries(attributes)) {
+      fields[`attributeMap[${key}]`] = value;
     }
-    const created = resp.ad || resp;
-    return {
-      id:   String(created.id || created.adId || ""),
-      link: created.link || `https://www.kleinanzeigen.de/s-anzeige/${created.id}`,
-    };
+    imageUrls.forEach((url, i) => { fields[`adImages[${i}].url`] = url; });
+
+    const { boundary, body } = this._buildMultipartTextBody(fields);
+
+    return new Promise((resolve, reject) => {
+      const opts = {
+        hostname: "www.kleinanzeigen.de",
+        path:     "/_actions/postListingWeb.submitListing/",
+        method:   "POST",
+        headers: {
+          "Accept":         "application/json",
+          "Content-Type":   `multipart/form-data; boundary=${boundary}`,
+          "Content-Length": body.length,
+          "Cookie":         this.cookies,
+          "x-csrf-token":   csrfToken,
+          "x-xsrf-token":   csrfToken,
+          "Origin":         "https://www.kleinanzeigen.de",
+          "Referer":        "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
+          "User-Agent":     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        },
+      };
+      const req = https.request(opts, (res) => {
+        let raw = "";
+        res.on("data", (c) => (raw += c));
+        res.on("end", () => {
+          if (res.statusCode === 401 || res.statusCode === 403) {
+            return reject(new Error(`CSRF abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' ausführen.`));
+          }
+          try {
+            const parsed = raw ? JSON.parse(raw) : {};
+            if (res.statusCode !== 200 && res.statusCode !== 201) {
+              return reject(new Error(`createAd fehlgeschlagen (${res.statusCode}): ${raw.slice(0, 300)}`));
+            }
+            const adUrl = parsed.url || parsed.adLink || parsed.link || "";
+            const adId  = String(parsed.id || parsed.adId || (adUrl.match(/\/(\d+)(?:[/?]|$)/) || [])[1] || "");
+            resolve({ id: adId, link: adUrl || `https://www.kleinanzeigen.de/s-anzeige/${adId}` });
+          } catch {
+            reject(new Error(`createAd Parse-Fehler (${res.statusCode}): ${raw.slice(0, 200)}`));
+          }
+        });
+      });
+      req.on("error", reject);
+      req.write(body);
+      req.end();
+    });
   }
 
   /**

@@ -6,3 +6,4 @@ node_modules/
 workspace/memory/
 workspace/ads.db
 workspace/ads.db-*
+workspace/browser-profile/

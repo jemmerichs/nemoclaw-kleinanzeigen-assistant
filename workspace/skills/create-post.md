@@ -58,10 +58,15 @@ Merged automatisch mit bestehenden Pfaden — kein JSON.stringify, kein manuelle
 db_query({ sql: "SELECT image_paths FROM assets WHERE id=?", params: [assetId] })
 → JSON.parse(rows[0].image_paths) als paths[]
 
-// Bilder zuerst hochladen (vor der Anzeige):
-ka_upload_image({ filePath })  // einmal pro Pfad → { imageId }
-// alle imageIds sammeln, dann:
-ka_create_ad({ title, description, categoryId, price, priceType: "NEGOTIABLE", imageIds: ["id1","id2",...] }) → { id: kaId, link }
+// Bilder hochladen — einmal pro Pfad, imageUrl merken:
+ka_upload_image({ filePath }) → { imageId, imageUrl }
+// alle imageUrls sammeln, dann Anzeige erstellen:
+ka_create_ad({
+  title, description, categoryId, price, priceType: "NEGOTIABLE",
+  zipCode: "80636", locationId: "16360",   // Jannik's Standort München-Neuhausen
+  imageUrls: ["https://img.kleinanzeigen.de/..."],
+  attributes: { "kategorie_slug.condition": "used" }  // kategoriespezifisch, weglassen wenn unbekannt
+}) → { id: kaId, link }
 
 db_query({ sql: "INSERT INTO ka_listings (asset_id, ka_id, ka_link, price_cents, status, posted_at) VALUES (?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
            params: [assetId, kaId, link, priceInCents, "active"] })

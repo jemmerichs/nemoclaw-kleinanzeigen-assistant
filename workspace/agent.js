@@ -50,6 +50,15 @@ async function relogin() {
   console.log("[agent] Cookies neu geladen aus .env");
 }
 
+async function refreshCsrf() {
+  console.log("[agent] CSRF-TOKEN abgelaufen — refreshe via GET...");
+  const newToken = await ka.refreshCsrfToken();
+  // Persist updated cookie string (contains fresh CSRF-TOKEN)
+  saveToEnv({ KA_COOKIES: ka.cookies });
+  process.env.KA_COOKIES = ka.cookies;
+  console.log(`[agent] CSRF-TOKEN erneuert (${newToken.slice(0, 8)}...)`);
+}
+
 async function refreshBearer() {
   console.log("[agent] Bearer token abgelaufen — erneuere via Refresh-Token...");
   const data = await ka.refreshBearerToken();
@@ -109,7 +118,7 @@ const TOOLS = {
     fn:   (a) => ka.searchAds(a),
   },
   ka_upload_image: {
-    description: "Bild vor der Anzeigenerstellung hochladen — gibt imageId zurück (für ka_create_ad imageIds)",
+    description: "Bild vor der Anzeigenerstellung hochladen — gibt imageId und imageUrl zurück (imageUrl für ka_create_ad)",
     args: "{ filePath: string, filename?: string, mimeType?: string }",
     fn:   async (a) => {
       const buffer = fs.readFileSync(a.filePath);
@@ -119,7 +128,7 @@ const TOOLS = {
   },
   ka_create_ad: {
     description: "Neue Anzeige erstellen — NUR nach explizitem Go von Jannik",
-    args: "{ title: string, description: string, categoryId: number, price: number, priceType?: string, zipCode?: string, imageIds?: string[] }",
+    args: "{ title: string, description: string, categoryId: number, price: number, priceType?: string, zipCode?: string, locationId?: string, contactName?: string, imageUrls?: string[], attributes?: Record<string,string> }",
     fn:   (a) => ka.createAd(a),
   },
 
@@ -315,7 +324,10 @@ async function runAgent(chatId, userMessage) {
         try {
           result = await tool.fn(response.action.args || {});
         } catch (e) {
-          if (e.message.includes("Bearer token abgelaufen")) {
+          if (e.message.includes("CSRF abgelaufen")) {
+            await refreshCsrf();
+            result = await tool.fn(response.action.args || {}); // retry once
+          } else if (e.message.includes("Bearer token abgelaufen")) {
             await refreshBearer();
             result = await tool.fn(response.action.args || {}); // retry once
           } else if (e.message.includes("Session abgelaufen")) {
