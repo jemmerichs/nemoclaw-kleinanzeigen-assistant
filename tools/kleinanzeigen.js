@@ -1,7 +1,7 @@
 /**
  * Kleinanzeigen API client
  *
- *   www.kleinanzeigen.de     cookie auth   getMyAds, getDrafts, searchAds, createAd, uploadPhoto
+ *   www.kleinanzeigen.de     cookie auth   getMyAds, getDrafts, searchAds, uploadImage, createAd
  *   gateway.kleinanzeigen.de Bearer JWT    getConversations, getMessages, sendMessage, getAdBundles
  *
  * api.kleinanzeigen.de uses HTTP Digest auth — not used.
@@ -285,27 +285,50 @@ class KleinanzeigenClient {
     return body;
   }
 
-  // ── Internal: multipart upload (cookie auth) ─────────────────────────────
+  // ── Internal: CSRF token from cookies ────────────────────────────────────
 
-  _multipartRequest(hostname, path, fileBuffer, filename, mimeType = "image/jpeg") {
+  _extractCsrfToken() {
+    const match = this.cookies.match(/(?:^|;\s*)CSRF-TOKEN=([^;]+)/);
+    return match ? decodeURIComponent(match[1].trim()) : null;
+  }
+
+  // ── Ad creation ───────────────────────────────────────────────────────────
+
+  /**
+   * Upload a single image before ad creation — returns imageId to pass to createAd.
+   * Requires CSRF-TOKEN cookie (set by the browser session on login).
+   * @returns {{ imageId: string }}
+   */
+  uploadImage(fileBuffer, filename = "photo.jpg", mimeType = "image/jpeg") {
+    const csrfToken = this._extractCsrfToken();
+    if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies. Bitte 'node scripts/login.js' ausführen.");
+
+    const boundary = "----KABoundary" + Math.random().toString(36).slice(2);
+
+    const typePart = Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="type"\r\n\r\n${mimeType}`
+    );
+    const filePre  = Buffer.from(
+      `\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`
+    );
+    const filePost = Buffer.from(`\r\n--${boundary}--\r\n`);
+    const body = Buffer.concat([typePart, filePre, fileBuffer, filePost]);
+
     return new Promise((resolve, reject) => {
-      const boundary = "----KABoundary" + Math.random().toString(36).slice(2);
-      const pre  = Buffer.from(
-        `--${boundary}\r\nContent-Disposition: form-data; name="picture"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`
-      );
-      const post = Buffer.from(`\r\n--${boundary}--\r\n`);
-      const body = Buffer.concat([pre, fileBuffer, post]);
-
       const opts = {
-        hostname,
-        path,
-        method: "POST",
+        hostname: "www.kleinanzeigen.de",
+        path:     "/p-bild-hochladen.html",
+        method:   "POST",
         headers: {
+          "Accept":         "*/*",
           "Content-Type":   `multipart/form-data; boundary=${boundary}`,
           "Content-Length": body.length,
           "Cookie":         this.cookies,
+          "x-csrf-token":   csrfToken,
+          "x-xsrf-token":   csrfToken,
           "User-Agent":     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-          "Referer":        "https://www.kleinanzeigen.de/",
+          "Origin":         "https://www.kleinanzeigen.de",
+          "Referer":        "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
         },
       };
       const req = https.request(opts, (res) => {
@@ -313,10 +336,15 @@ class KleinanzeigenClient {
         res.on("data", (c) => (raw += c));
         res.on("end", () => {
           if (res.statusCode === 401 || res.statusCode === 403) {
-            return reject(new Error(`Session abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' erneut ausführen.`));
+            return reject(new Error(`Session/CSRF abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' ausführen.`));
           }
-          try { resolve({ status: res.statusCode, body: raw ? JSON.parse(raw) : {} }); }
-          catch { resolve({ status: res.statusCode, body: raw }); }
+          try {
+            const parsed = raw ? JSON.parse(raw) : {};
+            const imageId = String(parsed.imageId || parsed.id || parsed.pictureId || parsed.uuid || "");
+            resolve({ imageId, status: res.statusCode });
+          } catch {
+            resolve({ imageId: "", status: res.statusCode });
+          }
         });
       });
       req.on("error", reject);
@@ -325,32 +353,32 @@ class KleinanzeigenClient {
     });
   }
 
-  // ── Ad creation ───────────────────────────────────────────────────────────
-
   /**
    * Create a new Kleinanzeigen listing.
    * Only call after explicit "Go" from Jannik.
    *
    * @param {object} adData
-   * @param {string}  adData.title
-   * @param {string}  adData.description
-   * @param {number}  adData.categoryId     e.g. 217 = Fahrräder
-   * @param {number}  adData.price          in EUR (integer or float)
-   * @param {string}  [adData.priceType]    "FIXED" | "NEGOTIABLE" | "GIVE_AWAY" — defaults to "NEGOTIABLE"
-   * @param {string}  [adData.zipCode]      seller's zip (defaults to account zip)
+   * @param {string}   adData.title
+   * @param {string}   adData.description
+   * @param {number}   adData.categoryId     e.g. 217 = Fahrräder
+   * @param {number}   adData.price          in EUR (integer or float)
+   * @param {string}   [adData.priceType]    "FIXED" | "NEGOTIABLE" | "GIVE_AWAY" — defaults to "NEGOTIABLE"
+   * @param {string}   [adData.zipCode]      seller's zip (defaults to account zip)
+   * @param {string[]} [adData.imageIds]     IDs returned by uploadImage, in order
    * @returns {{ id: string, link: string }}
    *
    * ⚠️ Endpoint unverified — needs a live test with an active account.
    */
-  async createAd({ title, description, categoryId, price, priceType = "NEGOTIABLE", zipCode }) {
+  async createAd({ title, description, categoryId, price, priceType = "NEGOTIABLE", zipCode, imageIds }) {
     const body = {
       ad: {
         title,
         description,
         categoryId,
-        priceAmount:  price,
+        priceAmount: price,
         priceType,
-        ...(zipCode ? { zipCode } : {}),
+        ...(zipCode   ? { zipCode }   : {}),
+        ...(imageIds?.length ? { imageIds } : {}),
       },
     };
     const { status, body: resp } = await this._request("POST", "/ads.json", body);
@@ -362,30 +390,6 @@ class KleinanzeigenClient {
       id:   String(created.id || created.adId || ""),
       link: created.link || `https://www.kleinanzeigen.de/s-anzeige/${created.id}`,
     };
-  }
-
-  /**
-   * Attach a photo to an existing ad.
-   * Call once per image; KA supports up to 20 per listing.
-   *
-   * @param {string} adId        ID returned by createAd
-   * @param {Buffer} fileBuffer  raw image bytes
-   * @param {string} filename    e.g. "foto1.jpg"
-   * @returns {{ pictureId: string }}
-   *
-   * ⚠️ Uses api.kleinanzeigen.de (Digest auth) — endpoint unverified, likely needs migration to www or gateway.
-   */
-  async uploadPhoto(adId, fileBuffer, filename = "photo.jpg") {
-    const { status, body } = await this._multipartRequest(
-      "api.kleinanzeigen.de",
-      `/api/ads/${adId}/pictures.json`,
-      fileBuffer,
-      filename
-    );
-    if (status !== 200 && status !== 201) {
-      throw new Error(`uploadPhoto fehlgeschlagen (${status}): ${JSON.stringify(body)}`);
-    }
-    return { pictureId: String((body.picture || body).id || "") };
   }
 
   /**

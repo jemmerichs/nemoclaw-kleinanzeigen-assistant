@@ -108,18 +108,19 @@ const TOOLS = {
     args: "{ keyword: string, categoryId?: number, categorySlug?: string, page?: number, limit?: number }",
     fn:   (a) => ka.searchAds(a),
   },
-  ka_create_ad: {
-    description: "Neue Anzeige erstellen — NUR nach explizitem Go von Jannik",
-    args: "{ title: string, description: string, categoryId: number, price: number, priceType?: string, zipCode?: string }",
-    fn:   (a) => ka.createAd(a),
-  },
-  ka_upload_photo: {
-    description: "Foto (lokaler Dateipfad) zu einer bestehenden KA-Anzeige hochladen",
-    args: "{ adId: string, filePath: string, filename?: string }",
+  ka_upload_image: {
+    description: "Bild vor der Anzeigenerstellung hochladen — gibt imageId zurück (für ka_create_ad imageIds)",
+    args: "{ filePath: string, filename?: string, mimeType?: string }",
     fn:   async (a) => {
       const buffer = fs.readFileSync(a.filePath);
-      return ka.uploadPhoto(a.adId, buffer, a.filename || path.basename(a.filePath));
+      const mime   = a.mimeType || { png: "image/png", webp: "image/webp", gif: "image/gif", bmp: "image/bmp" }[a.filePath.match(/\.(\w+)$/i)?.[1]?.toLowerCase()] || "image/jpeg";
+      return ka.uploadImage(buffer, a.filename || path.basename(a.filePath), mime);
     },
+  },
+  ka_create_ad: {
+    description: "Neue Anzeige erstellen — NUR nach explizitem Go von Jannik",
+    args: "{ title: string, description: string, categoryId: number, price: number, priceType?: string, zipCode?: string, imageIds?: string[] }",
+    fn:   (a) => ka.createAd(a),
   },
 
   // ── Foto-Aufbereitung ─────────────────────────────────────────────────────

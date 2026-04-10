@@ -58,8 +58,10 @@ Merged automatisch mit bestehenden Pfaden — kein JSON.stringify, kein manuelle
 saveImages({ assetId, paths: [] })  // oder db_query SELECT image_paths
 → paths[] direkt verwenden
 
-ka_create_ad({ title, description, categoryId, price, priceType: "NEGOTIABLE" }) → { id: kaId, link }
-ka_upload_photo({ adId: kaId, filePath })  // einmal pro Pfad aus image_paths
+// Bilder zuerst hochladen (vor der Anzeige):
+ka_upload_image({ filePath })  // einmal pro Pfad → { imageId }
+// alle imageIds sammeln, dann:
+ka_create_ad({ title, description, categoryId, price, priceType: "NEGOTIABLE", imageIds: ["id1","id2",...] }) → { id: kaId, link }
 
 db_query({ sql: "INSERT INTO ka_listings (asset_id, ka_id, ka_link, price_cents, status, posted_at) VALUES (?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
            params: [assetId, kaId, link, priceInCents, "active"] })
