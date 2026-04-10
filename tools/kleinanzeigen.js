@@ -455,6 +455,72 @@ class KleinanzeigenClient {
     return { deleted: adId, status };
   }
 
+  /** Save or update a KA draft (no Go needed — not published). Returns draftId. */
+  async saveDraft({ title = "", description = "", categoryId = null, priceAmount = null, priceType = "NEGOTIABLE", adType = "OFFER", zipCode = "", locationId = "", imageUrls = [], attributes = {} } = {}) {
+    const csrfToken = this._extractCsrfToken();
+    if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies. Bitte 'node scripts/login.js' ausführen.");
+
+    const draftData = {
+      adType,
+      title,
+      description,
+      categoryId:  categoryId  ? String(categoryId)           : "",
+      priceAmount: priceAmount !== null ? String(Math.round(priceAmount)) : "",
+      priceType,
+      zipCode:     zipCode     || "",
+      locationId:  locationId  || "",
+    };
+    if (imageUrls.length) {
+      draftData.adImages = imageUrls.map((url, i) => ({ position: i, url }));
+    }
+    if (Object.keys(attributes).length) {
+      draftData.attributeMap = attributes;
+    }
+
+    const payload = JSON.stringify({ draftData });
+
+    return new Promise((resolve, reject) => {
+      const opts = {
+        hostname: "www.kleinanzeigen.de",
+        path:     "/_actions/postListingWeb.drafts.saveDraft/",
+        method:   "POST",
+        headers: {
+          "Accept":         "application/json",
+          "Content-Type":   "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+          "Cookie":         this.cookies,
+          "x-csrf-token":   csrfToken,
+          "x-xsrf-token":   csrfToken,
+          "Origin":         "https://www.kleinanzeigen.de",
+          "Referer":        "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
+          "User-Agent":     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        },
+      };
+      const req = https.request(opts, (res) => {
+        let raw = "";
+        res.on("data", (c) => (raw += c));
+        res.on("end", () => {
+          if (res.statusCode === 401 || res.statusCode === 403) {
+            return reject(new Error(`CSRF abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' ausführen.`));
+          }
+          try {
+            const parsed = raw ? JSON.parse(raw) : {};
+            if (res.statusCode !== 200 && res.statusCode !== 201) {
+              return reject(new Error(`saveDraft fehlgeschlagen (${res.statusCode}): ${raw.slice(0, 300)}`));
+            }
+            const draftId = String(parsed.draftId || parsed.id || parsed.draft?.id || "");
+            resolve({ draftId, raw: parsed });
+          } catch {
+            reject(new Error(`saveDraft Parse-Fehler (${res.statusCode}): ${raw.slice(0, 200)}`));
+          }
+        });
+      });
+      req.on("error", reject);
+      req.write(payload);
+      req.end();
+    });
+  }
+
   async getDrafts() {
     const { body } = await this._wwwRequest("GET", `/users/${this.userId}/ad-drafts.json`);
     return (body.listOfAdDrafts || []).map(d => ({

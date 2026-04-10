@@ -83,6 +83,11 @@ const TOOLS = {
     args: "{}",
     fn:   () => ka.getAdBundles(),
   },
+  ka_save_draft: {
+    description: "Anzeigen-Entwurf auf KA speichern (kein Go nötig — wird NICHT veröffentlicht). Gibt draftId zurück.",
+    args: "{ title?: string, description?: string, categoryId?: number, priceAmount?: number, priceType?: string, zipCode?: string, locationId?: string, imageUrls?: string[], attributes?: Record<string,string> }",
+    fn:   (a) => ka.saveDraft(a),
+  },
   ka_get_drafts: {
     description: "Eigene Anzeigen-Entwürfe abrufen (Bearer-auth)",
     args: "{}",

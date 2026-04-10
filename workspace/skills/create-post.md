@@ -38,9 +38,17 @@ Klar kommunizieren was Jannik mit "Go" bestätigt und was er noch ändern kann.
 
 **Vor "Go" — Entwurf anlegen:**
 ```
+// 1. Lokal in DB speichern:
 db_query({ sql: "INSERT INTO assets (name, listing_name, description, last_price_cents) VALUES (?,?,?,?)",
            params: [name, title, description, priceInCents] })
 → lastInsertRowid = assetId
+
+// 2. Entwurf auf KA speichern (kein Go nötig — nicht veröffentlicht):
+ka_save_draft({ title, description, categoryId, priceAmount: price,
+                zipCode: "80636", locationId: "16360" })
+→ { draftId }
+// draftId in DB als Referenz speichern (optional):
+db_query({ sql: "UPDATE assets SET ka_draft_id=? WHERE id=?", params: [draftId, assetId] })
 ```
 
 **Bildpfade speichern / aktualisieren** (nach Foto-Eingang oder processImages):

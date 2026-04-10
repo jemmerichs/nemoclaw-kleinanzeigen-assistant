@@ -8,6 +8,7 @@ Jannik's aktive Anzeigen und Entwürfe anzeigen.
 - Aktive Anzeigen: `ka_get_my_ads` → Titel, Preis, Aufrufe, Status
 - Alle inkl. pausierte: `ka_get_ad_bundles`
 - Entwürfe: `ka_get_drafts` → Titel, Kategorie, Preis-Typ, Anzahl Fotos
+- Entwurf speichern/aktualisieren: `ka_save_draft` → speichert auf KA, kein Go nötig, wird NICHT veröffentlicht
 
 Entwürfe haben ggf. leere Beschreibung und keine Fotos — darauf hinweisen.
 Entwurf zur Bearbeitung ausgewählt → `create-post` Skill.
