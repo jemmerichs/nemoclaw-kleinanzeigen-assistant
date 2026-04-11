@@ -8,7 +8,7 @@ class TelegramGateway {
     this.lastUpdateId = 0;
   }
 
-  _request(method, body) {
+  _request(method, body, socketTimeoutMs = 30000) {
     return new Promise((resolve, reject) => {
       const data = JSON.stringify(body);
       const opts = {
@@ -25,6 +25,9 @@ class TelegramGateway {
         res.on("data", (c) => (raw += c));
         res.on("end", () => { try { resolve(JSON.parse(raw)); } catch { resolve({}); } });
       });
+      req.setTimeout(socketTimeoutMs, () => {
+        req.destroy(new Error(`Request timeout: ${method}`));
+      });
       req.on("error", reject);
       req.write(data);
       req.end();
@@ -37,7 +40,7 @@ class TelegramGateway {
   }
 
   async getUpdates() {
-    const res = await this._request("getUpdates", { offset: this.lastUpdateId + 1, timeout: 10 });
+    const res = await this._request("getUpdates", { offset: this.lastUpdateId + 1, timeout: 10 }, 20000);
     const updates = res.result || [];
     for (const u of updates) this.lastUpdateId = Math.max(this.lastUpdateId, u.update_id);
     return updates;
