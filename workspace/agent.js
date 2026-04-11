@@ -376,8 +376,17 @@ function randomPollIntervalMs() {
     }
   }
 
+  let consecutiveErrors = 0;
   async function safeTick() {
-    try { await tick(); } catch (e) { console.error("[agent] Fehler:", e.message); }
+    try {
+      await tick();
+      consecutiveErrors = 0;
+    } catch (e) {
+      consecutiveErrors++;
+      if (consecutiveErrors <= 3 || consecutiveErrors % 10 === 0) {
+        console.error(`[agent] Fehler (${consecutiveErrors}x): ${e.message}`);
+      }
+    }
   }
 
   await safeTick();
