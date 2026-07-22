@@ -3,7 +3,10 @@ node_modules/
 .env.local
 *.log
 .sessions.json
+.state.json
 workspace/memory/
 workspace/ads.db
 workspace/ads.db-*
 workspace/browser-profile/
+workspace/images/raw/
+workspace/images/optimized/

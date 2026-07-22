@@ -17,11 +17,13 @@ const CSRF_URL    = "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt1.ht
 function saveToEnv(updates) {
   let lines = (fs.existsSync(ENV_FILE) ? fs.readFileSync(ENV_FILE, "utf8") : "").split("\n");
   for (const [key, value] of Object.entries(updates)) {
+    if (!/^[A-Z][A-Z0-9_]*$/.test(key)) throw new Error(`Ungültiger .env-Key: ${key}`);
     lines = lines.filter(l => !l.startsWith(`${key}=`));
     if (value) lines.push(`${key}=${value}`);
   }
-  fs.writeFileSync(ENV_FILE, lines.join("\n").trimEnd() + "\n");
-  fs.chmodSync(ENV_FILE, 0o600);
+  const tempFile = `${ENV_FILE}.${process.pid}.tmp`;
+  fs.writeFileSync(tempFile, lines.join("\n").trimEnd() + "\n", { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(tempFile, ENV_FILE);
 }
 
 function extractKaCookieString(cookies) {
@@ -33,35 +35,48 @@ function extractKaCookieString(cookies) {
 
 function launchProfile(headless) {
   fs.mkdirSync(PROFILE_DIR, { recursive: true });
-  return chromium.launchPersistentContext(PROFILE_DIR, {
+  const options = {
     headless,
     args:     ["--no-sandbox"],
     viewport: { width: 1280, height: 800 },
-  });
+  };
+  if (process.env.PLAYWRIGHT_CHANNEL) {
+    options.channel = process.env.PLAYWRIGHT_CHANNEL;
+  } else {
+    const chromeCandidates = process.platform === "darwin"
+      ? ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+      : ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"];
+    const executablePath = chromeCandidates.find(candidate => fs.existsSync(candidate));
+    if (executablePath) options.executablePath = executablePath;
+  }
+  return chromium.launchPersistentContext(PROFILE_DIR, options);
 }
 
 async function login() {
   console.log("[auth] Opening browser. Log in and complete 2FA.");
   const context = await launchProfile(false);
-  const page    = await context.newPage();
-  await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
+  try {
+    const page = context.pages()[0] || await context.newPage();
+    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
 
-  await page.waitForURL(
-    url => !url.includes("login.kleinanzeigen.de") && !url.includes("m-einloggen"),
-    { timeout: 300_000 }
-  );
+    await page.waitForURL(
+      url => !url.href.includes("login.kleinanzeigen.de") && !url.href.includes("m-einloggen"),
+      { timeout: 300_000 }
+    );
 
-  const cs = extractKaCookieString(await context.cookies("https://www.kleinanzeigen.de"));
-  if (!cs) throw new Error("No KA cookies found — did the login succeed?");
+    const cs = extractKaCookieString(await context.cookies("https://www.kleinanzeigen.de"));
+    if (!cs) throw new Error("Keine Kleinanzeigen-Cookies gefunden — war der Login erfolgreich?");
 
-  saveToEnv({ KA_COOKIES: cs, KA_BEARER_TOKEN: null });
-  console.log("[auth] Session saved.");
-  await context.close();
+    saveToEnv({ KA_COOKIES: cs, KA_BEARER_TOKEN: null });
+    console.log("[auth] Session gespeichert.");
+  } finally {
+    await context.close();
+  }
 }
 
 async function refreshCookies() {
   if (!fs.existsSync(PROFILE_DIR)) {
-    throw new Error("No browser profile found — run 'node scripts/login.js' first.");
+    throw new Error("Kein Browser-Profil gefunden — bitte zuerst 'npm run login' ausführen.");
   }
 
   const context = await launchProfile(true);
@@ -71,11 +86,11 @@ async function refreshCookies() {
       route.continue();
     });
 
-    const page = await context.newPage();
-    await page.goto(CSRF_URL, { waitUntil: "domcontentloaded" });
+    const page = context.pages()[0] || await context.newPage();
+    await page.goto(CSRF_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
 
     const cs = extractKaCookieString(await context.cookies("https://www.kleinanzeigen.de"));
-    if (!cs) throw new Error("No KA cookies after refresh — run 'node scripts/login.js'.");
+    if (!cs) throw new Error("Keine Kleinanzeigen-Cookies nach Refresh — bitte 'npm run login' ausführen.");
 
     saveToEnv({ KA_COOKIES: cs, KA_BEARER_TOKEN: null });
     console.log("[auth] Cookies refreshed.");

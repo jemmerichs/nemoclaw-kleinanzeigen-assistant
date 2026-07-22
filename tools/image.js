@@ -17,9 +17,20 @@ const path   = require("path");
 const crypto = require("crypto");
 
 const GEMINI_API_KEY  = process.env.GEMINI_API_KEY || "";
-const GEMINI_MODEL    = "gemini-3.1-flash-image-preview";
-const RAW_DIR         = path.resolve(__dirname, "../workspace/images/raw");
-const OPTIMIZED_DIR   = path.resolve(__dirname, "../workspace/images/optimized");
+const GEMINI_MODEL    = process.env.GEMINI_MODEL || "gemini-3.1-flash-image-preview";
+const IMAGE_ROOT      = process.env.NEMOCLAW_IMAGE_DIR
+  ? path.resolve(process.env.NEMOCLAW_IMAGE_DIR)
+  : path.resolve(__dirname, "../workspace/images");
+const RAW_DIR         = path.join(IMAGE_ROOT, "raw");
+const OPTIMIZED_DIR   = path.join(IMAGE_ROOT, "optimized");
+
+function imageMimeType(filePath) {
+  return {
+    ".gif": "image/gif",
+    ".png": "image/png",
+    ".webp": "image/webp",
+  }[path.extname(filePath).toLowerCase()] || "image/jpeg";
+}
 
 function ensureDirs() {
   if (!fs.existsSync(RAW_DIR))       fs.mkdirSync(RAW_DIR,       { recursive: true });
@@ -27,14 +38,23 @@ function ensureDirs() {
 }
 
 function saveTemp(buffer, ext = ".jpg") {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) throw new Error("Leeres Bild kann nicht gespeichert werden.");
   ensureDirs();
-  const name = `photo_${Date.now()}_${crypto.randomBytes(4).toString("hex")}${ext}`;
+  const safeExt = /^\.(?:jpe?g|png|gif|webp)$/i.test(ext) ? ext.toLowerCase() : ".jpg";
+  const name = `photo_${Date.now()}_${crypto.randomBytes(4).toString("hex")}${safeExt}`;
   const file = path.join(RAW_DIR, name);
   fs.writeFileSync(file, buffer);
   return file;
 }
 
 async function processImages({ paths: inputPaths, instructions = "" }) {
+  if (!Array.isArray(inputPaths) || inputPaths.length === 0) throw new Error("Keine Bildpfade übergeben.");
+  if (inputPaths.length > 10) throw new Error("Maximal 10 Bilder pro Verarbeitung.");
+  for (const inputPath of inputPaths) {
+    if (typeof inputPath !== "string" || !fs.existsSync(inputPath) || !fs.statSync(inputPath).isFile()) {
+      throw new Error(`Bild nicht gefunden: ${inputPath}`);
+    }
+  }
   if (!GEMINI_API_KEY) {
     console.warn("[image] GEMINI_API_KEY nicht gesetzt — Bilder werden unverändert durchgereicht.");
     return { paths: inputPaths };
@@ -45,10 +65,9 @@ async function processImages({ paths: inputPaths, instructions = "" }) {
 
   for (const inputPath of inputPaths) {
     const inputBuffer  = fs.readFileSync(inputPath);
-    const outputBuffer = await _callGemini(inputBuffer, instructions);
+    const outputBuffer = await _callGemini(inputBuffer, imageMimeType(inputPath), instructions);
     const basename     = path.basename(inputPath, path.extname(inputPath));
-    const ext          = path.extname(inputPath) || ".jpg";
-    const outputPath   = path.join(OPTIMIZED_DIR, `${basename}_opt${ext}`);
+    const outputPath   = path.join(OPTIMIZED_DIR, `${basename}_opt.jpg`);
     fs.writeFileSync(outputPath, outputBuffer);
     outputPaths.push(outputPath);
   }
@@ -66,13 +85,13 @@ function _buildPrompt(extra = "") {
   return extra ? `${base} Additional context: ${extra}` : base;
 }
 
-function _callGemini(imageBuffer, extra = "") {
+function _callGemini(imageBuffer, mimeType = "image/jpeg", extra = "") {
   const prompt = _buildPrompt(extra);
   const body   = JSON.stringify({
     contents: [{
       parts: [
         { text: prompt },
-        { inline_data: { mime_type: "image/jpeg", data: imageBuffer.toString("base64") } },
+        { inline_data: { mime_type: mimeType, data: imageBuffer.toString("base64") } },
       ],
     }],
     generationConfig: { responseModalities: ["IMAGE", "TEXT"] },
@@ -88,7 +107,10 @@ function _callGemini(imageBuffer, extra = "") {
 
     const req = https.request(opts, (res) => {
       let raw = "";
-      res.on("data", (c) => (raw += c));
+      res.on("data", (c) => {
+        raw += c;
+        if (raw.length > 30 * 1024 * 1024) req.destroy(new Error("Gemini-Antwort ist größer als 30 MB"));
+      });
       res.on("end", () => {
         if (res.statusCode !== 200) {
           return reject(new Error(`Gemini Fehler (${res.statusCode}): ${raw}`));
@@ -106,10 +128,11 @@ function _callGemini(imageBuffer, extra = "") {
       });
     });
 
+    req.setTimeout(120000, () => req.destroy(new Error("Gemini: Timeout")));
     req.on("error", reject);
     req.write(body);
     req.end();
   });
 }
 
-module.exports = { saveTemp, processImages };
+module.exports = { saveTemp, processImages, imageMimeType };

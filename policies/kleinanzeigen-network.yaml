@@ -10,6 +10,7 @@ spec:
       methods: [GET, POST, PUT, DELETE, PATCH]
     - hosts:
         - "api.telegram.org"
-        - "integrate.api.nvidia.com"
+        - "api.anthropic.com"
+        - "generativelanguage.googleapis.com"
       methods: [GET, POST]
   defaultAction: BLOCK

@@ -3,7 +3,7 @@
 const path     = require("path");
 const Database = require("better-sqlite3");
 
-const DB_PATH = path.join(__dirname, "../workspace/ads.db");
+const DB_PATH = process.env.NEMOCLAW_DB_PATH || path.join(__dirname, "../workspace/ads.db");
 let _db = null;
 
 function getDb() {
@@ -25,6 +25,8 @@ function getDb() {
       status              TEXT NOT NULL DEFAULT 'available', -- available | sold
       sold_at             TEXT,
       sold_price_cents    INTEGER,
+      image_paths         TEXT,
+      ka_draft_id         TEXT,
       created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
       updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     );
@@ -60,7 +62,25 @@ function getDb() {
   `);
   // Migrations — idempotent: SQLite throws if column already exists, safe to swallow
   try { _db.exec("ALTER TABLE assets ADD COLUMN image_paths TEXT"); } catch (_) {}
+  try { _db.exec("ALTER TABLE assets ADD COLUMN ka_draft_id TEXT"); } catch (_) {}
   return _db;
+}
+
+function validateSql(sql) {
+  if (typeof sql !== "string" || !sql.trim()) throw new Error("SQL fehlt.");
+  if (sql.length > 20000) throw new Error("SQL ist zu lang.");
+  if (/\0|--|\/\*/.test(sql)) throw new Error("SQL-Kommentare sind nicht erlaubt.");
+
+  const normalized = sql.trim().replace(/;\s*$/, "");
+  if (normalized.includes(";")) throw new Error("Es ist nur ein SQL-Statement erlaubt.");
+  const operation = normalized.match(/^([A-Za-z]+)/)?.[1]?.toUpperCase();
+  if (!["SELECT", "WITH", "INSERT", "UPDATE"].includes(operation)) {
+    throw new Error("Nur SELECT, WITH, INSERT und UPDATE sind erlaubt.");
+  }
+  if (/\b(?:DELETE|DROP|TRUNCATE|ALTER|CREATE|REPLACE|PRAGMA|ATTACH|DETACH|VACUUM|REINDEX)\b/i.test(normalized)) {
+    throw new Error("Destruktive oder administrative SQL-Befehle sind nicht erlaubt.");
+  }
+  return { normalized, operation };
 }
 
 /**
@@ -70,15 +90,21 @@ function getDb() {
  * DELETE / DROP / TRUNCATE → blocked
  */
 function query({ sql, params = [] }) {
-  const upper = sql.trimStart().toUpperCase();
-  if (upper.startsWith("DELETE") || upper.startsWith("DROP") || upper.startsWith("TRUNCATE")) {
-    throw new Error("DELETE/DROP/TRUNCATE not allowed — mark records inactive instead");
-  }
+  if (!Array.isArray(params)) throw new Error("SQL-Parameter müssen als Liste übergeben werden.");
+  const { normalized, operation } = validateSql(sql);
   const db   = getDb();
-  const stmt = db.prepare(sql);
-  if (upper.startsWith("SELECT") || upper.startsWith("WITH")) return stmt.all(...params);
+  const stmt = db.prepare(normalized);
+  if (operation === "SELECT" || operation === "WITH") {
+    if (!stmt.reader) throw new Error("WITH ist nur für lesende Abfragen erlaubt.");
+    return stmt.all(...params);
+  }
   const info = stmt.run(...params);
-  return { changes: info.changes, lastInsertRowid: info.lastInsertRowid };
+  return { changes: info.changes, lastInsertRowid: Number(info.lastInsertRowid) };
 }
 
-module.exports = { query };
+function close() {
+  if (_db) _db.close();
+  _db = null;
+}
+
+module.exports = { query, close, validateSql };

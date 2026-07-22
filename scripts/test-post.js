@@ -28,7 +28,7 @@ async function run() {
 
   // ── 2. Init client ─────────────────────────────────────────────────────────
   const cookies = process.env.KA_COOKIES;
-  if (!cookies) throw new Error("KA_COOKIES fehlt. Bitte 'node scripts/login.js' ausführen.");
+  if (!cookies) throw new Error("KA_COOKIES fehlt. Bitte 'npm run login' ausführen.");
   const ka = new KleinanzeigenClient(cookies);
 
   // ── 3. Upload images ───────────────────────────────────────────────────────

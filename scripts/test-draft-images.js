@@ -18,7 +18,7 @@ const TEST_IMAGE = path.resolve(__dirname, "../workspace/images/raw/photo_177524
 
 async function run() {
   const cookies = process.env.KA_COOKIES;
-  if (!cookies) throw new Error("KA_COOKIES fehlt. Bitte 'node scripts/login.js' ausführen.");
+  if (!cookies) throw new Error("KA_COOKIES fehlt. Bitte 'npm run login' ausführen.");
   const ka = new KleinanzeigenClient(cookies);
 
   // ── 1. Upload image with forDraft flag ─────────────────────────────────────
