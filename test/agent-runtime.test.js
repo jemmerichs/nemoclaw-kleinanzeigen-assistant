@@ -252,7 +252,7 @@ test("inbox heartbeat isolates conversations and marks only successful notificat
   const conversations = [
     {
       id: "conversation-a",
-      adId: "ad-a",
+      adId: "same-ad",
       unread: true,
       updatedAt: "2026-07-28T10:00:00Z",
       lastMessage: "Ist es noch da?",
@@ -261,7 +261,7 @@ test("inbox heartbeat isolates conversations and marks only successful notificat
     },
     {
       id: "conversation-b",
-      adId: "ad-b",
+      adId: "same-ad",
       unread: true,
       updatedAt: "2026-07-28T10:01:00Z",
       lastMessage: "Versand möglich?",
@@ -284,7 +284,7 @@ test("inbox heartbeat isolates conversations and marks only successful notificat
         isMe: false,
       }];
     },
-    getAssetByKaId: async adId => ({ asset: { id: adId === "ad-a" ? 101 : 102 } }),
+    getAssetByKaId: async () => ({ asset: { id: 101 } }),
     run: async (_chatId, prompt, options) => {
       calls.push({ prompt, options });
       return { answered: calls.length === 1 };
@@ -303,6 +303,7 @@ test("inbox heartbeat isolates conversations and marks only successful notificat
   assert.equal(calls[0].options.preloadedConversation.conversationId, "conversation-a");
   assert.equal(calls[0].options.preloadedConversation.messages[0].text, "Ist es noch da?");
   assert.equal(calls[0].options.preloadedConversation.assetBundle.asset.id, 101);
+  assert.equal(calls[0].options.preloadedConversation.competingConversations[0].id, "conversation-b");
   assert.equal(heartbeatSeen["conversation-a"], "2026-07-28T10:00:00Z:Ist es noch da?");
   assert.equal(heartbeatSeen["conversation-b"], undefined);
   assert.equal(persisted, 1);
@@ -319,7 +320,7 @@ test("inbox heartbeat isolates conversations and marks only successful notificat
       text: "Versand möglich?",
       isMe: false,
     }],
-    getAssetByKaId: async adId => ({ asset: { id: adId === "ad-b" ? 102 : 101 } }),
+    getAssetByKaId: async () => ({ asset: { id: 101 } }),
     run: async (_chatId, prompt) => {
       assert.match(prompt, /conversation-b/);
       return { answered: true };
@@ -390,6 +391,57 @@ test("preloaded inbox turn exposes no redundant read tools and keeps exact buyer
   assert.match(sent[0], /Originalnachricht: „Hallo, ist der Artikel noch verfügbar\?“/);
   assert.equal(getPending("preloaded-inbox").tool, "ka_send_message");
   clearPending("preloaded-inbox");
+});
+
+test("competing buyers are shown together without an automatic reservation or buyer choice", async () => {
+  const sent = [];
+  const gateway = { async send(_chatId, text) { sent.push(text); } };
+  const llmClient = {
+    model: "stub",
+    async complete(request) {
+      assert.match(request.messages[1].content, /otherChangedUnreadConversationsForSameAd/);
+      assert.match(request.messages[1].content, /buyer-second/);
+      return {
+        message: {
+          role: "assistant",
+          content: "Alex möchte heute abholen; gleichzeitig fragt Bea nach morgen. Es gibt keine bestätigte Reservierung. Bitte entscheide, wem du welches Zeitfenster anbieten willst; ich verspreche keinem Käufer den Artikel automatisch.",
+        },
+      };
+    },
+  };
+
+  const result = await runAgent(
+    "competing-buyers",
+    "Automatischer Inbox-Check: mehrere Interessenten für dieselbe Anzeige",
+    {
+      llmClient,
+      gateway,
+      source: "system",
+      preloadedConversation: {
+        conversationId: "buyer-first",
+        adId: "same-ad",
+        adStatus: "ACTIVE",
+        otherParty: "Alex",
+        adTitle: "Testartikel",
+        messages: [{
+          id: "buyer-first-message",
+          text: "Kann ich den Artikel heute abholen?",
+          isMe: false,
+        }],
+        competingConversations: [{
+          id: "buyer-second",
+          otherParty: "Bea",
+          lastMessage: "Kann ich morgen kommen?",
+        }],
+      },
+    }
+  );
+
+  assert.deepEqual(result.toolCalls, []);
+  assert.equal(getPending("competing-buyers"), null);
+  assert.match(sent[0], /Originalnachricht: „Kann ich den Artikel heute abholen\?“/);
+  assert.match(sent[0], /keine bestätigte Reservierung/);
+  assert.match(sent[0], /Bitte entscheide/);
 });
 
 test("agent selectively edits one image, previews it, researches, and stages the chosen result", async () => {
@@ -796,6 +848,64 @@ test("sold or already-active assets are blocked from duplicate publication", () 
     () => require("../workspace/agent").TOOLS.ka_create_ad.prepare({ ...base, assetId: activeId }),
     /bereits eine aktive Anzeige/
   );
+
+  const pausedId = store.query({
+    sql: "INSERT INTO assets (name,status,has_active_listing) VALUES (?,?,?)",
+    params: ["Paused item", "available", 0],
+  }).lastInsertRowid;
+  store.query({
+    sql: "INSERT INTO ka_listings (asset_id,ka_id,status) VALUES (?,?,?)",
+    params: [pausedId, "paused-duplicate-1", "paused"],
+  });
+  assert.throws(
+    () => require("../workspace/agent").TOOLS.ka_create_ad.prepare({ ...base, assetId: pausedId }),
+    /pausierte Anzeige/
+  );
+});
+
+test("paused lifecycle notification recommends reactivation and cannot stage a duplicate", async () => {
+  const agent = require("../workspace/agent");
+  const prompt = agent.listingLifecyclePrompt({
+    type: "remote_status",
+    listingId: 901,
+    assetId: 902,
+    kaId: "paused-notification-1",
+    status: "paused",
+    eventKey: "remote_paused",
+    bundle: {
+      asset: {
+        id: 902,
+        name: "Paused notification",
+        status: "available",
+        has_active_listing: 0,
+      },
+    },
+  });
+  assert.match(prompt, /bestehende Anzeige pausiert/);
+  assert.match(prompt, /manuell.*reaktivieren/);
+  assert.match(prompt, /kein ka_create_ad/);
+
+  const sent = [];
+  const gateway = { async send(_chatId, text) { sent.push(text); } };
+  const llmClient = {
+    model: "stub",
+    async complete() {
+      return {
+        message: {
+          role: "assistant",
+          content: "Die bestehende Anzeige ist pausiert. Bitte reaktiviere sie auf Kleinanzeigen; ich erstelle keine Dublette.",
+        },
+      };
+    },
+  };
+  const result = await runAgent(
+    "paused-notification",
+    prompt,
+    { llmClient, gateway, source: "system" }
+  );
+  assert.deepEqual(result.toolCalls, []);
+  assert.equal(getPending("paused-notification"), null);
+  assert.match(sent[0], /keine Dublette/);
 });
 
 test("a relist with a missing source photo is blocked instead of silently changing the photo set", () => {

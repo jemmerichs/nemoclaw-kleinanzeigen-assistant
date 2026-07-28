@@ -15,7 +15,11 @@ process.env.NEMOCLAW_DB_PATH = path.join(temporary, "ads.db");
 process.env.NEMOCLAW_MODE = "dry-run";
 process.env.NEMOCLAW_COMPLEXITY_ROUTING = "manual";
 
-const { processTelegramUpdates } = require("../workspace/agent");
+const {
+  clearPending,
+  getPending,
+  processTelegramUpdates,
+} = require("../workspace/agent");
 const { createSerialExecutor } = require("../workspace/runtime");
 
 test.after(() => {
@@ -74,7 +78,7 @@ test("Telegram albums split across polls become one model turn", async () => {
   assert.equal(albumBuffer.size, 0);
 });
 
-test("large Telegram album keeps all file tokens but bounds visual model input to twelve", async () => {
+test("large Telegram album is visually reviewed in bounded batches before the answer", async () => {
   const modelCalls = [];
   const llmClient = {
     model: "stub",
@@ -83,7 +87,9 @@ test("large Telegram album keeps all file tokens but bounds visual model input t
       return {
         message: {
           role: "assistant",
-          content: "Ich habe 13 Dateien erhalten; 12 davon wurden in diesem Turn visuell analysiert.",
+          content: modelCalls.length === 1
+            ? "Ich habe den ersten Bildbatch geprüft."
+            : "Ich habe alle 13 Dateien visuell geprüft und kann sie jetzt gemeinsam beurteilen.",
         },
       };
     },
@@ -113,10 +119,87 @@ test("large Telegram album keeps all file tokens but bounds visual model input t
   );
   await new Promise(resolve => setTimeout(resolve, 100));
 
-  assert.equal(modelCalls.length, 1);
-  const content = modelCalls[0].messages[1].content;
-  assert.equal(content.filter(part => part.type === "image_url").length, 12);
-  assert.equal((content[0].text.match(/\[FOTO path:/g) || []).length >= 13, true);
-  assert.match(content[0].text, /Ein Artikel aus vielen Perspektiven/);
+  assert.equal(modelCalls.length, 2);
+  const firstContent = modelCalls[0].messages[1].content;
+  assert.equal(firstContent.filter(part => part.type === "image_url").length, 12);
+  assert.equal((firstContent[0].text.match(/\[FOTO path:/g) || []).length >= 13, true);
+  assert.match(firstContent[0].text, /Ein Artikel aus vielen Perspektiven/);
+  const secondContent = modelCalls[1].messages.at(-1).content;
+  assert.equal(secondContent.filter(part => part.type === "image_url").length, 1);
+  assert.match(secondContent[0].text, /weiteren Fotos visuell/);
   assert.equal(albumBuffer.size, 0);
+});
+
+test("a listing tool call is deferred until the remaining album batch was visible", async () => {
+  let callCount = 0;
+  let imagePaths = [];
+  const sent = [];
+  const llmClient = {
+    model: "stub",
+    async complete(request) {
+      callCount++;
+      if (!imagePaths.length) {
+        imagePaths = [...request.messages[1].content[0].text.matchAll(
+          /\[FOTO path:([^\]]+)\]/g
+        )].map(match => match[1]);
+      }
+      return {
+        message: {
+          role: "assistant",
+          content: "Vollständiger Anzeigenvorschlag.",
+          tool_calls: [{
+            id: `album-create-${callCount}`,
+            type: "function",
+            function: {
+              name: "ka_create_ad",
+              arguments: JSON.stringify({
+                title: "Album-Testartikel",
+                description: "Alle Bilder wurden geprüft.",
+                categoryId: 278,
+                price: 20,
+                priceType: "FIXED",
+                zipCode: "80636",
+                locationId: "16360",
+                contactName: "Jannik",
+                imagePaths,
+              }),
+            },
+          }],
+        },
+      };
+    },
+  };
+  const gateway = {
+    async downloadPhoto(fileId) { return Buffer.from(`jpeg-${fileId}`); },
+    async send(_chatId, text) { sent.push(text); },
+  };
+  const updates = Array.from({ length: 13 }, (_, index) => ({
+    update_id: 300 + index,
+    message: {
+      message_id: 400 + index,
+      chat: { id: 43 },
+      media_group_id: "deferred-group",
+      photo: [{ file_id: `deferred-${index + 1}` }],
+    },
+  }));
+
+  await processTelegramUpdates(
+    updates,
+    new Set(["43"]),
+    createSerialExecutor(),
+    llmClient,
+    { gateway, albumBuffer: new Map(), albumDelayMs: 20 }
+  );
+  await new Promise(resolve => setTimeout(resolve, 120));
+
+  try {
+    assert.equal(callCount, 2);
+    assert.equal(imagePaths.length, 13);
+    assert.equal(getPending("43").tool, "ka_create_ad");
+    assert.deepEqual(getPending("43").args.imagePaths, imagePaths);
+    assert.equal(sent.length, 1);
+    assert.match(sent[0], /Album-Testartikel/);
+  } finally {
+    clearPending("43");
+  }
 });

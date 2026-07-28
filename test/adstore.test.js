@@ -257,3 +257,98 @@ test("remote reconciliation tolerates one miss, alerts once after two, and recov
     last_view_change_at: "2026-07-28T15:00:00.000Z",
   });
 });
+
+test("explicit paused and removed states alert, do not become false misses, and can recover", () => {
+  store.query({
+    sql: "UPDATE ka_listings SET status='removed' WHERE status IN ('active','needs_review')",
+  });
+  const createTracked = (name, kaId) => {
+    const assetId = store.query({
+      sql: "INSERT INTO assets (name,has_active_listing) VALUES (?,?)",
+      params: [name, 1],
+    }).lastInsertRowid;
+    store.query({
+      sql: "INSERT INTO ka_listings (asset_id,ka_id,status,price_cents) VALUES (?,?,?,?)",
+      params: [assetId, kaId, "active", 2000],
+    });
+    return assetId;
+  };
+
+  const pausedAssetId = createTracked("Paused lifecycle", "paused-1");
+  const paused = store.reconcileRemoteListings([{
+    id: "paused-1",
+    status: "PAUSED",
+    price: 20,
+    views: 5,
+  }], { now: "2026-07-28T17:00:00.000Z" });
+  assert.equal(paused.events.length, 1);
+  assert.equal(paused.events[0].type, "remote_status");
+  assert.equal(paused.events[0].status, "paused");
+  assert.deepEqual(store.query({
+    sql: "SELECT status,missing_checks,pending_event_json FROM ka_listings WHERE ka_id=?",
+    params: ["paused-1"],
+  })[0], {
+    status: "paused",
+    missing_checks: 0,
+    pending_event_json: JSON.stringify({
+      type: "remote_status",
+      listingId: paused.events[0].listingId,
+      assetId: pausedAssetId,
+      kaId: "paused-1",
+      status: "paused",
+      eventKey: "remote_paused",
+    }),
+  });
+  assert.equal(store.getAssetBundle(pausedAssetId).asset.has_active_listing, 0);
+
+  const recovered = store.reconcileRemoteListings([{
+    id: "paused-1",
+    status: "ACTIVE",
+    price: 20,
+    views: 6,
+  }], { now: "2026-07-28T18:00:00.000Z" });
+  assert.equal(recovered.events.length, 0);
+  assert.deepEqual(store.query({
+    sql: "SELECT status,alerted_state,pending_event_json FROM ka_listings WHERE ka_id=?",
+    params: ["paused-1"],
+  })[0], {
+    status: "active",
+    alerted_state: null,
+    pending_event_json: null,
+  });
+  assert.equal(store.getAssetBundle(pausedAssetId).asset.has_active_listing, 1);
+
+  const pausedAgain = store.reconcileRemoteListings([{
+    id: "paused-1",
+    status: "INACTIVE",
+    price: 20,
+    views: 6,
+  }], { now: "2026-07-28T19:00:00.000Z" });
+  assert.equal(pausedAgain.events[0].eventKey, "remote_paused");
+  assert.equal(
+    store.acknowledgeLifecycleEvent(
+      pausedAgain.events[0].listingId,
+      pausedAgain.events[0].eventKey
+    ).acknowledged,
+    true
+  );
+  const absentPaused = store.reconcileRemoteListings([], {
+    now: "2026-07-28T20:00:00.000Z",
+  });
+  assert.equal(absentPaused.events.length, 0);
+  assert.equal(store.query({
+    sql: "SELECT missing_checks FROM ka_listings WHERE ka_id=?",
+    params: ["paused-1"],
+  })[0].missing_checks, 0);
+
+  const removedAssetId = createTracked("Removed lifecycle", "removed-1");
+  const removed = store.reconcileRemoteListings([{
+    id: "removed-1",
+    status: "DELETED",
+    price: 20,
+  }], { now: "2026-07-28T21:00:00.000Z" });
+  assert.equal(removed.events.length, 1);
+  assert.equal(removed.events[0].status, "removed");
+  assert.equal(removed.events[0].eventKey, "remote_removed");
+  assert.equal(store.getAssetBundle(removedAssetId).asset.has_active_listing, 0);
+});

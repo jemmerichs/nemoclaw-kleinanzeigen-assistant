@@ -360,7 +360,7 @@ function prepareCreateArgs(rawArgs) {
   const assetId = normalizeAssetId(args.assetId);
   if (assetId) {
     const asset = dbQuery({
-      sql: "SELECT status,has_active_listing FROM assets WHERE id=?",
+      sql: "SELECT a.status,a.has_active_listing,(SELECT l.status FROM ka_listings l WHERE l.asset_id=a.id ORDER BY l.id DESC LIMIT 1) AS latest_listing_status FROM assets a WHERE a.id=?",
       params: [assetId],
     })[0];
     if (!asset) throw new Error(`Asset ${assetId} existiert nicht.`);
@@ -369,6 +369,11 @@ function prepareCreateArgs(rawArgs) {
     }
     if (asset.has_active_listing) {
       throw new Error(`Asset ${assetId} hat bereits eine aktive Anzeige. Eine doppelte Veröffentlichung wird blockiert.`);
+    }
+    if (asset.latest_listing_status === "paused") {
+      throw new Error(
+        `Asset ${assetId} hat eine pausierte Anzeige. Reaktiviere oder entferne zuerst diese bestehende Anzeige, statt eine Dublette zu veröffentlichen.`
+      );
     }
   }
   return args;
@@ -1088,6 +1093,9 @@ async function runAgent(
       otherParty: String(preloadedConversation.otherParty || ""),
       adTitle: String(preloadedConversation.adTitle || ""),
       assetBundle: preloadedConversation.assetBundle || null,
+      competingConversations: Array.isArray(preloadedConversation.competingConversations)
+        ? preloadedConversation.competingConversations.slice(0, 20)
+        : [],
       messages: Array.isArray(preloadedConversation.messages)
         ? preloadedConversation.messages.slice(-50)
         : [],
@@ -1108,6 +1116,7 @@ async function runAgent(
         otherParty: preloaded.otherParty,
         adTitle: preloaded.adTitle,
         localAssetBundle: preloaded.assetBundle,
+        otherChangedUnreadConversationsForSameAd: preloaded.competingConversations,
         messages: preloaded.messages,
       }, 16000),
     ].join("\n")
@@ -1118,7 +1127,9 @@ async function runAgent(
       ? `System-Trigger: ${String(effectiveMessage).slice(0, 18000)}`
       : `Jannik: ${String(effectiveMessage).slice(0, 18000)}`
   );
-  const images = extractImagePaths(effectiveMessage, MAX_MODEL_IMAGES);
+  const turnImagePaths = extractImagePaths(effectiveMessage, 20);
+  const images = turnImagePaths.slice(0, MAX_MODEL_IMAGES);
+  const visuallyPresentedImages = new Set(images);
   const includedTurnTools = preloaded ? ["ka_send_message", "memoryRead"] : null;
   const excludedTurnTools = new Set(
     includedTurnTools
@@ -1132,6 +1143,25 @@ async function runAgent(
     },
     { role: "user", content: multimodalContent(userPrompt(chatId, history), images) },
   ];
+  const appendNextVisualBatch = reason => {
+    const remaining = turnImagePaths
+      .filter(imagePath => !visuallyPresentedImages.has(imagePath))
+      .slice(0, MAX_MODEL_IMAGES);
+    if (!remaining.length) return false;
+    for (const imagePath of remaining) visuallyPresentedImages.add(imagePath);
+    messages.push({
+      role: "user",
+      content: multimodalContent(
+        [
+          reason,
+          `Prüfe jetzt auch diese ${remaining.length} weiteren Fotos visuell.`,
+          "Beziehe erst danach alle in diesem Turn gezeigten Fotos in Auswahl, Mängelprüfung und Reihenfolge ein. Verwende kein Bild, das du nicht visuell gesehen hast.",
+        ].join("\n"),
+        remaining
+      ),
+    });
+    return true;
+  };
   let answered = false;
   const toolCallsSeen = [];
   const toolTrace = [];
@@ -1214,6 +1244,29 @@ async function runAgent(
             tool_call_id: call.id,
             content: JSON.stringify({ error: `Tool "${toolName}" ist nicht verfügbar.` }),
           });
+          continue;
+        }
+        const remainingVisuals = turnImagePaths.filter(
+          imagePath => !visuallyPresentedImages.has(imagePath)
+        );
+        const unreviewedEditInput = toolName === "image_edit"
+          && remainingVisuals.includes(args.inputPath);
+        const needsCompleteAlbumReview = ["ka_create_ad", "ka_save_draft"].includes(toolName)
+          && remainingVisuals.length > 0;
+        if (unreviewedEditInput || needsCompleteAlbumReview) {
+          messages.push(modelMessage);
+          messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: JSON.stringify({
+              error: "Noch nicht alle Fotos dieses Albums wurden visuell bereitgestellt. Die Aktion wurde nicht vorgemerkt oder ausgeführt.",
+            }),
+          });
+          appendNextVisualBatch(
+            unreviewedEditInput
+              ? "Das gewünschte Bearbeitungsbild lag noch außerhalb des ersten visuellen Batches."
+              : "Vor einem endgültigen Anzeigen- oder Entwurfsvorschlag müssen alle Albumfotos visuell geprüft sein."
+          );
           continue;
         }
 
@@ -1348,6 +1401,12 @@ async function runAgent(
       if (!message) {
         messages.push(modelMessage);
         messages.push({ role: "user", content: "Antworte jetzt kurz auf Deutsch oder verwende genau ein passendes Tool." });
+        continue;
+      }
+      if (appendNextVisualBatch(
+        "Du wolltest bereits antworten, aber ein Teil des aktuellen Albums war noch nicht visuell geprüft."
+      )) {
+        messages.splice(messages.length - 1, 0, modelMessage);
         continue;
       }
       if (
@@ -1486,6 +1545,19 @@ async function notifyUnreadConversations({
     const assetBundle = conversation.adId === undefined || conversation.adId === null
       ? null
       : await getAssetByKaId(String(conversation.adId));
+    const competingConversations = changedUnread
+      .filter(other => (
+        String(other.id) !== String(conversation.id)
+        && conversation.adId !== undefined
+        && conversation.adId !== null
+        && String(other.adId) === String(conversation.adId)
+      ))
+      .map(other => ({
+        id: other.id,
+        otherParty: other.otherParty,
+        lastMessage: other.lastMessage,
+        updatedAt: other.updatedAt,
+      }));
     const summary = {
       id: conversation.id,
       adId: conversation.adId,
@@ -1493,6 +1565,7 @@ async function notifyUnreadConversations({
       adStatus: conversation.adStatus,
       otherParty: conversation.otherParty,
       lastMessage: conversation.lastMessage,
+      competingUnreadForSameAd: competingConversations.length,
     };
     const result = await enqueue(chatId, () => run(
       chatId,
@@ -1508,6 +1581,7 @@ async function notifyUnreadConversations({
           otherParty: conversation.otherParty,
           adTitle: conversation.adTitle,
           assetBundle,
+          competingConversations,
           messages: threadMessages,
         },
       }
@@ -1524,6 +1598,7 @@ function listingLifecyclePrompt(event) {
   const bundle = event.bundle || {};
   const asset = bundle.asset || {};
   const isManualChange = event.type === "remote_changed";
+  const isPaused = event.status === "paused";
   const reason = event.type === "missing_remote"
     ? `Die lokale Anzeige ${event.kaId} wurde in ${event.missingChecks} aufeinanderfolgenden erfolgreichen Abrufen der aktiven eigenen Anzeigen nicht gefunden. Das ist ein starkes Indiz, aber noch kein bestätigter Ablaufstatus.`
     : isManualChange
@@ -1534,6 +1609,9 @@ function listingLifecyclePrompt(event) {
     reason,
     ...(isManualChange ? [
       "Informiere Jannik knapp über die erkannte Änderung. Schlage keine Aktion vor und ändere nichts weiter, solange er nicht darum bittet.",
+    ] : isPaused ? [
+      "Informiere Jannik, dass die bestehende Anzeige pausiert ist und deshalb nicht als neue Anzeige dupliziert werden darf.",
+      "Schlage vor, die vorhandene Anzeige manuell auf Kleinanzeigen zu reaktivieren. Merke jetzt kein ka_create_ad vor. Falls Jannik stattdessen wirklich eine neue Anzeige will, muss die pausierte Anzeige zuerst entfernt und der aktuelle Stand erneut geprüft werden.",
     ] : [
       "Prüfe bei einem bloßen Fehlen zuerst mit ka_get_ad_bundles, ob die Anzeige pausiert, abgelaufen oder entfernt ist.",
       "Informiere Jannik proaktiv und nenne den bisherigen Anzeigentitel. Wenn das Asset nicht verkauft ist und die Bilder noch vorhanden sind, schlage eine konkrete Neuveröffentlichung mit dem gespeicherten kanonischen Posting und derselben Bildreihenfolge vor.",

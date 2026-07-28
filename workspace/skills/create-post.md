@@ -38,7 +38,7 @@ Wenn Jannik ausdrücklich einen Entwurf möchte, `ka_save_draft` mit denselben l
 
 ## Fotos
 
-- Bis zu 20 Bilder können veröffentlicht werden; höchstens 12 werden pro Agent-Turn visuell analysiert. Bei mehr als 12 Bildern bitte um eine Vorauswahl oder teile sie sinnvoll in Artikelgruppen.
+- Bis zu 20 Bilder können veröffentlicht und pro Agent-Turn berücksichtigt werden. Die Bridge zeigt sie dem Modell in visuellen Batches von höchstens 12 Bildern; ein endgültiger Anzeigen-/Entwurfsvorschlag wird erst zugelassen, nachdem alle Albumfotos visuell bereitgestellt wurden.
 - Kleinanzeigen akzeptiert aktuell höchstens 12 MB pro Bild.
 - Bearbeitungen dürfen nur Orientierung, moderaten Zuschnitt, leichte Helligkeit-/Kontrast-/Sättigungskorrektur, Schärfung und Größenoptimierung betreffen.
 - Keine Bearbeitung vorschlagen, die Kratzer, Dellen, Flecken, Verschleiß, Logos, Seriennummern oder andere kaufrelevante Details versteckt.

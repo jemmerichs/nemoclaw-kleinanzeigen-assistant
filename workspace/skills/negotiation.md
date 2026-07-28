@@ -9,6 +9,7 @@ Käuferanfragen zügig bearbeiten, ohne Janniks Preis- oder Übergabeentscheidun
 - Aktuellen Angebotspreis, Zustand und Verlauf berücksichtigen. Wenn sinnvoll, mit `inventory_get_asset` den gespeicherten Posting-Stand lesen.
 - Keine geheime Mindestgrenze annehmen. Ist keine Preisstrategie gespeichert oder von Jannik genannt, transparent einen Gegenpreis vorschlagen oder Jannik zwischen Annahme, Gegenangebot und Ablehnung entscheiden lassen.
 - Antwort kurz und verbindlich formulieren, aber nie „reserviert“, „verkauft“ oder „zugesagt“ behaupten, solange Jannik das nicht entschieden hat.
+- Sind im vorgeladenen Kontext weitere geänderte ungelesene Konversationen für dieselbe Anzeige genannt, beide Interessen sichtbar machen. Keinem Käufer automatisch Vorrang, Reservierung oder Exklusivität versprechen; Jannik die konkrete Wahl überlassen.
 - Nach erfolgreichem Verkauf lokale Markierung und externe Anzeigenänderung als getrennte, jeweils bestätigungspflichtige Aktionen behandeln.
 
 ## Abholung

@@ -379,7 +379,7 @@ function reconcileRemoteListings(remoteAds, { missingThreshold = 2, now = new Da
              a.listing_name,a.last_price_cents
       FROM ka_listings l
       JOIN assets a ON a.id=l.asset_id
-      WHERE l.ka_id IS NOT NULL AND l.status IN ('active','needs_review')
+      WHERE l.ka_id IS NOT NULL
     `).all();
     const queueEvent = (listing, event, eventKey) => {
       const pending = parseJson(listing.pending_event_json);
@@ -395,23 +395,29 @@ function reconcileRemoteListings(remoteAds, { missingThreshold = 2, now = new Da
         const remoteStatus = normalizeRemoteStatus(remote.status);
         const eventState = remoteStatus === "active" ? null : `remote_${remoteStatus}`;
         const pendingBefore = parseJson(listing.pending_event_json);
-        const recoveredFromMissing = remoteStatus === "active" && (
-          listing.status === "needs_review"
-          || listing.alerted_state === "missing_remote"
-          || pendingBefore?.eventKey === "missing_remote"
+        const isRecoveryEventKey = value => (
+          value === "missing_remote"
+          || ["remote_paused", "remote_expired", "remote_removed"].includes(value)
         );
-        if (recoveredFromMissing) {
+        const recoveredToActive = remoteStatus === "active" && (
+          listing.status !== "active"
+          || isRecoveryEventKey(listing.alerted_state)
+          || isRecoveryEventKey(pendingBefore?.eventKey)
+        );
+        if (recoveredToActive) {
+          const nextAlertedState = isRecoveryEventKey(listing.alerted_state)
+            ? null
+            : listing.alerted_state;
+          const nextPending = isRecoveryEventKey(pendingBefore?.eventKey)
+            ? null
+            : listing.pending_event_json;
           db.prepare(`
             UPDATE ka_listings
-            SET alerted_state=NULL,
-                pending_event_json=CASE
-                  WHEN pending_event_json LIKE '%"eventKey":"missing_remote"%' THEN NULL
-                  ELSE pending_event_json
-                END
+            SET alerted_state=?, pending_event_json=?
             WHERE id=?
-          `).run(listing.id);
-          listing.alerted_state = null;
-          if (pendingBefore?.eventKey === "missing_remote") listing.pending_event_json = null;
+          `).run(nextAlertedState, nextPending, listing.id);
+          listing.alerted_state = nextAlertedState;
+          listing.pending_event_json = nextPending;
         }
         const priceCents = remotePriceCents(remote);
         const payload = parseJson(listing.payload_json)
@@ -508,6 +514,7 @@ function reconcileRemoteListings(remoteAds, { missingThreshold = 2, now = new Da
         continue;
       }
 
+      if (!["active", "needs_review"].includes(listing.status)) continue;
       const missingChecks = Number(listing.missing_checks || 0) + 1;
       if (missingChecks < threshold) {
         db.prepare("UPDATE ka_listings SET missing_checks=? WHERE id=?")
