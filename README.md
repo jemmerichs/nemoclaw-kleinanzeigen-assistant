@@ -122,7 +122,22 @@ Then exercise one Telegram photo album in `NEMOCLAW_MODE=dry-run`; the full prop
 npm run launch
 ```
 
-`npm run launch` is deliberately a foreground process. Inbox and listing checks run only while that process is alive and the Mac is awake with working network access. Keep the terminal/process running or place this same command under the Mac's normal user-level process supervisor after the interactive dry-run has passed. The bot does not need Codex at runtime.
+`npm run launch` is deliberately a foreground process and is best for the first live session. Inbox and listing checks run only while that process is alive and the Mac is awake with working network access.
+
+After that foreground session is stable, install the included standard macOS user service:
+
+```bash
+npm run service:install
+npm run service:status
+```
+
+The installer reruns the strict Telegram/runtime doctor, writes no secrets into the plist, embeds the current Node/project paths, starts the existing `scripts/start.sh`, restarts it after crashes, and stores private logs under `workspace/logs`. It runs only in the signed-in macOS user session; the Mac must remain awake and online. To stop automatic operation:
+
+```bash
+npm run service:uninstall
+```
+
+Uninstalling removes only the LaunchAgent definition. It preserves `.env`, the Chrome profile, inventory, images and logs. The bot does not need Codex at runtime.
 
 If moving an already-running installation, stop the old process first and copy `.env`, `workspace/ads.db` (including any current WAL/SHM files) and `workspace/images` together. Never run two instances against the same Telegram bot and inventory at once.
 
@@ -227,6 +242,9 @@ For an active but weak listing, ask the bot to analyze the asset. It reads the r
 | `npm run login:automated` | Explicit Playwright-driven login fallback |
 | `npm run refresh-auth` | Refresh cookies from the saved profile |
 | `npm run launch` / `npm start` | Strict preflight, optional OpenShell policy, then Telegram bot |
+| `npm run service:install` | Install/start the bot as a standard macOS user LaunchAgent |
+| `npm run service:status` | Inspect the loaded LaunchAgent |
+| `npm run service:uninstall` | Stop/remove only the LaunchAgent; retain bot data |
 | `npm test` | Offline regression suite |
 | `npm run check` | Syntax checks |
 
