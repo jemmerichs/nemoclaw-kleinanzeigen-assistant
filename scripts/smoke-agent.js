@@ -9,6 +9,7 @@ const root = path.resolve(__dirname, "..");
 
 function parseArgs(argv) {
   const images = [];
+  const requiredFacts = [];
   let context = "";
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index];
@@ -20,6 +21,10 @@ function parseArgs(argv) {
       const value = argv[++index];
       if (!value) throw new Error("--context benötigt Text.");
       context = value;
+    } else if (arg === "--require-fact") {
+      const value = argv[++index];
+      if (!value) throw new Error("--require-fact benötigt Text.");
+      requiredFacts.push(value);
     } else {
       throw new Error(`Unbekanntes Argument: ${arg}`);
     }
@@ -31,7 +36,7 @@ function parseArgs(argv) {
       throw new Error(`Bild nicht gefunden: ${image}`);
     }
   }
-  return { images, context };
+  return { images, context, requiredFacts };
 }
 
 function verifySmokeResult({
@@ -39,6 +44,8 @@ function verifySmokeResult({
   pending,
   images,
   expectedModel,
+  proposal = "",
+  requiredFacts = [],
   imageSourceResolver = imagePath => imagePath,
 }) {
   if (!result?.toolCalls?.includes("ka_search_ads")) {
@@ -85,11 +92,38 @@ function verifySmokeResult({
       throw new Error(`Vorgemerkte Anzeige hat kein Feld ${field}.`);
     }
   }
+  const proposalText = String(proposal || "");
+  for (const expected of [
+    pending.args.title,
+    String(pending.args.categoryId),
+    String(pending.args.description),
+    `${pending.args.imagePaths.length}`,
+  ]) {
+    if (!proposalText.includes(expected)) {
+      throw new Error(`Telegram-Vorschlag enthält den erwarteten Anzeigeninhalt nicht: ${expected}`);
+    }
+  }
+  if (!/sha256:[a-f0-9]{12}/i.test(proposalText)) {
+    throw new Error("Telegram-Vorschlag enthält kein gebundenes Foto-Hash-Manifest.");
+  }
+  if (!/Dry-run|eigenständige Nachricht nur mit „Go“/i.test(proposalText)) {
+    throw new Error("Telegram-Vorschlag enthält keinen eindeutigen Freigabehinweis.");
+  }
+  for (const fact of requiredFacts) {
+    const normalized = String(fact).trim().toLocaleLowerCase("de-DE");
+    if (!normalized) continue;
+    if (!String(pending.args.description).toLocaleLowerCase("de-DE").includes(normalized)) {
+      throw new Error(`Pflichtfakt fehlt in der Anzeigenbeschreibung: ${fact}`);
+    }
+    if (!proposalText.toLocaleLowerCase("de-DE").includes(normalized)) {
+      throw new Error(`Pflichtfakt fehlt im Telegram-Vorschlag: ${fact}`);
+    }
+  }
 }
 
 async function main() {
   require("dotenv").config({ path: path.join(root, ".env") });
-  const { images, context } = parseArgs(process.argv.slice(2));
+  const { images, context, requiredFacts } = parseArgs(process.argv.slice(2));
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-agent-smoke-"));
   process.env.NEMOCLAW_MODE = "dry-run";
   process.env.NEMOCLAW_COMPLEXITY_ROUTING = "manual";
@@ -106,8 +140,9 @@ async function main() {
   } = require("../workspace/agent");
   const { readProvenance } = require("../tools/image");
 
+  const sent = [];
   const gateway = {
-    async send() {},
+    async send(_chatId, text) { sent.push(text); },
     async sendPhoto() {},
   };
 
@@ -127,6 +162,8 @@ async function main() {
       pending,
       images,
       expectedModel: llmClient.model,
+      proposal: sent.at(-1),
+      requiredFacts,
       imageSourceResolver: imagePath => readProvenance(imagePath).sourcePath,
     });
     console.log([

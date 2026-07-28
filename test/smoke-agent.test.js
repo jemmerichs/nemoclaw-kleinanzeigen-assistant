@@ -20,6 +20,7 @@ function fixture(categoryId = 230) {
     ],
   };
   const pending = {
+    id: "abc123",
     tool: "ka_create_ad",
     materials: images.map(path => ({ path, size: 10, sha256: "a".repeat(64) })),
     args: {
@@ -33,7 +34,20 @@ function fixture(categoryId = 230) {
       imagePaths: images,
     },
   };
-  return { result, pending, images, expectedModel: "google/gemini-3.6-flash" };
+  const proposal = [
+    pending.args.title,
+    `Kategorie-ID: ${pending.args.categoryId}`,
+    `Fotos: ${pending.args.imagePaths.length} (one.jpg sha256:aaaaaaaaaaaa, two.jpg sha256:aaaaaaaaaaaa)`,
+    pending.args.description,
+    "Dry-run ist aktiv",
+  ].join("\n");
+  return {
+    result,
+    pending,
+    images,
+    expectedModel: "google/gemini-3.6-flash",
+    proposal,
+  };
 }
 
 test("agent smoke verifier binds the staged category to observed search results", () => {
@@ -58,6 +72,7 @@ test("agent smoke verifier accepts a subset or derivative but rejects unknown ph
   const subset = fixture();
   subset.pending.args.imagePaths = [subset.images[1]];
   subset.pending.materials = [subset.pending.materials[1]];
+  subset.proposal = subset.proposal.replace("Fotos: 2", "Fotos: 1");
   assert.doesNotThrow(() => verifySmokeResult(subset));
 
   const derivative = fixture();
@@ -68,6 +83,7 @@ test("agent smoke verifier accepts a subset or derivative but rejects unknown ph
     sha256: "b".repeat(64),
   }];
   derivative.imageSourceResolver = () => derivative.images[0];
+  derivative.proposal = derivative.proposal.replace("Fotos: 2", "Fotos: 1");
   assert.doesNotThrow(() => verifySmokeResult(derivative));
 
   const unknown = fixture();
@@ -78,4 +94,29 @@ test("agent smoke verifier accepts a subset or derivative but rejects unknown ph
     sha256: "c".repeat(64),
   }];
   assert.throws(() => verifySmokeResult(unknown), /nicht aus dem Testalbum/);
+});
+
+test("agent smoke verifier requires exact proposal fields and requested condition facts", () => {
+  const valid = fixture();
+  valid.pending.args.description = "Ehrliche Beschreibung mit sichtbarem Lackabplatzer.";
+  valid.proposal = valid.proposal.replace(
+    "Ehrliche Beschreibung",
+    valid.pending.args.description
+  );
+  valid.requiredFacts = ["Lackabplatzer"];
+  assert.doesNotThrow(() => verifySmokeResult(valid));
+
+  const omittedFact = fixture();
+  omittedFact.requiredFacts = ["Lackabplatzer"];
+  assert.throws(
+    () => verifySmokeResult(omittedFact),
+    /Pflichtfakt fehlt in der Anzeigenbeschreibung/
+  );
+
+  const missingManifest = fixture();
+  missingManifest.proposal = missingManifest.proposal.replace(/sha256:[a-f0-9]+/gi, "ohne-hash");
+  assert.throws(
+    () => verifySmokeResult(missingManifest),
+    /kein gebundenes Foto-Hash-Manifest/
+  );
 });

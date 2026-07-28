@@ -157,10 +157,11 @@ For a repeatable paid-but-low-cost end-to-end model smoke test:
 
 ```bash
 npm run smoke:agent -- --image /absolute/path/to/item.jpg \
-  --context "Dry-run test facts about condition and age."
+  --require-fact "Kratzer" \
+  --context "Dry-run test: used, functional, with a visible scratch on the left."
 ```
 
-This command forces Flash/manual routing and dry-run, requires current public price research plus a valid staged listing, then clears the test action. It never publishes or saves a draft.
+This command forces Flash/manual routing and dry-run, requires current public price research plus a valid staged listing, then clears the test action. Every repeated `--require-fact` value must occur in both the staged description and the exact Telegram-style proposal. The proposal is also checked for title, category, description, photo count, bound photo hashes and its unambiguous approval notice. It never publishes or saves a draft.
 
 ### Complexity routing
 
@@ -213,7 +214,8 @@ For an active but weak listing, ask the bot to analyze the asset. It reads the r
 | `npm run smoke:ka` | Read-only public + authenticated Kleinanzeigen API checks |
 | `npm run smoke:agent -- --image …` | Flash vision → research → staged-listing dry-run |
 | `npm run smoke:workflows` | Synthetic Flash inbox, scam, negotiation and stale-listing behavior; all external writes dry-run |
-| `npm run test:scenarios` | Offline album → edit → listing, relist, inbox, restart and idempotency scenarios |
+| `npm run test:journey` | One offline album → approval → persisted listing → relist → buyer-reply journey |
+| `npm run test:scenarios` | Offline journey plus edit, lifecycle, inbox, restart and idempotency scenarios |
 | `npm run verify` | Free offline regression, syntax, and configuration gate |
 | `npm run verify:account` | `verify` plus all read-only Kleinanzeigen account checks |
 | `npm run chat` | Interactive local agent |
