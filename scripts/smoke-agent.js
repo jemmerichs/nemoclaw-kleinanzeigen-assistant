@@ -34,7 +34,13 @@ function parseArgs(argv) {
   return { images, context };
 }
 
-function verifySmokeResult({ result, pending, images, expectedModel }) {
+function verifySmokeResult({
+  result,
+  pending,
+  images,
+  expectedModel,
+  imageSourceResolver = imagePath => imagePath,
+}) {
   if (!result?.toolCalls?.includes("ka_search_ads")) {
     throw new Error(`Agent hat keine Preisrecherche ausgeführt. Tools: ${(result?.toolCalls || []).join(", ") || "keine"}`);
   }
@@ -44,11 +50,24 @@ function verifySmokeResult({ result, pending, images, expectedModel }) {
   if (result.route.tier !== "fast" || result.route.model !== expectedModel) {
     throw new Error(`Smoke-Test wurde unerwartet geroutet: ${result.route.tier}/${result.route.model}`);
   }
-  if (pending.args.imagePaths.length !== images.length) {
-    throw new Error(`Vorgemerkte Bildanzahl stimmt nicht (${pending.args.imagePaths.length}/${images.length}).`);
+  if (!Array.isArray(pending.args.imagePaths) || pending.args.imagePaths.length < 1) {
+    throw new Error("Vorgemerkte Anzeige enthält keine ausgewählten Bilder.");
   }
-  if (pending.materials.length !== images.length) {
-    throw new Error(`Bild-Manifeste fehlen (${pending.materials.length}/${images.length}).`);
+  if (pending.args.imagePaths.length > images.length) {
+    throw new Error(`Vorgemerkte Bildauswahl ist größer als der Eingang (${pending.args.imagePaths.length}/${images.length}).`);
+  }
+  if (new Set(pending.args.imagePaths).size !== pending.args.imagePaths.length) {
+    throw new Error("Vorgemerkte Bildauswahl enthält doppelte Pfade.");
+  }
+  const allowedSources = new Set(images.map(image => path.resolve(image)));
+  for (const selectedPath of pending.args.imagePaths) {
+    const sourcePath = path.resolve(imageSourceResolver(selectedPath));
+    if (!allowedSources.has(sourcePath)) {
+      throw new Error(`Vorgemerktes Bild stammt nicht aus dem Testalbum: ${selectedPath}`);
+    }
+  }
+  if (pending.materials.length !== pending.args.imagePaths.length) {
+    throw new Error(`Bild-Manifeste fehlen (${pending.materials.length}/${pending.args.imagePaths.length}).`);
   }
   const observedCategoryIds = new Set(
     result.toolTrace
@@ -85,6 +104,7 @@ async function main() {
     runAgent,
     validateConfig,
   } = require("../workspace/agent");
+  const { readProvenance } = require("../tools/image");
 
   const gateway = {
     async send() {},
@@ -102,7 +122,13 @@ async function main() {
     ].join("\n");
     const result = await runAgent("agent-smoke", prompt, { llmClient, gateway });
     const pending = result?.pending;
-    verifySmokeResult({ result, pending, images, expectedModel: llmClient.model });
+    verifySmokeResult({
+      result,
+      pending,
+      images,
+      expectedModel: llmClient.model,
+      imageSourceResolver: imagePath => readProvenance(imagePath).sourcePath,
+    });
     console.log([
       "Agent-Smoke OK",
       `model=${result.route.model}`,
@@ -112,7 +138,7 @@ async function main() {
       `title=${pending.args.title}`,
       `categoryId=${pending.args.categoryId}`,
       `price=${pending.args.price} EUR`,
-      `images=${pending.args.imagePaths.length}`,
+      `images=${pending.args.imagePaths.length}/${images.length} selected`,
     ].join(" | "));
   } finally {
     clearPending("agent-smoke");

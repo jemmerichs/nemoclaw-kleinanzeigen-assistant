@@ -21,9 +21,11 @@
     "smoke:openrouter": "node scripts/test-openrouter.js",
     "smoke:ka": "node scripts/smoke-ka.js",
     "smoke:agent": "node scripts/smoke-agent.js",
+    "smoke:workflows": "node scripts/smoke-workflows.js",
+    "test:scenarios": "node --test test/agent-runtime.test.js test/telegram-album.test.js test/image.test.js test/adstore.test.js",
     "verify": "npm test && npm run check && npm run doctor",
     "verify:account": "npm run verify && npm run smoke:ka",
-    "check": "node --check workspace/agent.js && node --check workspace/cli.js && node --check tools/openrouter.js && node --check tools/kleinanzeigen.js && node --check tools/telegram.js && node --check tools/image.js && node --check tools/auth.js && node --check scripts/doctor.js && node --check scripts/smoke-ka.js && node --check scripts/smoke-agent.js && node --check scripts/test-openrouter.js && bash -n scripts/setup.sh scripts/start.sh",
+    "check": "node --check workspace/agent.js && node --check workspace/runtime.js && node --check workspace/cli.js && node --check tools/openrouter.js && node --check tools/kleinanzeigen.js && node --check tools/telegram.js && node --check tools/image.js && node --check tools/adstore.js && node --check tools/auth.js && node --check scripts/doctor.js && node --check scripts/smoke-ka.js && node --check scripts/smoke-agent.js && node --check scripts/smoke-workflows.js && node --check scripts/test-openrouter.js && bash -n scripts/setup.sh scripts/start.sh",
     "test": "node --test test/*.test.js"
   },
   "engines": {
@@ -32,6 +34,7 @@
   "dependencies": {
     "better-sqlite3": "^12.8.0",
     "dotenv": "^16.0.0",
-    "playwright": "^1.58.2"
+    "playwright": "^1.58.2",
+    "sharp": "^0.34.5"
   }
 }

@@ -5,6 +5,10 @@ const path = require("path");
 require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 
 const KleinanzeigenClient = require("../tools/kleinanzeigen");
+const {
+  executeTool,
+  loadKleinanzeigenSession,
+} = require("../workspace/agent");
 
 function smokeDiagnosis(errors) {
   const failures = (errors || []).filter(Boolean);
@@ -32,7 +36,7 @@ function smokeDiagnosis(errors) {
     codes.has("KA_SESSION_EXPIRED") ||
     codes.has("KA_CSRF_EXPIRED") ||
     codes.has("KA_BEARER_EXPIRED") ||
-    /\b(?:Session|CSRF|Bearer token) abgelaufen\b/i.test(messages)
+    /\b(?:Session|CSRF|Bearer token) abgelaufen\b|Token-Refresh fehlgeschlagen|access_denied/i.test(messages)
   ) {
     return "Session-Diagnose: Die Netzwerkverbindung steht, aber die Anmeldung muss mit 'npm run login' erneuert werden.";
   }
@@ -71,11 +75,20 @@ async function main() {
     return;
   }
 
-  results.push(await check("Eigene Anzeigen", () => client.getMyAds({ limit: 5 }), rows => `${rows.length} abgerufen`));
-  results.push(await check("Entwürfe", () => client.getDrafts(), rows => `${rows.length} abgerufen`));
+  loadKleinanzeigenSession({ required: true });
+  results.push(await check(
+    "Eigene Anzeigen",
+    () => executeTool("ka_get_my_ads", { limit: 5 }),
+    rows => `${rows.length} abgerufen`
+  ));
+  results.push(await check(
+    "Entwürfe",
+    () => executeTool("ka_get_drafts", {}),
+    rows => `${rows.length} abgerufen`
+  ));
   results.push(await check(
     "Konversationen",
-    () => client.getConversations({ limit: 5 }),
+    () => executeTool("ka_get_conversations", { limit: 5 }),
     rows => `${rows.length} abgerufen, ${rows.filter(row => row.unread).length} ungelesen`
   ));
   const diagnosis = smokeDiagnosis(results.map(result => result.error));

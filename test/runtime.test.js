@@ -13,10 +13,12 @@ const {
   extractImagePaths,
   isExplicitApproval,
   normalizeInboxPollMinutes,
+  normalizeListingPollMinutes,
   normalizeMode,
   parseAllowedChatIds,
   parseToolArguments,
   randomInboxIntervalMs,
+  randomListingIntervalMs,
   selectModelRoute,
   validateSchema,
   validateStorageKey,
@@ -74,6 +76,19 @@ test("inbox polling is conservative, configurable, and jittered", () => {
   assert.equal(randomInboxIntervalMs(45, () => 0), 36 * 60 * 1000);
   assert.equal(randomInboxIntervalMs(45, () => 0.5), 45 * 60 * 1000);
   assert.equal(randomInboxIntervalMs(45, () => 1), 54 * 60 * 1000);
+});
+
+test("listing polling is conservative, configurable, and jittered", () => {
+  assert.equal(normalizeListingPollMinutes(undefined), 360);
+  assert.equal(normalizeListingPollMinutes("0"), 0);
+  assert.equal(normalizeListingPollMinutes("30"), 30);
+  assert.equal(normalizeListingPollMinutes("1440"), 1440);
+  assert.throws(() => normalizeListingPollMinutes("29"), /30 und 1440/);
+  assert.throws(() => normalizeListingPollMinutes("often"), /30 und 1440/);
+  assert.equal(randomListingIntervalMs(0, () => 0.5), null);
+  assert.equal(randomListingIntervalMs(100, () => 0), 85 * 60 * 1000);
+  assert.equal(randomListingIntervalMs(100, () => 0.5), 100 * 60 * 1000);
+  assert.equal(randomListingIntervalMs(100, () => 1), 115 * 60 * 1000);
 });
 
 test("complexity routing is cheap by default and explicitly controllable", () => {

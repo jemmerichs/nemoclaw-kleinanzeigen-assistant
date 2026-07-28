@@ -8,7 +8,9 @@ const test = require("node:test");
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-db-"));
 process.env.NEMOCLAW_DB_PATH = path.join(directory, "test.db");
+process.env.NEMOCLAW_IMAGE_DIR = path.join(directory, "images");
 const store = require("../tools/adstore");
+const image = require("../tools/image");
 
 test.after(() => {
   store.close();
@@ -79,4 +81,179 @@ test("specialized cleanup deletes only assets without draft or listing history",
     params: [withHistory, "history-1", "removed"],
   });
   assert.throws(() => deleteUnlinkedAsset(withHistory), /Entwurf oder einer Anzeigenhistorie/);
+});
+
+test("asset bundle preserves canonical listing data and ordered image provenance", () => {
+  const firstPath = image.saveTemp(Buffer.from("first-photo"));
+  const secondPath = image.saveTemp(Buffer.from("second-photo"));
+  const payload = {
+    title: "Canonical title",
+    description: "Canonical description",
+    categoryId: 278,
+    price: 42,
+    priceType: "NEGOTIABLE",
+    imagePaths: [secondPath, firstPath],
+  };
+  const assetId = store.query({
+    sql: "INSERT INTO assets (name,image_paths,last_listing_payload_json) VALUES (?,?,?)",
+    params: ["Canonical asset", JSON.stringify(payload.imagePaths), JSON.stringify(payload)],
+  }).lastInsertRowid;
+
+  const provenance = store.replaceAssetImages(assetId, payload.imagePaths);
+  store.query({
+    sql: "INSERT INTO ka_listings (asset_id,ka_id,status,payload_json) VALUES (?,?,?,?)",
+    params: [assetId, "canonical-1", "active", JSON.stringify(payload)],
+  });
+  const bundle = store.getAssetBundle(assetId);
+
+  assert.deepEqual(bundle.asset.last_listing_payload, payload);
+  assert.deepEqual(bundle.asset.image_paths, [secondPath, firstPath]);
+  assert.deepEqual(bundle.images.map(row => row.image_path), [secondPath, firstPath]);
+  assert.deepEqual(bundle.images.map(row => row.position), [0, 1]);
+  assert.deepEqual(bundle.images.map(row => row.kind), ["original", "original"]);
+  assert.deepEqual(bundle.images.map(row => row.output_sha256), provenance.map(row => row.outputSha256));
+  assert.deepEqual(bundle.listings[0].payload, payload);
+  assert.equal(store.getAssetBundleByKaId("canonical-1").asset.id, assetId);
+  assert.equal(store.getAssetBundleByKaId("unknown-ka-id"), null);
+});
+
+test("remote reconciliation tolerates one miss, alerts once after two, and recovers", () => {
+  store.query({
+    sql: "UPDATE ka_listings SET status='removed' WHERE ka_id=?",
+    params: ["canonical-1"],
+  });
+  const payload = {
+    title: "Lifecycle item",
+    description: "Stored for relisting",
+    categoryId: 278,
+    price: 30,
+    priceType: "FIXED",
+    imagePaths: [],
+  };
+  const assetId = store.query({
+    sql: "INSERT INTO assets (name,has_active_listing,last_listing_payload_json) VALUES (?,?,?)",
+    params: ["Lifecycle asset", 1, JSON.stringify(payload)],
+  }).lastInsertRowid;
+  store.query({
+    sql: "INSERT INTO ka_listings (asset_id,ka_id,status,payload_json) VALUES (?,?,?,?)",
+    params: [assetId, "life-1", "active", JSON.stringify(payload)],
+  });
+
+  const visible = store.reconcileRemoteListings([{
+    id: "life-1",
+    status: "active",
+    price: 30,
+    views: 12,
+  }], { now: "2026-07-28T10:00:00.000Z" });
+  assert.equal(visible.events.length, 0);
+  assert.equal(store.query({
+    sql: "SELECT COUNT(*) AS count FROM ka_snapshots",
+  })[0].count > 0, true);
+
+  const firstMiss = store.reconcileRemoteListings([], { now: "2026-07-28T11:00:00.000Z" });
+  assert.equal(firstMiss.events.length, 0);
+  assert.deepEqual(store.query({
+    sql: "SELECT status,missing_checks FROM ka_listings WHERE ka_id=?",
+    params: ["life-1"],
+  })[0], { status: "active", missing_checks: 1 });
+
+  const secondMiss = store.reconcileRemoteListings([], { now: "2026-07-28T12:00:00.000Z" });
+  assert.equal(secondMiss.events.length, 1);
+  assert.equal(secondMiss.events[0].type, "missing_remote");
+  assert.equal(secondMiss.events[0].eventKey, "missing_remote");
+  assert.equal(secondMiss.events[0].bundle.asset.last_listing_payload.title, "Lifecycle item");
+  const pendingMissingRow = store.query({
+    sql: "SELECT status,missing_checks,alerted_state,pending_event_json FROM ka_listings WHERE ka_id=?",
+    params: ["life-1"],
+  })[0];
+  assert.equal(pendingMissingRow.status, "needs_review");
+  assert.equal(pendingMissingRow.missing_checks, 2);
+  assert.equal(pendingMissingRow.alerted_state, null);
+  assert.equal(JSON.parse(pendingMissingRow.pending_event_json).eventKey, "missing_remote");
+  assert.equal(store.getAssetBundle(assetId).asset.has_active_listing, 0);
+
+  const thirdMiss = store.reconcileRemoteListings([], { now: "2026-07-28T13:00:00.000Z" });
+  assert.equal(thirdMiss.events.length, 1);
+  assert.equal(thirdMiss.events[0].eventKey, "missing_remote");
+  assert.deepEqual(
+    store.acknowledgeLifecycleEvent(thirdMiss.events[0].listingId, thirdMiss.events[0].eventKey),
+    {
+      acknowledged: true,
+      listingId: thirdMiss.events[0].listingId,
+      eventKey: "missing_remote",
+    }
+  );
+  const acknowledgedMiss = store.reconcileRemoteListings([], { now: "2026-07-28T13:30:00.000Z" });
+  assert.equal(acknowledgedMiss.events.length, 0);
+
+  const recovered = store.reconcileRemoteListings([{
+    id: "life-1",
+    status: "active",
+    price: 30,
+    views: 13,
+  }], { now: "2026-07-28T14:00:00.000Z" });
+  assert.equal(recovered.events.length, 0);
+  assert.deepEqual(store.query({
+    sql: "SELECT status,missing_checks,alerted_state FROM ka_listings WHERE ka_id=?",
+    params: ["life-1"],
+  })[0], {
+    status: "active",
+    missing_checks: 0,
+    alerted_state: null,
+  });
+  assert.equal(store.getAssetBundle(assetId).asset.has_active_listing, 1);
+
+  const manualChange = store.reconcileRemoteListings([{
+    id: "life-1",
+    status: "active",
+    title: "Lifecycle item – manuell geändert",
+    price: 27,
+    views: 14,
+  }], { now: "2026-07-28T15:00:00.000Z" });
+  assert.equal(manualChange.events.length, 1);
+  assert.equal(manualChange.events[0].type, "remote_changed");
+  assert.deepEqual(manualChange.events[0].changes.price, { from: 30, to: 27 });
+  const changedBundle = store.getAssetBundle(assetId);
+  assert.equal(changedBundle.asset.listing_name, "Lifecycle item – manuell geändert");
+  assert.equal(changedBundle.asset.last_price_cents, 2700);
+  assert.equal(changedBundle.asset.last_listing_payload.title, "Lifecycle item – manuell geändert");
+  assert.equal(changedBundle.asset.last_listing_payload.price, 27);
+  assert.equal(changedBundle.listings[0].payload.price, 27);
+  assert.equal(
+    store.acknowledgeLifecycleEvent(
+      manualChange.events[0].listingId,
+      manualChange.events[0].eventKey
+    ).acknowledged,
+    true
+  );
+
+  const unchangedAgain = store.reconcileRemoteListings([{
+    id: "life-1",
+    status: "active",
+    title: "Lifecycle item – manuell geändert",
+    price: 27,
+    views: 14,
+  }], { now: "2026-07-28T16:00:00.000Z" });
+  assert.equal(unchangedAgain.events.length, 0);
+
+  const performance = store.getAssetBundle(assetId).listings[0];
+  assert.deepEqual(performance.snapshots, [
+    { price_cents: 3000, views: 12, recorded_at: "2026-07-28T10:00:00.000Z" },
+    { price_cents: 3000, views: 13, recorded_at: "2026-07-28T14:00:00.000Z" },
+    { price_cents: 2700, views: 14, recorded_at: "2026-07-28T15:00:00.000Z" },
+  ]);
+  assert.deepEqual(performance.performance, {
+    snapshot_count: 3,
+    first_observed_at: "2026-07-28T10:00:00.000Z",
+    last_metric_change_at: "2026-07-28T15:00:00.000Z",
+    last_checked_at: "2026-07-28T16:00:00.000Z",
+    initial_price_cents: 3000,
+    current_price_cents: 2700,
+    price_delta_cents: -300,
+    initial_views: 12,
+    current_views: 14,
+    view_delta: 2,
+    last_price_change_at: "2026-07-28T15:00:00.000Z",
+    last_view_change_at: "2026-07-28T15:00:00.000Z",
+  });
 });

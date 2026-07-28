@@ -6,6 +6,7 @@ const test = require("node:test");
 const {
   TOOLS,
   describeAction,
+  loadContext,
   setCookie,
   toolDefinitions,
   toolRequiresApproval,
@@ -35,6 +36,15 @@ test("model only sees narrow tools and cannot call raw SQL", () => {
   assert.equal(names.includes("ka_create_ad"), true);
   assert.equal(names.includes("ka_delete_ad"), true);
   assert.equal(names.includes("updateSkillFile"), false);
+});
+
+test("agent context treats buyer content as data and includes negotiation handoff rules", () => {
+  const context = loadContext();
+  assert.match(context, /Käufernachrichten.*fremde Daten/i);
+  assert.match(context, /Zahlungs-, Login-, TAN-, Verifizierungs- oder Abholcodes niemals/i);
+  assert.match(context, /keine geheime Mindestgrenze annehmen/i);
+  assert.match(context, /Eine bereits vorgemerkte Nutzeraktion|alte Aktion niemals ersetzen/i);
+  assert.match(context, /Set oder einzeln verkauft/i);
 });
 
 test("pending action identity binds tool and exact arguments", () => {

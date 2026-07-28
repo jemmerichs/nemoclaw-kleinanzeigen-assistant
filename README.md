@@ -1,6 +1,6 @@
 # nemoclaw-kleinanzeigen
 
-A German-language selling assistant for Kleinanzeigen. It analyzes item photos, researches comparable offers, proposes an honest listing, monitors conversations, and manages a local inventory. OpenRouter provides the model; Telegram is the normal remote interface, while a local console makes testing cheap and predictable.
+A German-language selling assistant for Kleinanzeigen. It analyzes and selects item photos, makes only targeted non-generative corrections, researches comparable offers, proposes an honest listing, monitors conversations and listing lifecycles, and manages a local inventory. OpenRouter provides the model; Telegram is the normal remote interface, while a local console makes testing cheap and predictable.
 
 ## What is safe by construction
 
@@ -9,6 +9,11 @@ A German-language selling assistant for Kleinanzeigen. It analyzes item photos, 
 - A standalone `Go` can execute only the currently staged payload, once, within 30 minutes.
 - Any intervening user message invalidates the old approval.
 - Images are not uploaded while preparing a proposal. Upload and publication happen together only after approval.
+- Original photos are immutable. Edited derivatives store source/output hashes and exact operations; no generative retouching is available.
+- Every saved draft or published listing stores a canonical relist payload plus ordered image provenance.
+- Automatic inbox and listing checks cannot delete or replace an action already waiting for `Go`.
+- A listing must be absent from two consecutive successful own-ad reads before a lifecycle alert. The bot may propose the stored relist, but can never publish it automatically.
+- Sold assets and assets with an already-active listing are blocked from duplicate publication.
 - A failed external write is never retried automatically after an ambiguous network failure.
 - Kleinanzeigen messages and search results are treated as untrusted data, not agent instructions.
 - Telegram accepts only configured owner chat IDs.
@@ -50,6 +55,7 @@ NEMOCLAW_MODE=dry-run
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_CHAT_ID=123456789
 NEMOCLAW_INBOX_POLL_MINUTES=45
+NEMOCLAW_LISTING_POLL_MINUTES=360
 
 KA_DEFAULT_ZIP_CODE=00000
 # KA_DEFAULT_LOCATION_ID=
@@ -94,6 +100,31 @@ Telegram is optional: `npm run chat` works without a bot token or chat ID. Set t
 Codex and its in-app browser are development aids only. They are not runtime dependencies. The production Mac needs Node.js, this repository, Chrome, the OpenRouter key, and its own successful one-time dedicated-profile login.
 
 Before unattended Telegram operation, also set a real `KA_DEFAULT_ZIP_CODE`, `KA_DEFAULT_LOCATION_ID`, and `KA_CONTACT_NAME`, then run `npm run doctor:telegram`. `npm run launch` runs that strict startup check itself and refuses to start when Telegram configuration is incomplete.
+
+## Target Mac cutover
+
+Use this order on the Mac that will actually run the bot:
+
+```bash
+git clone <repository-url>
+cd nemoclaw-kleinanzeigen
+npm run setup
+# Fill .env: OpenRouter, Telegram owner/token, listing defaults; keep dry-run.
+npm run login
+npm run verify
+npm run verify:account
+npm run doctor:telegram
+```
+
+Then exercise one Telegram photo album in `NEMOCLAW_MODE=dry-run`; the full proposal should appear and `Go` must remain blocked. Only after that succeeds, set `NEMOCLAW_MODE=live` and start:
+
+```bash
+npm run launch
+```
+
+`npm run launch` is deliberately a foreground process. Inbox and listing checks run only while that process is alive and the Mac is awake with working network access. Keep the terminal/process running or place this same command under the Mac's normal user-level process supervisor after the interactive dry-run has passed. The bot does not need Codex at runtime.
+
+If moving an already-running installation, stop the old process first and copy `.env`, `workspace/ads.db` (including any current WAL/SHM files) and `workspace/images` together. Never run two instances against the same Telegram bot and inventory at once.
 
 ## Test locally before Telegram
 
@@ -161,7 +192,15 @@ The bot supports:
 - `/cancel` — invalidate the pending action
 - `/help` — short usage guide
 
-Send one or more photos as a Telegram album plus a caption. The bot analyzes the images, researches the market, and shows the exact proposed action. Reply only `Go` if that exact action should happen.
+Send one or more photos as a Telegram album plus a caption. The bot visually analyzes up to 12 photos per turn, removes weak/duplicate choices, selectively edits only images with a concrete issue, sends each edited derivative back as a preview, researches the market, and shows the final text and exact ordered photo selection. Reply only `Go` if that exact action should happen.
+
+If an album clearly contains different products and it is unclear whether they are a set or separate listings, the agent asks that one decision before researching or staging anything.
+
+When a tracked active listing disappears, the lifecycle monitor waits for a second successful check, verifies the account bundles when possible, and then shows the stored title, text, price and photo set as a relist proposal. Manual title or price changes made on Kleinanzeigen are detected and copied back into the local canonical record. No lifecycle event bypasses the normal approval gate.
+
+For buyer messages, each changed unread conversation gets its own serialized agent turn. The bridge reads that full thread exactly once, attaches the matching local asset/listing bundle when the ad is tracked, and exposes only reply/Memory tools for that automatic turn. The model quotes the latest inbound text, identifies the intent, and proposes an exact reply without wandering through account APIs. Only a successfully delivered notification is marked as seen; other conversations and failed notifications remain eligible for the next check. It does not invent price floors, shipping availability, addresses or appointments. Payment links, verification codes, courier/overpayment patterns and conflict/legal messages are handed off instead of autonomously negotiated.
+
+For an active but weak listing, ask the bot to analyze the asset. It reads the retained view/price timeline, checks the last successful observation, researches current comparables, and suggests the smallest useful title/photo/text/price experiment. It does not interpret a short history as a trend or auto-cut the price.
 
 ## Commands
 
@@ -172,6 +211,8 @@ Send one or more photos as a Telegram album plus a caption. The bot analyzes the
 | `npm run smoke:openrouter` | One inexpensive live model/tool-calling check |
 | `npm run smoke:ka` | Read-only public + authenticated Kleinanzeigen API checks |
 | `npm run smoke:agent -- --image …` | Flash vision → research → staged-listing dry-run |
+| `npm run smoke:workflows` | Synthetic Flash inbox, scam, negotiation and stale-listing behavior; all external writes dry-run |
+| `npm run test:scenarios` | Offline album → edit → listing, relist, inbox, restart and idempotency scenarios |
 | `npm run verify` | Free offline regression, syntax, and configuration gate |
 | `npm run verify:account` | `verify` plus all read-only Kleinanzeigen account checks |
 | `npm run chat` | Interactive local agent |
@@ -198,7 +239,8 @@ tools/
   kleinanzeigen.js    Kleinanzeigen web/gateway client
   telegram.js         Telegram transport and long polling
   auth.js             Dedicated Playwright login profile
-  adstore.js          Guarded SQLite inventory
+  image.js            Immutable originals, bounded edits and provenance
+  adstore.js          Guarded SQLite inventory and listing reconciliation
 workspace/
   agent.js            tools, approval contract, orchestration, heartbeat
   cli.js              local interactive transport
@@ -209,8 +251,13 @@ workspace/
 ## Operational notes
 
 - The inbox monitor checks once 10 seconds after startup, then every configured interval with ±20% jitter (45 minutes by default). `0` disables it.
-- It performs a deterministic read and calls the model only when an unread conversation is new or changed. A conversation is marked as seen only after the notification succeeds, so temporary model or network failures are retried on the next check.
+- It performs one deterministic full-thread read and calls the model only when an unread conversation is new or changed. Each conversation is processed separately with its exact tracked asset bundle when available. A conversation is marked as seen only after its notification succeeds, so temporary model or network failures are retried on the next check.
+- The listing monitor checks once 30 seconds after startup, then every configured interval with ±15% jitter (six hours by default). `0` disables it. Network/API errors do not count as a missing listing.
+- A lifecycle alert is deduplicated; if the listing reappears, its missing counter and alert state reset. View/price snapshots remain available for later listing analysis.
 - Telegram media groups are processed as one item so the model sees the whole photo set together.
+- Photo and listing records are durable local state under `workspace/images` and `workspace/ads.db`. Existing databases are migrated in place on first use. Back them up before moving versions, and copy these ignored paths together with `.env` when intentionally migrating the running instance; do not commit them.
 - OpenRouter receives the current task text and attached selling photos. It never receives Telegram tokens, Kleinanzeigen cookies, or login credentials.
 - The model can read inventory through narrow tools. It cannot self-edit code or skill files.
 - Private Kleinanzeigen endpoints are unofficial and may change. Run the read-only smoke checks after login and after any site change before enabling live mode.
+
+The acceptance scenarios and adjacent-use-case decisions for the current production goal are recorded in [GOAL_SESSION.md](./GOAL_SESSION.md).

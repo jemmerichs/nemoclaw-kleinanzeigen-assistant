@@ -168,6 +168,24 @@ function randomInboxIntervalMs(minutes, random = Math.random) {
   return Math.round(normalized * 60 * 1000 * jitter);
 }
 
+function normalizeListingPollMinutes(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return 360;
+  const parsed = Number(value);
+  if (parsed === 0) return 0;
+  if (!Number.isFinite(parsed) || parsed < 30 || parsed > 1440) {
+    throw new Error("NEMOCLAW_LISTING_POLL_MINUTES muss 0 oder eine Zahl zwischen 30 und 1440 sein.");
+  }
+  return parsed;
+}
+
+function randomListingIntervalMs(minutes, random = Math.random) {
+  const normalized = normalizeListingPollMinutes(minutes);
+  if (normalized === 0) return null;
+  const unit = Math.max(0, Math.min(1, Number(random()) || 0));
+  const jitter = 0.85 + unit * 0.3;
+  return Math.round(normalized * 60 * 1000 * jitter);
+}
+
 function selectModelRoute(message, routingMode = "auto") {
   const mode = normalizeComplexityRouting(routingMode);
   const original = String(message || "");
@@ -179,7 +197,7 @@ function selectModelRoute(message, routingMode = "auto") {
   if (highDirective) return { tier: "high", score: 99, reason: "explicit-high", message: stripped.trim() };
   if (fastDirective) return { tier: "fast", score: 0, reason: "explicit-fast", message: stripped.trim() };
   if (mode === "manual") return { tier: "fast", score: 0, reason: "manual-default", message: original };
-  if (/^\s*Automatischer Inbox-Check:/i.test(original)) {
+  if (/^\s*Automatischer (?:Inbox|Anzeigen-Lifecycle)-Check:/i.test(original)) {
     return { tier: "fast", score: 0, reason: "heartbeat", message: original };
   }
 
@@ -274,10 +292,12 @@ module.exports = {
   isExplicitApproval,
   normalizeComplexityRouting,
   normalizeInboxPollMinutes,
+  normalizeListingPollMinutes,
   normalizeMode,
   parseAllowedChatIds,
   parseToolArguments,
   randomInboxIntervalMs,
+  randomListingIntervalMs,
   selectModelRoute,
   stableJson,
   validateSchema,

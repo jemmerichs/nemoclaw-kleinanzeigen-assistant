@@ -2,7 +2,9 @@
 
 const fs       = require("fs");
 const path     = require("path");
+const crypto   = require("crypto");
 const Database = require("better-sqlite3");
+const { readProvenance } = require("./image");
 
 const DB_PATH = process.env.NEMOCLAW_DB_PATH || path.join(__dirname, "../workspace/ads.db");
 let _db = null;
@@ -31,6 +33,7 @@ function getDb() {
       sold_price_cents    INTEGER,
       image_paths         TEXT,
       ka_draft_id         TEXT,
+      last_listing_payload_json TEXT,
       created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
       updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     );
@@ -45,7 +48,29 @@ function getDb() {
       status      TEXT NOT NULL DEFAULT 'active', -- active | expired | removed | draft
       posted_at   TEXT,
       expired_at  TEXT,
+      payload_json TEXT,
+      last_seen_at TEXT,
+      missing_checks INTEGER NOT NULL DEFAULT 0,
+      remote_status TEXT,
+      alerted_state TEXT,
+      pending_event_json TEXT,
       created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    );
+
+    -- Ordered image selection and immutable edit provenance used for the latest
+    -- canonical listing payload of an asset.
+    CREATE TABLE IF NOT EXISTS asset_images (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      asset_id      INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+      position      INTEGER NOT NULL,
+      image_path    TEXT NOT NULL,
+      source_path   TEXT NOT NULL,
+      kind          TEXT NOT NULL,
+      input_sha256  TEXT,
+      output_sha256 TEXT NOT NULL,
+      operations_json TEXT,
+      created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+      UNIQUE(asset_id, position)
     );
 
     -- Price and view snapshots over a listing's lifetime.
@@ -63,10 +88,18 @@ function getDb() {
     CREATE INDEX IF NOT EXISTS idx_ka_listings_status ON ka_listings(status);
     CREATE INDEX IF NOT EXISTS idx_ka_listings_ka_id  ON ka_listings(ka_id);
     CREATE INDEX IF NOT EXISTS idx_ka_snapshots_listing ON ka_snapshots(listing_id);
+    CREATE INDEX IF NOT EXISTS idx_asset_images_asset ON asset_images(asset_id);
   `);
   // Migrations — idempotent: SQLite throws if column already exists, safe to swallow
   try { _db.exec("ALTER TABLE assets ADD COLUMN image_paths TEXT"); } catch (_) {}
   try { _db.exec("ALTER TABLE assets ADD COLUMN ka_draft_id TEXT"); } catch (_) {}
+  try { _db.exec("ALTER TABLE assets ADD COLUMN last_listing_payload_json TEXT"); } catch (_) {}
+  try { _db.exec("ALTER TABLE ka_listings ADD COLUMN payload_json TEXT"); } catch (_) {}
+  try { _db.exec("ALTER TABLE ka_listings ADD COLUMN last_seen_at TEXT"); } catch (_) {}
+  try { _db.exec("ALTER TABLE ka_listings ADD COLUMN missing_checks INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
+  try { _db.exec("ALTER TABLE ka_listings ADD COLUMN remote_status TEXT"); } catch (_) {}
+  try { _db.exec("ALTER TABLE ka_listings ADD COLUMN alerted_state TEXT"); } catch (_) {}
+  try { _db.exec("ALTER TABLE ka_listings ADD COLUMN pending_event_json TEXT"); } catch (_) {}
   for (const file of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
     if (fs.existsSync(file)) fs.chmodSync(file, 0o600);
   }
@@ -97,7 +130,7 @@ function validateSql(sql) {
         : /^UPDATE\s+([A-Za-z_][A-Za-z0-9_]*)\b/i
     );
     const table = match?.[1]?.toLowerCase();
-    if (!["assets", "ka_listings", "ka_snapshots"].includes(table)) {
+    if (!["assets", "ka_listings", "ka_snapshots", "asset_images"].includes(table)) {
       throw new Error("Schreibzugriffe sind nur auf die Inventar-Tabellen erlaubt.");
     }
   }
@@ -145,9 +178,425 @@ function deleteUnlinkedAsset(assetId) {
   })();
 }
 
+function replaceAssetImages(assetId, imagePaths) {
+  const id = Number(assetId);
+  if (!Number.isInteger(id) || id < 1) throw new Error("assetId ist ungültig.");
+  if (!Array.isArray(imagePaths)) throw new Error("imagePaths muss eine Liste sein.");
+  const provenance = imagePaths.map((imagePath, position) => ({
+    position,
+    ...readProvenance(imagePath),
+  }));
+  const db = getDb();
+  return db.transaction(() => {
+    if (!db.prepare("SELECT id FROM assets WHERE id=?").get(id)) {
+      throw new Error(`Asset ${id} nicht gefunden.`);
+    }
+    db.prepare("DELETE FROM asset_images WHERE asset_id=?").run(id);
+    const insert = db.prepare(`
+      INSERT INTO asset_images (
+        asset_id, position, image_path, source_path, kind,
+        input_sha256, output_sha256, operations_json
+      ) VALUES (?,?,?,?,?,?,?,?)
+    `);
+    for (const item of provenance) {
+      insert.run(
+        id,
+        item.position,
+        item.outputPath,
+        item.sourcePath,
+        item.kind,
+        item.inputSha256 || null,
+        item.outputSha256,
+        item.operations ? JSON.stringify(item.operations) : null
+      );
+    }
+    return provenance;
+  })();
+}
+
+function parseJson(value, fallback = null) {
+  if (!value) return fallback;
+  try { return JSON.parse(value); }
+  catch { return fallback; }
+}
+
+function summarizeListingPerformance(listing, snapshots) {
+  if (!snapshots.length) {
+    return {
+      snapshot_count: 0,
+      first_observed_at: null,
+      last_metric_change_at: null,
+      last_checked_at: listing.last_seen_at || null,
+      initial_price_cents: null,
+      current_price_cents: listing.price_cents ?? null,
+      price_delta_cents: null,
+      initial_views: null,
+      current_views: null,
+      view_delta: null,
+      last_price_change_at: null,
+      last_view_change_at: null,
+    };
+  }
+
+  const first = snapshots[0];
+  const latest = snapshots[snapshots.length - 1];
+  let lastPriceChangeAt = first.price_cents === null ? null : first.recorded_at;
+  let lastViewChangeAt = first.views === null ? null : first.recorded_at;
+  for (let index = 1; index < snapshots.length; index++) {
+    const previous = snapshots[index - 1];
+    const current = snapshots[index];
+    if (current.price_cents !== previous.price_cents && current.price_cents !== null) {
+      lastPriceChangeAt = current.recorded_at;
+    }
+    if (current.views !== previous.views && current.views !== null) {
+      lastViewChangeAt = current.recorded_at;
+    }
+  }
+
+  const priceDelta = first.price_cents === null || latest.price_cents === null
+    ? null
+    : latest.price_cents - first.price_cents;
+  const viewDelta = first.views === null || latest.views === null
+    ? null
+    : latest.views - first.views;
+  return {
+    snapshot_count: snapshots.length,
+    first_observed_at: first.recorded_at,
+    last_metric_change_at: latest.recorded_at,
+    last_checked_at: listing.last_seen_at || latest.recorded_at,
+    initial_price_cents: first.price_cents,
+    current_price_cents: latest.price_cents ?? listing.price_cents ?? null,
+    price_delta_cents: priceDelta,
+    initial_views: first.views,
+    current_views: latest.views,
+    view_delta: viewDelta,
+    last_price_change_at: lastPriceChangeAt,
+    last_view_change_at: lastViewChangeAt,
+  };
+}
+
+function getAssetBundle(assetId) {
+  const id = Number(assetId);
+  if (!Number.isInteger(id) || id < 1) throw new Error("assetId ist ungültig.");
+  const db = getDb();
+  const asset = db.prepare(`
+    SELECT id,name,listing_name,description,category_id,last_price_cents,
+           has_active_listing,status,sold_at,sold_price_cents,image_paths,
+           ka_draft_id,last_listing_payload_json,created_at,updated_at
+    FROM assets WHERE id=?
+  `).get(id);
+  if (!asset) throw new Error(`Asset ${id} nicht gefunden.`);
+  const images = db.prepare(`
+    SELECT position,image_path,source_path,kind,input_sha256,output_sha256,
+           operations_json,created_at
+    FROM asset_images WHERE asset_id=? ORDER BY position
+  `).all(id).map(row => ({
+    ...row,
+    operations: parseJson(row.operations_json),
+    operations_json: undefined,
+  }));
+  const listings = db.prepare(`
+    SELECT id,ka_id,ka_link,price_cents,status,posted_at,expired_at,
+           payload_json,last_seen_at,missing_checks,remote_status,alerted_state,
+           pending_event_json,created_at
+    FROM ka_listings WHERE asset_id=? ORDER BY id DESC
+  `).all(id).map(row => {
+    const allSnapshots = db.prepare(`
+      SELECT price_cents,views,recorded_at
+      FROM ka_snapshots
+      WHERE listing_id=?
+      ORDER BY recorded_at,id
+    `).all(row.id);
+    const snapshots = allSnapshots.slice(-100);
+    return {
+      ...row,
+      payload: parseJson(row.payload_json),
+      pending_event: parseJson(row.pending_event_json),
+      snapshots,
+      snapshots_truncated: allSnapshots.length > snapshots.length,
+      performance: summarizeListingPerformance(row, allSnapshots),
+      payload_json: undefined,
+      pending_event_json: undefined,
+    };
+  });
+  return {
+    asset: {
+      ...asset,
+      image_paths: parseJson(asset.image_paths, []),
+      last_listing_payload: parseJson(asset.last_listing_payload_json),
+      last_listing_payload_json: undefined,
+    },
+    images,
+    listings,
+  };
+}
+
+function getAssetBundleByKaId(kaId) {
+  const normalized = String(kaId ?? "").trim();
+  if (!normalized) return null;
+  const row = getDb().prepare(`
+    SELECT asset_id
+    FROM ka_listings
+    WHERE ka_id=?
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(normalized);
+  return row ? getAssetBundle(row.asset_id) : null;
+}
+
+function normalizeRemoteStatus(value) {
+  const status = String(value || "").trim().toLowerCase();
+  if (/(?:remove|delete|gelöscht)/.test(status)) return "removed";
+  if (/(?:expire|abgelaufen)/.test(status)) return "expired";
+  if (/(?:pause|inactive|deactiv|inaktiv|pausiert)/.test(status)) return "paused";
+  return "active";
+}
+
+function remotePriceCents(ad) {
+  const value = ad?.price?.amount ?? ad?.priceAmount ?? ad?.price;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  // Public and own-ad normalizers expose whole EUR. Raw payloads may expose cents.
+  return Math.round(parsed * 100);
+}
+
+function reconcileRemoteListings(remoteAds, { missingThreshold = 2, now = new Date().toISOString() } = {}) {
+  if (!Array.isArray(remoteAds)) throw new Error("remoteAds muss eine Liste sein.");
+  const threshold = Number(missingThreshold);
+  if (!Number.isInteger(threshold) || threshold < 2 || threshold > 10) {
+    throw new Error("missingThreshold muss zwischen 2 und 10 liegen.");
+  }
+  const remoteById = new Map(
+    remoteAds
+      .filter(ad => ad && ad.id !== undefined && ad.id !== null)
+      .map(ad => [String(ad.id), ad])
+  );
+  const db = getDb();
+  const eventRows = db.transaction(() => {
+    const listings = db.prepare(`
+      SELECT l.id,l.asset_id,l.ka_id,l.status,l.missing_checks,l.alerted_state,
+             l.pending_event_json,l.price_cents,l.payload_json,a.last_listing_payload_json,
+             a.listing_name,a.last_price_cents
+      FROM ka_listings l
+      JOIN assets a ON a.id=l.asset_id
+      WHERE l.ka_id IS NOT NULL AND l.status IN ('active','needs_review')
+    `).all();
+    const queueEvent = (listing, event, eventKey) => {
+      const pending = parseJson(listing.pending_event_json);
+      if (listing.alerted_state === eventKey || pending?.eventKey === eventKey) return;
+      const queued = JSON.stringify({ ...event, eventKey });
+      db.prepare("UPDATE ka_listings SET pending_event_json=? WHERE id=?")
+        .run(queued, listing.id);
+      listing.pending_event_json = queued;
+    };
+    for (const listing of listings) {
+      const remote = remoteById.get(String(listing.ka_id));
+      if (remote) {
+        const remoteStatus = normalizeRemoteStatus(remote.status);
+        const eventState = remoteStatus === "active" ? null : `remote_${remoteStatus}`;
+        const pendingBefore = parseJson(listing.pending_event_json);
+        const recoveredFromMissing = remoteStatus === "active" && (
+          listing.status === "needs_review"
+          || listing.alerted_state === "missing_remote"
+          || pendingBefore?.eventKey === "missing_remote"
+        );
+        if (recoveredFromMissing) {
+          db.prepare(`
+            UPDATE ka_listings
+            SET alerted_state=NULL,
+                pending_event_json=CASE
+                  WHEN pending_event_json LIKE '%"eventKey":"missing_remote"%' THEN NULL
+                  ELSE pending_event_json
+                END
+            WHERE id=?
+          `).run(listing.id);
+          listing.alerted_state = null;
+          if (pendingBefore?.eventKey === "missing_remote") listing.pending_event_json = null;
+        }
+        const priceCents = remotePriceCents(remote);
+        const payload = parseJson(listing.payload_json)
+          || parseJson(listing.last_listing_payload_json)
+          || {};
+        const changes = {};
+        const remoteTitle = String(remote.title || "").trim();
+        if (remoteStatus === "active" && remoteTitle && payload.title && remoteTitle !== payload.title) {
+          changes.title = { from: payload.title, to: remoteTitle };
+          payload.title = remoteTitle;
+        } else if (remoteTitle && !payload.title) {
+          payload.title = remoteTitle;
+        }
+        if (
+          remoteStatus === "active"
+          && priceCents !== null
+          && listing.price_cents !== null
+          && Number.isFinite(Number(listing.price_cents))
+          && priceCents !== Number(listing.price_cents)
+        ) {
+          changes.price = {
+            from: Number(listing.price_cents) / 100,
+            to: priceCents / 100,
+          };
+          payload.price = priceCents / 100;
+        } else if (priceCents !== null && !Number.isFinite(Number(payload.price))) {
+          payload.price = priceCents / 100;
+        }
+        db.prepare(`
+          UPDATE ka_listings
+          SET status=?, last_seen_at=?, missing_checks=0, remote_status=?,
+              price_cents=COALESCE(?,price_cents),payload_json=?
+          WHERE id=?
+        `).run(
+          remoteStatus,
+          now,
+          String(remote.status || "active"),
+          priceCents,
+          JSON.stringify(payload),
+          listing.id
+        );
+        db.prepare(`
+          UPDATE assets
+          SET listing_name=COALESCE(?,listing_name),
+              last_price_cents=COALESCE(?,last_price_cents),
+              last_listing_payload_json=?,
+              updated_at=?
+          WHERE id=?
+        `).run(
+          remoteTitle || null,
+          priceCents,
+          JSON.stringify(payload),
+          now,
+          listing.asset_id
+        );
+        if (remoteStatus !== "active" && listing.alerted_state !== eventState) {
+          queueEvent(listing, {
+            type: "remote_status",
+            listingId: listing.id,
+            assetId: listing.asset_id,
+            kaId: String(listing.ka_id),
+            status: remoteStatus,
+          }, eventState);
+        }
+        if (remoteStatus === "active" && Object.keys(changes).length) {
+          const changeKey = crypto
+            .createHash("sha256")
+            .update(JSON.stringify(changes))
+            .digest("hex")
+            .slice(0, 12);
+          queueEvent(listing, {
+            type: "remote_changed",
+            listingId: listing.id,
+            assetId: listing.asset_id,
+            kaId: String(listing.ka_id),
+            status: "active",
+            changes,
+          }, `remote_changed:${changeKey}`);
+        }
+
+        const views = Number.isFinite(Number(remote.views)) ? Number(remote.views) : null;
+        if (priceCents !== null || views !== null) {
+          const latest = db.prepare(`
+            SELECT price_cents,views FROM ka_snapshots
+            WHERE listing_id=? ORDER BY id DESC LIMIT 1
+          `).get(listing.id);
+          if (!latest || latest.price_cents !== priceCents || latest.views !== views) {
+            db.prepare(`
+              INSERT INTO ka_snapshots (listing_id,price_cents,views,recorded_at)
+              VALUES (?,?,?,?)
+            `).run(listing.id, priceCents, views, now);
+          }
+        }
+        continue;
+      }
+
+      const missingChecks = Number(listing.missing_checks || 0) + 1;
+      if (missingChecks < threshold) {
+        db.prepare("UPDATE ka_listings SET missing_checks=? WHERE id=?")
+          .run(missingChecks, listing.id);
+        continue;
+      }
+      const eventState = "missing_remote";
+      db.prepare(`
+        UPDATE ka_listings
+        SET status='needs_review', missing_checks=?, remote_status='missing'
+        WHERE id=?
+      `).run(missingChecks, listing.id);
+      if (listing.alerted_state !== eventState) {
+        queueEvent(listing, {
+          type: "missing_remote",
+          listingId: listing.id,
+          assetId: listing.asset_id,
+          kaId: String(listing.ka_id),
+          status: "needs_review",
+          missingChecks,
+        }, eventState);
+      }
+    }
+
+    const touchedAssetIds = [...new Set(listings.map(row => row.asset_id))];
+    const activeCount = db.prepare(`
+      SELECT COUNT(*) AS count FROM ka_listings WHERE asset_id=? AND status='active'
+    `);
+    const updateAsset = db.prepare(`
+      UPDATE assets
+      SET has_active_listing=?, updated_at=?
+      WHERE id=?
+    `);
+    for (const assetId of touchedAssetIds) {
+      updateAsset.run(activeCount.get(assetId).count > 0 ? 1 : 0, now, assetId);
+    }
+    return db.prepare(`
+      SELECT pending_event_json
+      FROM ka_listings
+      WHERE pending_event_json IS NOT NULL
+      ORDER BY id
+    `).all().map(row => parseJson(row.pending_event_json)).filter(Boolean);
+  })();
+
+  return {
+    checkedAt: now,
+    remoteCount: remoteById.size,
+    events: eventRows.map(event => ({
+      ...event,
+      bundle: getAssetBundle(event.assetId),
+    })),
+  };
+}
+
+function acknowledgeLifecycleEvent(listingId, eventKey) {
+  const id = Number(listingId);
+  if (!Number.isInteger(id) || id < 1) throw new Error("listingId ist ungültig.");
+  const key = String(eventKey || "");
+  if (!key) throw new Error("eventKey fehlt.");
+  const db = getDb();
+  const row = db.prepare("SELECT pending_event_json FROM ka_listings WHERE id=?").get(id);
+  if (!row) throw new Error(`Listing ${id} nicht gefunden.`);
+  const pending = parseJson(row.pending_event_json);
+  if (!pending) return { acknowledged: false, reason: "no-pending-event" };
+  if (pending.eventKey !== key) {
+    throw new Error(`Lifecycle-Ereignis für Listing ${id} wurde inzwischen ersetzt.`);
+  }
+  const result = db.prepare(`
+    UPDATE ka_listings
+    SET pending_event_json=NULL, alerted_state=?
+    WHERE id=?
+  `).run(key, id);
+  return { acknowledged: result.changes === 1, listingId: id, eventKey: key };
+}
+
 function close() {
   if (_db) _db.close();
   _db = null;
 }
 
-module.exports = { query, close, deleteUnlinkedAsset, validateSql };
+module.exports = {
+  close,
+  acknowledgeLifecycleEvent,
+  deleteUnlinkedAsset,
+  getAssetBundle,
+  getAssetBundleByKaId,
+  normalizeRemoteStatus,
+  query,
+  reconcileRemoteListings,
+  replaceAssetImages,
+  validateSql,
+};

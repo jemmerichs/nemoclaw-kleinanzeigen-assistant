@@ -349,7 +349,11 @@ class KleinanzeigenClient {
           try {
             const data = JSON.parse(raw);
             if (res.statusCode < 200 || res.statusCode >= 300 || !data.access_token) {
-              return reject(new Error(`Token-Refresh fehlgeschlagen (${res.statusCode}): ${raw.slice(0, 300)}`));
+              return reject(clientError(
+                "KA_SESSION_EXPIRED",
+                `Token-Refresh fehlgeschlagen (${res.statusCode}). Die Anmeldung ist vollständig abgelaufen; bitte 'npm run login' ausführen.`,
+                res.statusCode
+              ));
             }
             this.bearerToken = data.access_token;
             if (data.refresh_token) this.refreshToken = data.refresh_token;

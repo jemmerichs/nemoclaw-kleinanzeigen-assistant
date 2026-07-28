@@ -53,3 +53,29 @@ test("agent smoke verifier rejects missing image manifests and expensive routing
   highRoute.result.route.tier = "high";
   assert.throws(() => verifySmokeResult(highRoute), /unerwartet geroutet/);
 });
+
+test("agent smoke verifier accepts a subset or derivative but rejects unknown photos", () => {
+  const subset = fixture();
+  subset.pending.args.imagePaths = [subset.images[1]];
+  subset.pending.materials = [subset.pending.materials[1]];
+  assert.doesNotThrow(() => verifySmokeResult(subset));
+
+  const derivative = fixture();
+  derivative.pending.args.imagePaths = ["/images/edited-one.jpg"];
+  derivative.pending.materials = [{
+    path: "/images/edited-one.jpg",
+    size: 10,
+    sha256: "b".repeat(64),
+  }];
+  derivative.imageSourceResolver = () => derivative.images[0];
+  assert.doesNotThrow(() => verifySmokeResult(derivative));
+
+  const unknown = fixture();
+  unknown.pending.args.imagePaths = ["/images/unknown.jpg"];
+  unknown.pending.materials = [{
+    path: "/images/unknown.jpg",
+    size: 10,
+    sha256: "c".repeat(64),
+  }];
+  assert.throws(() => verifySmokeResult(unknown), /nicht aus dem Testalbum/);
+});

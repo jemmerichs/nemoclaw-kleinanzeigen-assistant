@@ -73,3 +73,50 @@ test("Telegram albums split across polls become one model turn", async () => {
   assert.deepEqual(sent, ["Beide Fotos wurden gemeinsam empfangen."]);
   assert.equal(albumBuffer.size, 0);
 });
+
+test("large Telegram album keeps all file tokens but bounds visual model input to twelve", async () => {
+  const modelCalls = [];
+  const llmClient = {
+    model: "stub",
+    async complete(request) {
+      modelCalls.push(request);
+      return {
+        message: {
+          role: "assistant",
+          content: "Ich habe 13 Dateien erhalten; 12 davon wurden in diesem Turn visuell analysiert.",
+        },
+      };
+    },
+  };
+  const gateway = {
+    async downloadPhoto(fileId) { return Buffer.from(`jpeg-${fileId}`); },
+    async send() {},
+  };
+  const updates = Array.from({ length: 13 }, (_, index) => ({
+    update_id: 100 + index,
+    message: {
+      message_id: 200 + index,
+      chat: { id: 42 },
+      media_group_id: "large-group",
+      ...(index === 0 ? { caption: "Ein Artikel aus vielen Perspektiven" } : {}),
+      photo: [{ file_id: `large-${index + 1}` }],
+    },
+  }));
+  const albumBuffer = new Map();
+
+  await processTelegramUpdates(
+    updates,
+    new Set(["42"]),
+    createSerialExecutor(),
+    llmClient,
+    { gateway, albumBuffer, albumDelayMs: 20 }
+  );
+  await new Promise(resolve => setTimeout(resolve, 100));
+
+  assert.equal(modelCalls.length, 1);
+  const content = modelCalls[0].messages[1].content;
+  assert.equal(content.filter(part => part.type === "image_url").length, 12);
+  assert.equal((content[0].text.match(/\[FOTO path:/g) || []).length >= 13, true);
+  assert.match(content[0].text, /Ein Artikel aus vielen Perspektiven/);
+  assert.equal(albumBuffer.size, 0);
+});

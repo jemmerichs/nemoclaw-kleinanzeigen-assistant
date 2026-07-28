@@ -8,7 +8,10 @@ const root = path.resolve(__dirname, "..");
 require("dotenv").config({ path: path.join(root, ".env") });
 const { OpenRouterClient } = require("../tools/openrouter");
 const { findChromeExecutable, userIdFromAccessToken } = require("../tools/auth");
-const { normalizeInboxPollMinutes } = require("../workspace/runtime");
+const {
+  normalizeInboxPollMinutes,
+  normalizeListingPollMinutes,
+} = require("../workspace/runtime");
 let requiredFailures = 0;
 const requireTelegram = process.argv.includes("--telegram");
 
@@ -92,6 +95,22 @@ function main() {
     );
   } catch (error) {
     line("Inbox-Monitor", false, error.message);
+  }
+  try {
+    const listingMinutes = normalizeListingPollMinutes(process.env.NEMOCLAW_LISTING_POLL_MINUTES);
+    line(
+      "Anzeigen-Lifecycle",
+      true,
+      listingMinutes === 0 ? "deaktiviert" : `Startcheck + etwa alle ${listingMinutes} min (±15%)`
+    );
+  } catch (error) {
+    line("Anzeigen-Lifecycle", false, error.message);
+  }
+  try {
+    const sharp = require("sharp");
+    line("Bildbearbeitung", Boolean(sharp?.versions?.sharp), `Sharp ${sharp?.versions?.sharp || "nicht verfügbar"}`);
+  } catch (error) {
+    line("Bildbearbeitung", false, error.message);
   }
 
   const kaCookies = Boolean(process.env.KA_COOKIES);
