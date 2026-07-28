@@ -7,7 +7,6 @@ const {
   TOOLS,
   describeAction,
   loadContext,
-  setCookie,
   toolDefinitions,
   toolRequiresApproval,
   validateConfig,
@@ -61,11 +60,6 @@ test("pending action identity binds tool and exact arguments", () => {
   assert.match(description, /c1/);
   assert.match(description, /Hallo/);
   assert.equal(toolRequiresApproval(TOOLS.ka_send_message, {}), true);
-});
-
-test("token refresh inserts missing cookies and replaces existing values", () => {
-  assert.equal(setCookie("user_id=42", "access_token", "new"), "user_id=42; access_token=new");
-  assert.equal(setCookie("access_token=old; user_id=42", "access_token", "new"), "user_id=42; access_token=new");
 });
 
 test("startup rejects placeholder IDs and heartbeat recipients outside the allowlist", () => {

@@ -11,7 +11,8 @@ const path = require("path");
 const ENV_FILE    = path.resolve(__dirname, "../.env");
 const PROFILE_DIR = path.resolve(__dirname, "../workspace/browser-profile");
 const LOGIN_URL   = "https://www.kleinanzeigen.de/m-einloggen.html";
-const CSRF_URL    = "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt1.html";
+const CSRF_URL    = "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html";
+const DEVTOOLS_ACTIVE_PORT_FILE = path.join(PROFILE_DIR, "DevToolsActivePort");
 const LOGIN_TIMEOUT_MS = 300_000;
 
 const ACCESS_BLOCK_MARKERS = [
@@ -25,6 +26,7 @@ const ACCESS_BLOCK_MARKERS = [
   "request blocked",
   "temporarily blocked",
 ];
+const DEFAULT_ACCEPT_LANGUAGE = "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7";
 
 function classifyAccessProblem({ status, url = "", title = "", bodyText = "" } = {}) {
   const statusCode = Number(status);
@@ -185,6 +187,79 @@ function extractCookieHeaderFromCurl(input) {
   return validatedCookieHeader(rawCookieHeaderFromCurl(input));
 }
 
+function requestHeaderFromCurl(input, requestedName) {
+  const text = String(input || "");
+  if (!text || text.length > 1024 * 1024) return "";
+  const normalized = text.replace(/\\\r?\n/g, " ");
+  const headerPattern = /(?:^|\s)(?:-H|--header)\s+(['"])(.*?)\1(?=\s|$)/gis;
+  const expected = String(requestedName || "").toLowerCase();
+  for (const match of normalized.matchAll(headerPattern)) {
+    const separator = match[2].indexOf(":");
+    if (separator < 1) continue;
+    if (match[2].slice(0, separator).trim().toLowerCase() !== expected) continue;
+    return match[2].slice(separator + 1).trim();
+  }
+  return "";
+}
+
+function validatedUserAgent(value) {
+  const userAgent = String(value || "").trim();
+  if (
+    !userAgent ||
+    userAgent.length > 512 ||
+    /[\r\n]/.test(userAgent) ||
+    !/^Mozilla\/5\.0 \(.+\) AppleWebKit\/[\d.]+ .+Chrome\/[\d.]+ Safari\/[\d.]+$/.test(userAgent)
+  ) {
+    return "";
+  }
+  return userAgent;
+}
+
+function validatedAcceptLanguage(value) {
+  const acceptLanguage = String(value || "").trim();
+  if (!acceptLanguage || acceptLanguage.length > 256 || /[\r\n]/.test(acceptLanguage)) {
+    return DEFAULT_ACCEPT_LANGUAGE;
+  }
+  return acceptLanguage;
+}
+
+function validatedClientHint(value, pattern) {
+  const hint = String(value || "").trim();
+  if (!hint || hint.length > 512 || /[\r\n]/.test(hint) || !pattern.test(hint)) return "";
+  return hint;
+}
+
+function systemChromeUserAgent() {
+  const executablePath = findChromeExecutable();
+  if (!executablePath) return "";
+  try {
+    const versionOutput = execFileSync(executablePath, ["--version"], {
+      encoding: "utf8",
+      maxBuffer: 8 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const majorVersion = (versionOutput.match(/(\d+)(?:\.\d+){1,3}/) || [])[1];
+    if (!majorVersion) return "";
+    return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ` +
+      `AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorVersion}.0.0.0 Safari/537.36`;
+  } catch {
+    return "";
+  }
+}
+
+function requestMetadataFromCurl(input) {
+  return {
+    userAgent: validatedUserAgent(requestHeaderFromCurl(input, "user-agent")) || systemChromeUserAgent(),
+    acceptLanguage: validatedAcceptLanguage(requestHeaderFromCurl(input, "accept-language")),
+    secChUa: validatedClientHint(
+      requestHeaderFromCurl(input, "sec-ch-ua"),
+      /^(?:"[^"\r\n]{1,80}";v="\d{1,3}"(?:,\s*)?)+$/
+    ),
+    secChUaMobile: validatedClientHint(requestHeaderFromCurl(input, "sec-ch-ua-mobile"), /^\?[01]$/),
+    secChUaPlatform: validatedClientHint(requestHeaderFromCurl(input, "sec-ch-ua-platform"), /^"[^"\r\n]{1,80}"$/),
+  };
+}
+
 function cookieNamesFromCurl(input) {
   return rawCookieHeaderFromCurl(input)
     .split(";")
@@ -209,7 +284,16 @@ function importSessionFromClipboard() {
     throw new Error("Die macOS-Zwischenablage konnte nicht gelesen werden.");
   }
   const cookies = extractCookieHeaderFromCurl(clipboard);
-  saveToEnv({ KA_COOKIES: cookies, KA_BEARER_TOKEN: null });
+  const metadata = requestMetadataFromCurl(clipboard);
+  saveToEnv({
+    KA_COOKIES: cookies,
+    KA_BEARER_TOKEN: null,
+    KA_USER_AGENT: metadata.userAgent,
+    KA_ACCEPT_LANGUAGE: metadata.acceptLanguage,
+    KA_SEC_CH_UA: metadata.secChUa,
+    KA_SEC_CH_UA_MOBILE: metadata.secChUaMobile,
+    KA_SEC_CH_UA_PLATFORM: metadata.secChUaPlatform,
+  });
   console.log("[auth] Kleinanzeigen-Sitzung aus Copy-as-cURL sicher in .env importiert.");
   console.log(`[auth] Bearer-Cookie: ${/(?:^|;\s*)access_token=/.test(cookies) ? "vorhanden" : "fehlt"}.`);
   return cookies;
@@ -231,7 +315,16 @@ function importSessionFromFile(filePath) {
     const names = cookieNamesFromCurl(contents);
     throw new Error(`${error.message} Vorhandene Cookie-Namen: ${names.join(", ") || "keine"}.`);
   }
-  saveToEnv({ KA_COOKIES: cookies, KA_BEARER_TOKEN: null });
+  const metadata = requestMetadataFromCurl(contents);
+  saveToEnv({
+    KA_COOKIES: cookies,
+    KA_BEARER_TOKEN: null,
+    KA_USER_AGENT: metadata.userAgent,
+    KA_ACCEPT_LANGUAGE: metadata.acceptLanguage,
+    KA_SEC_CH_UA: metadata.secChUa,
+    KA_SEC_CH_UA_MOBILE: metadata.secChUaMobile,
+    KA_SEC_CH_UA_PLATFORM: metadata.secChUaPlatform,
+  });
   console.log("[auth] Kleinanzeigen-Sitzung aus der cURL-Datei sicher in .env importiert.");
   console.log(`[auth] Bearer-Cookie: ${/(?:^|;\s*)access_token=/.test(cookies) ? "vorhanden" : "fehlt"}.`);
   return cookies;
@@ -250,6 +343,10 @@ function launchProfile(headless) {
   const options = {
     headless,
     viewport: { width: 1280, height: 800 },
+    // Native Chrome encrypts this dedicated profile with the macOS keychain.
+    // Playwright otherwise injects mock-keychain flags and makes the same
+    // persisted cookies appear missing on the next headless refresh.
+    ignoreDefaultArgs: ["--use-mock-keychain", "--password-store=basic"],
   };
   if (process.env.PLAYWRIGHT_CHANNEL) {
     options.channel = process.env.PLAYWRIGHT_CHANNEL;
@@ -258,18 +355,6 @@ function launchProfile(headless) {
     if (executablePath) options.executablePath = executablePath;
   }
   return chromium.launchPersistentContext(PROFILE_DIR, options);
-}
-
-function waitForEnter() {
-  if (!process.stdin.isTTY) {
-    throw new Error("Der native Login muss in einem interaktiven Terminal ausgeführt werden.");
-  }
-  process.stdin.setEncoding("utf8");
-  process.stdin.resume();
-  return new Promise(resolve => process.stdin.once("data", () => {
-    process.stdin.pause();
-    resolve();
-  }));
 }
 
 function waitForChildExit(child, timeoutMs = 10_000) {
@@ -285,36 +370,146 @@ function waitForChildExit(child, timeoutMs = 10_000) {
   });
 }
 
+function delay(timeoutMs) {
+  return new Promise(resolve => setTimeout(resolve, timeoutMs));
+}
+
+async function waitForDevToolsEndpoint(child, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error("Das dedizierte Chrome-Fenster wurde vor dem Verbindungsaufbau geschlossen.");
+    }
+    try {
+      const [port] = fs.readFileSync(DEVTOOLS_ACTIVE_PORT_FILE, "utf8").trim().split(/\r?\n/);
+      if (/^\d{2,5}$/.test(port) && Number(port) <= 65_535) {
+        return `http://127.0.0.1:${port}`;
+      }
+    } catch {}
+    await delay(100);
+  }
+  throw new Error("Das dedizierte Chrome-Fenster konnte nicht lokal validiert werden.");
+}
+
+async function waitForValidatedNativeSession(context, page, timeoutMs = LOGIN_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = new Error("Sitzung noch nicht vollständig.");
+  while (Date.now() < deadline) {
+    await assertNetworkAccess(page);
+    try {
+      const cookies = await context.cookies("https://www.kleinanzeigen.de");
+      return {
+        cookies,
+        cookieString: validatedSessionCookieString(cookies),
+      };
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(500);
+  }
+  throw new Error(`Login-Zeitlimit erreicht: ${lastError.message}`);
+}
+
+function profileInUseError(error) {
+  if (!/singleton|profile.*(?:in use|locked)|browser.*closed/i.test(String(error?.message || error))) {
+    return null;
+  }
+  return new Error(
+    "Das dedizierte NemoClaw-Chrome-Profil ist noch geöffnet. " +
+    "Login dort abschließen, das Fenster vollständig schließen und den Vorgang einmal wiederholen."
+  );
+}
+
+async function openNativeProfile({ headless = false, url = "about:blank" } = {}) {
+  const executablePath = findChromeExecutable();
+  if (!executablePath) throw new Error("Google Chrome/Chromium wurde nicht gefunden.");
+
+  fs.mkdirSync(PROFILE_DIR, { recursive: true, mode: 0o700 });
+  fs.chmodSync(PROFILE_DIR, 0o700);
+  try { fs.unlinkSync(DEVTOOLS_ACTIVE_PORT_FILE); } catch {}
+
+  const args = [
+    `--user-data-dir=${PROFILE_DIR}`,
+    "--remote-debugging-address=127.0.0.1",
+    "--remote-debugging-port=0",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-background-mode",
+    ...(headless ? ["--headless=new"] : ["--new-window"]),
+    url,
+  ];
+  const child = spawn(executablePath, args, { stdio: "ignore" });
+  let browser;
+  await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("spawn", resolve);
+  });
+
+  try {
+    const endpoint = await waitForDevToolsEndpoint(child);
+    browser = await chromium.connectOverCDP(endpoint);
+    const context = browser.contexts()[0];
+    if (!context) throw new Error("Das dedizierte Chrome-Profil konnte nicht geöffnet werden.");
+    const pages = context.pages();
+    const page = pages.find(candidate => candidate.url().includes("kleinanzeigen.de")) || pages[0];
+    if (!page) throw new Error("Das dedizierte Chrome-Tab wurde nicht gefunden.");
+    return { browser, child, context, page };
+  } catch (error) {
+    if (browser) await browser.close().catch(() => {});
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    await waitForChildExit(child).catch(() => {});
+    const friendlyError = profileInUseError(error);
+    if (friendlyError) throw friendlyError;
+    throw error;
+  }
+}
+
+async function closeNativeProfile(nativeProfile) {
+  if (!nativeProfile) return;
+  const { browser, child } = nativeProfile;
+  if (browser) await browser.close().catch(() => {});
+  try {
+    await waitForChildExit(child, 5_000);
+  } catch {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    await waitForChildExit(child).catch(() => {});
+  } finally {
+    try { fs.unlinkSync(DEVTOOLS_ACTIVE_PORT_FILE); } catch {}
+  }
+}
+
 async function importSessionFromProfile() {
   if (!fs.existsSync(PROFILE_DIR)) {
     throw new Error("Kein dediziertes Browser-Profil gefunden.");
   }
 
-  let context;
+  let nativeProfile;
   try {
-    context = await launchProfile(true);
-    const cookies = await context.cookies("https://www.kleinanzeigen.de");
+    nativeProfile = await openNativeProfile({ headless: true });
+    const cookies = await nativeProfile.context.cookies("https://www.kleinanzeigen.de");
     const cs = validatedSessionCookieString(cookies);
-    saveToEnv({ KA_COOKIES: cs, KA_BEARER_TOKEN: null });
+    saveToEnv({
+      KA_COOKIES: cs,
+      KA_BEARER_TOKEN: null,
+      KA_USER_AGENT: systemChromeUserAgent(),
+      KA_ACCEPT_LANGUAGE: DEFAULT_ACCEPT_LANGUAGE,
+      KA_SEC_CH_UA: null,
+      KA_SEC_CH_UA_MOBILE: null,
+      KA_SEC_CH_UA_PLATFORM: null,
+    });
     console.log("[auth] Session aus dem dedizierten Profil gespeichert.");
     return cs;
-  } catch (error) {
-    if (/singleton|profile.*(?:in use|locked)|browser.*closed/i.test(String(error.message))) {
-      throw new Error(
-        "Das dedizierte Chrome-Fenster ist noch geöffnet. Bitte vollständig schließen und den Import erneut starten."
-      );
-    }
-    throw error;
   } finally {
-    if (context) await context.close();
+    await closeNativeProfile(nativeProfile);
   }
 }
 
 async function inspectProfileSession() {
   if (!fs.existsSync(PROFILE_DIR)) return [];
-  const context = await launchProfile(true);
+  let nativeProfile;
   try {
-    const cookies = await context.cookies();
+    nativeProfile = await openNativeProfile({ headless: true });
+    const cookies = await nativeProfile.context.cookies();
     return cookies
       .filter(cookie => {
         const domain = String(cookie.domain || "").replace(/^\./, "").toLowerCase();
@@ -323,42 +518,35 @@ async function inspectProfileSession() {
       .map(cookie => ({ domain: cookie.domain, name: cookie.name }))
       .sort((left, right) => `${left.domain}/${left.name}`.localeCompare(`${right.domain}/${right.name}`));
   } finally {
-    await context.close();
+    await closeNativeProfile(nativeProfile);
   }
 }
 
 async function loginWithSystemChrome() {
-  const executablePath = findChromeExecutable();
-  if (!executablePath) {
-    throw new Error("Google Chrome/Chromium wurde nicht gefunden.");
-  }
-
-  fs.mkdirSync(PROFILE_DIR, { recursive: true, mode: 0o700 });
-  fs.chmodSync(PROFILE_DIR, 0o700);
-  const args = [
-    `--user-data-dir=${PROFILE_DIR}`,
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-background-mode",
-    `--app=${CSRF_URL}`,
-  ];
-
-  const child = spawn(executablePath, args, {
-    stdio: "ignore",
-  });
-  await new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("spawn", resolve);
-  });
-
-  console.log("[auth] Das dedizierte NemoClaw-Chrome-App-Fenster wurde geöffnet.");
+  let nativeProfile;
+  nativeProfile = await openNativeProfile({ url: CSRF_URL });
+  console.log("[auth] Das dedizierte NemoClaw-Chrome-Fenster wurde geöffnet.");
   console.log("[auth] Bitte manuell einloggen und 2FA/CAPTCHA selbst abschließen.");
-  console.log("[auth] Warte, bis die Seite zum Aufgeben einer Anzeige sichtbar ist. Nichts absenden.");
-  console.log("[auth] Danach hier ENTER drücken; das Skript beendet ausschließlich dieses dedizierte Fenster.");
-  await waitForEnter();
-  if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
-  await waitForChildExit(child);
-  return importSessionFromProfile();
+  console.log("[auth] Die Sitzung wird im selben Fenster automatisch validiert; nichts absenden.");
+  try {
+    const { cookieString } = await waitForValidatedNativeSession(
+      nativeProfile.context,
+      nativeProfile.page
+    );
+    saveToEnv({
+      KA_COOKIES: cookieString,
+      KA_BEARER_TOKEN: null,
+      KA_USER_AGENT: systemChromeUserAgent(),
+      KA_ACCEPT_LANGUAGE: DEFAULT_ACCEPT_LANGUAGE,
+      KA_SEC_CH_UA: null,
+      KA_SEC_CH_UA_MOBILE: null,
+      KA_SEC_CH_UA_PLATFORM: null,
+    });
+    console.log("[auth] Dedizierte Sitzung validiert und gespeichert.");
+    return cookieString;
+  } finally {
+    await closeNativeProfile(nativeProfile);
+  }
 }
 
 async function login() {
@@ -376,7 +564,15 @@ async function login() {
     const cookies = await context.cookies("https://www.kleinanzeigen.de");
     const cs = validatedSessionCookieString(cookies);
 
-    saveToEnv({ KA_COOKIES: cs, KA_BEARER_TOKEN: null });
+    saveToEnv({
+      KA_COOKIES: cs,
+      KA_BEARER_TOKEN: null,
+      KA_USER_AGENT: systemChromeUserAgent(),
+      KA_ACCEPT_LANGUAGE: DEFAULT_ACCEPT_LANGUAGE,
+      KA_SEC_CH_UA: null,
+      KA_SEC_CH_UA_MOBILE: null,
+      KA_SEC_CH_UA_PLATFORM: null,
+    });
     console.log("[auth] Session gespeichert.");
   } finally {
     await context.close();
@@ -388,25 +584,28 @@ async function refreshCookies() {
     throw new Error("Kein Browser-Profil gefunden — bitte zuerst 'npm run login' ausführen.");
   }
 
-  const context = await launchProfile(true);
+  let nativeProfile;
   try {
-    await context.route("**/*", (route, req) => {
-      if (["image", "font", "media", "stylesheet"].includes(req.resourceType())) return route.abort();
-      route.continue();
+    nativeProfile = await openNativeProfile({ headless: true, url: CSRF_URL });
+    const { cookieString: cs } = await waitForValidatedNativeSession(
+      nativeProfile.context,
+      nativeProfile.page,
+      60_000
+    );
+
+    saveToEnv({
+      KA_COOKIES: cs,
+      KA_BEARER_TOKEN: null,
+      KA_USER_AGENT: systemChromeUserAgent(),
+      KA_ACCEPT_LANGUAGE: DEFAULT_ACCEPT_LANGUAGE,
+      KA_SEC_CH_UA: null,
+      KA_SEC_CH_UA_MOBILE: null,
+      KA_SEC_CH_UA_PLATFORM: null,
     });
-
-    const page = context.pages()[0] || await context.newPage();
-    const response = await page.goto(CSRF_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
-    await assertNetworkAccess(page, response);
-
-    const cookies = await context.cookies("https://www.kleinanzeigen.de");
-    const cs = validatedSessionCookieString(cookies);
-
-    saveToEnv({ KA_COOKIES: cs, KA_BEARER_TOKEN: null });
     console.log("[auth] Cookies refreshed.");
     return cs;
   } finally {
-    await context.close();
+    await closeNativeProfile(nativeProfile);
   }
 }
 
@@ -423,9 +622,13 @@ module.exports = {
   inspectProfileSession,
   login,
   loginWithSystemChrome,
+  requestMetadataFromCurl,
   refreshCookies,
   saveToEnv,
+  systemChromeUserAgent,
   userIdFromAccessToken,
+  validatedAcceptLanguage,
   validatedCookieHeader,
   validatedSessionCookieString,
+  validatedUserAgent,
 };

@@ -7,6 +7,7 @@ const {
   classifyAccessProblem,
   extractCookieHeaderFromCurl,
   extractKaCookieString,
+  requestMetadataFromCurl,
   validatedCookieHeader,
   validatedSessionCookieString,
 } = require("../tools/auth");
@@ -67,12 +68,24 @@ test("auth imports a Chrome Copy-as-cURL cookie header without executing it", ()
   const curl = [
     "curl 'https://www.kleinanzeigen.de/m-meine-anzeigen-verwalten.json' \\",
     "  -H 'accept: application/json' \\",
+    "  -H 'accept-language: de-DE,de;q=0.9' \\",
+    "  -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36' \\",
+    "  -H 'sec-ch-ua: \"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"150\", \"Google Chrome\";v=\"150\"' \\",
+    "  -H 'sec-ch-ua-mobile: ?0' \\",
+    "  -H 'sec-ch-ua-platform: \"macOS\"' \\",
     "  -H 'cookie: foo=bar; user_id=42; CSRF-TOKEN=csrf%20value; access_token=a.b.c'",
   ].join("\n");
   assert.equal(
     extractCookieHeaderFromCurl(curl),
     "foo=bar; user_id=42; CSRF-TOKEN=csrf%20value; access_token=a.b.c"
   );
+  assert.deepEqual(requestMetadataFromCurl(curl), {
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+    acceptLanguage: "de-DE,de;q=0.9",
+    secChUa: "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"150\", \"Google Chrome\";v=\"150\"",
+    secChUaMobile: "?0",
+    secChUaPlatform: "\"macOS\"",
+  });
 });
 
 test("auth rejects clipboard input without a complete session", () => {

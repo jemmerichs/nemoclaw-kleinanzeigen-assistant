@@ -18,6 +18,7 @@
     "login:inspect": "node scripts/login.js --inspect-only",
     "login:automated": "node scripts/login.js --automated",
     "refresh-auth": "node scripts/refresh-cookies.js",
+    "smoke:auth-refresh": "node scripts/smoke-auth-refresh.js",
     "smoke:openrouter": "node scripts/test-openrouter.js",
     "smoke:ka": "node scripts/smoke-ka.js",
     "smoke:agent": "node scripts/smoke-agent.js",
@@ -25,7 +26,7 @@
     "test:scenarios": "node --test test/agent-runtime.test.js test/telegram-album.test.js test/image.test.js test/adstore.test.js",
     "verify": "npm test && npm run check && npm run doctor",
     "verify:account": "npm run verify && npm run smoke:ka",
-    "check": "node --check workspace/agent.js && node --check workspace/runtime.js && node --check workspace/cli.js && node --check tools/openrouter.js && node --check tools/kleinanzeigen.js && node --check tools/telegram.js && node --check tools/image.js && node --check tools/adstore.js && node --check tools/auth.js && node --check scripts/doctor.js && node --check scripts/smoke-ka.js && node --check scripts/smoke-agent.js && node --check scripts/smoke-workflows.js && node --check scripts/test-openrouter.js && bash -n scripts/setup.sh scripts/start.sh",
+    "check": "node --check workspace/agent.js && node --check workspace/runtime.js && node --check workspace/cli.js && node --check tools/openrouter.js && node --check tools/kleinanzeigen.js && node --check tools/telegram.js && node --check tools/image.js && node --check tools/adstore.js && node --check tools/auth.js && node --check scripts/doctor.js && node --check scripts/smoke-auth-refresh.js && node --check scripts/smoke-ka.js && node --check scripts/smoke-agent.js && node --check scripts/smoke-workflows.js && node --check scripts/test-openrouter.js && bash -n scripts/setup.sh scripts/start.sh",
     "test": "node --test test/*.test.js"
   },
   "engines": {

@@ -4,10 +4,10 @@
 const https  = require("https");
 const crypto = require("crypto");
 
-const KA_AUTH0_CLIENT_ID = "aOq74Cm5fUBoM1JifHTHhlZ2JHXlVUCq";
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 const USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36";
+const DEFAULT_ACCEPT_LANGUAGE = "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7";
 const PRICE_TYPES = new Set(["FIXED", "NEGOTIABLE", "GIVE_AWAY"]);
 
 function clampInteger(value, { min, max, fallback }) {
@@ -18,6 +18,20 @@ function clampInteger(value, { min, max, fallback }) {
 
 function safeFilename(filename) {
   return String(filename || "photo.jpg").replace(/["\r\n\\/]/g, "_");
+}
+
+function jwtPayload(token) {
+  try {
+    return JSON.parse(Buffer.from(String(token || "").split(".")[1], "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function safeBrowserHeader(value, fallback, maxLength = 512) {
+  const header = String(value || "").trim();
+  if (!header || header.length > maxLength || /[\r\n]/.test(header)) return fallback;
+  return header;
 }
 
 function validatePriceType(value) {
@@ -96,9 +110,10 @@ function accessResponseError(status, { authenticated = true, transport = "cookie
   }
   if (status === 403) {
     return clientError(
-      authenticated ? "KA_ACCESS_DENIED" : "KA_PUBLIC_ACCESS_DENIED",
-      `${authenticated ? "Kleinanzeigen-Zugriff" : "Öffentlicher Kleinanzeigen-Zugriff"} ` +
-      "abgelehnt (403). Nicht automatisch erneut einloggen oder wiederholen; zuerst Netzwerk/IP-Pfad prüfen.",
+      authenticated ? "KA_SESSION_REJECTED" : "KA_PUBLIC_ACCESS_DENIED",
+      authenticated
+        ? "Private Kleinanzeigen-Sitzung abgelehnt (403). Browserprofil und Request-Fingerabdruck müssen erneuert werden."
+        : "Öffentlicher Kleinanzeigen-Zugriff abgelehnt (403). Nicht automatisch erneut einloggen oder wiederholen; zuerst Netzwerk/IP-Pfad prüfen.",
       status
     );
   }
@@ -135,9 +150,23 @@ function accessResponseError(status, { authenticated = true, transport = "cookie
 }
 
 class KleinanzeigenClient {
-  constructor(cookieString, bearerToken = null, refreshToken = null, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  constructor(cookieString, bearerToken = null, refreshToken = null, {
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    userAgent = process.env.KA_USER_AGENT,
+    acceptLanguage = process.env.KA_ACCEPT_LANGUAGE,
+    secChUa = process.env.KA_SEC_CH_UA,
+    secChUaMobile = process.env.KA_SEC_CH_UA_MOBILE,
+    secChUaPlatform = process.env.KA_SEC_CH_UA_PLATFORM,
+  } = {}) {
     this.cookies = String(cookieString || "");
     this.timeoutMs = clampInteger(timeoutMs, { min: 1000, max: 120000, fallback: DEFAULT_TIMEOUT_MS });
+    this.userAgent = safeBrowserHeader(userAgent, USER_AGENT);
+    this.acceptLanguage = safeBrowserHeader(acceptLanguage, DEFAULT_ACCEPT_LANGUAGE, 256);
+    this.clientHints = {
+      secChUa: safeBrowserHeader(secChUa, "", 512),
+      secChUaMobile: /^\?[01]$/.test(String(secChUaMobile || "")) ? String(secChUaMobile) : "",
+      secChUaPlatform: /^"[^"\r\n]{1,80}"$/.test(String(secChUaPlatform || "")) ? String(secChUaPlatform) : "",
+    };
 
     const at = cookieString.match(/(?:^|;\s*)access_token=([^;]+)/);
     const rt = cookieString.match(/(?:^|;\s*)refresh_token=([^;]+)/);
@@ -149,15 +178,12 @@ class KleinanzeigenClient {
     if (uid) {
       this.userId = uid[1];
     } else if (this.bearerToken) {
-      try {
-        const payload = JSON.parse(Buffer.from(this.bearerToken.split(".")[1], "base64url").toString());
-        const claim = Object.entries(payload || {}).find(
-          ([key, value]) =>
-            (key === "user_id" || /\/user_id$/i.test(key)) &&
-            /^\d+$/.test(String(value))
-        );
-        this.userId = claim ? String(claim[1]) : null;
-      } catch { this.userId = null; }
+      const claim = Object.entries(jwtPayload(this.bearerToken) || {}).find(
+        ([key, value]) =>
+          (key === "user_id" || /\/user_id$/i.test(key)) &&
+          /^\d+$/.test(String(value))
+      );
+      this.userId = claim ? String(claim[1]) : null;
     } else {
       this.userId = null;
     }
@@ -209,10 +235,18 @@ class KleinanzeigenClient {
         method,
         headers: {
           "Accept":        "application/json",
-          "Content-Type":  "application/json",
-          "User-Agent":    USER_AGENT,
+          "Accept-Language": this.acceptLanguage,
+          "User-Agent":    this.userAgent,
           "Referer":       "https://www.kleinanzeigen.de/",
+          "Sec-Fetch-Dest": "empty",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin",
+          "Priority":      "u=1, i",
+          ...(this.clientHints.secChUa ? { "sec-ch-ua": this.clientHints.secChUa } : {}),
+          ...(this.clientHints.secChUaMobile ? { "sec-ch-ua-mobile": this.clientHints.secChUaMobile } : {}),
+          ...(this.clientHints.secChUaPlatform ? { "sec-ch-ua-platform": this.clientHints.secChUaPlatform } : {}),
           ...(cookieString ? { "Cookie": cookieString } : {}),
+          ...(data ? { "Content-Type": "application/json" } : {}),
           ...(data ? { "Content-Length": Buffer.byteLength(data) } : {}),
           ...headers,
         },
@@ -266,7 +300,15 @@ class KleinanzeigenClient {
           "x-xsrf-token": csrfToken,
           "Origin":       "https://www.kleinanzeigen.de",
           "Referer":      "https://www.kleinanzeigen.de/",
-          "User-Agent":   USER_AGENT,
+          "Accept-Language": this.acceptLanguage,
+          "User-Agent":   this.userAgent,
+          "Sec-Fetch-Dest": "empty",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin",
+          "Priority":     "u=1, i",
+          ...(this.clientHints.secChUa ? { "sec-ch-ua": this.clientHints.secChUa } : {}),
+          ...(this.clientHints.secChUaMobile ? { "sec-ch-ua-mobile": this.clientHints.secChUaMobile } : {}),
+          ...(this.clientHints.secChUaPlatform ? { "sec-ch-ua-platform": this.clientHints.secChUaPlatform } : {}),
           ...(data ? { "Content-Length": data.length } : {}),
           ...extraHeaders,
         },
@@ -303,9 +345,17 @@ class KleinanzeigenClient {
           "Content-Type":  "application/json",
           "Authorization": `Bearer ${this.bearerToken}`,
           "x-ecg-user-agent": "messagebox-1",
-          "User-Agent":    USER_AGENT,
+          "Accept-Language": this.acceptLanguage,
+          "User-Agent":    this.userAgent,
           "Origin":        "https://www.kleinanzeigen.de",
           "Referer":       "https://www.kleinanzeigen.de/",
+          "Sec-Fetch-Dest": "empty",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-site",
+          "Priority":      "u=1, i",
+          ...(this.clientHints.secChUa ? { "sec-ch-ua": this.clientHints.secChUa } : {}),
+          ...(this.clientHints.secChUaMobile ? { "sec-ch-ua-mobile": this.clientHints.secChUaMobile } : {}),
+          ...(this.clientHints.secChUaPlatform ? { "sec-ch-ua-platform": this.clientHints.secChUaPlatform } : {}),
           ...(data ? { "Content-Length": Buffer.byteLength(data) } : {}),
         },
       };
@@ -323,50 +373,6 @@ class KleinanzeigenClient {
       req.setTimeout(this.timeoutMs, () => req.destroy(new Error(`${method} gateway.kleinanzeigen.de${path}: Timeout`)));
       req.on("error", reject);
       if (data) req.write(data);
-      req.end();
-    });
-  }
-
-  refreshBearerToken() {
-    if (!this.refreshToken) throw new Error("Refresh token fehlt. Bitte 'node scripts/login.js' ausführen.");
-    const body = `grant_type=refresh_token&refresh_token=${encodeURIComponent(this.refreshToken)}&client_id=${KA_AUTH0_CLIENT_ID}`;
-    return new Promise((resolve, reject) => {
-      const options = {
-        hostname: "login.kleinanzeigen.de",
-        path:     "/oauth/token",
-        method:   "POST",
-        headers: {
-          "Content-Type":   "application/x-www-form-urlencoded",
-          "Content-Length": Buffer.byteLength(body),
-        },
-      };
-
-      let req;
-      req = https.request(options, res => {
-        let raw = "";
-        res.on("data", c => (raw += c));
-        res.on("end", () => {
-          try {
-            const data = JSON.parse(raw);
-            if (res.statusCode < 200 || res.statusCode >= 300 || !data.access_token) {
-              return reject(clientError(
-                "KA_SESSION_EXPIRED",
-                `Token-Refresh fehlgeschlagen (${res.statusCode}). Die Anmeldung ist vollständig abgelaufen; bitte 'npm run login' ausführen.`,
-                res.statusCode
-              ));
-            }
-            this.bearerToken = data.access_token;
-            if (data.refresh_token) this.refreshToken = data.refresh_token;
-            resolve(data);
-          } catch {
-            reject(new Error(`Token-Refresh Parse-Fehler: ${raw}`));
-          }
-        });
-      });
-
-      req.setTimeout(this.timeoutMs, () => req.destroy(new Error("Token-Refresh: Timeout")));
-      req.on("error", reject);
-      req.write(body);
       req.end();
     });
   }
@@ -485,7 +491,7 @@ class KleinanzeigenClient {
   async getMyAds({ limit = 20 } = {}) {
     this._requireCookieSession();
     const safeLimit = clampInteger(limit, { min: 1, max: 100, fallback: 20 });
-    const response = await this._wwwRequest("GET", "/m-meine-anzeigen-verwalten.json");
+    const response = await this._wwwRequest("GET", "/m-meine-anzeigen-verwalten.json?sort=DEFAULT");
     const { body } = this._ensureSuccess("getMyAds", response);
     if (!Array.isArray(body?.ads)) throw new Error("getMyAds: unerwartetes Antwortformat.");
     return (body.ads || []).slice(0, safeLimit).map(a => ({

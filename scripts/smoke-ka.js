@@ -36,9 +36,13 @@ function smokeDiagnosis(errors) {
     codes.has("KA_SESSION_EXPIRED") ||
     codes.has("KA_CSRF_EXPIRED") ||
     codes.has("KA_BEARER_EXPIRED") ||
+    codes.has("KA_SESSION_REJECTED") ||
     /\b(?:Session|CSRF|Bearer token) abgelaufen\b|Token-Refresh fehlgeschlagen|access_denied/i.test(messages)
   ) {
-    return "Session-Diagnose: Die Netzwerkverbindung steht, aber die Anmeldung muss mit 'npm run login' erneuert werden.";
+    return [
+      "Session-Diagnose: Die öffentliche Verbindung steht, aber die private Bot-Sitzung wurde abgelehnt oder ist abgelaufen.",
+      "Der Bot erneuert zuerst das dedizierte Profil; falls dieses nicht angemeldet ist, einmal 'npm run login' ausführen.",
+    ].join(" ");
   }
   if (codes.has("ETIMEDOUT") || /\bTimeout\b/i.test(messages)) {
     return "Netzwerkdiagnose: Kleinanzeigen war nicht rechtzeitig erreichbar. Nicht schnell wiederholen; Verbindung prüfen und später einmal erneut testen.";
@@ -60,6 +64,7 @@ async function check(label, task, summarize) {
 async function main() {
   const cookies = process.env.KA_COOKIES || "";
   const client = new KleinanzeigenClient(cookies, process.env.KA_BEARER_TOKEN || null);
+  const rawSession = process.argv.includes("--raw-session");
   const results = [];
   results.push(await check(
     "Öffentliche Suche",
@@ -75,20 +80,20 @@ async function main() {
     return;
   }
 
-  loadKleinanzeigenSession({ required: true });
+  if (!rawSession) loadKleinanzeigenSession({ required: true });
   results.push(await check(
     "Eigene Anzeigen",
-    () => executeTool("ka_get_my_ads", { limit: 5 }),
+    () => rawSession ? client.getMyAds({ limit: 5 }) : executeTool("ka_get_my_ads", { limit: 5 }),
     rows => `${rows.length} abgerufen`
   ));
   results.push(await check(
     "Entwürfe",
-    () => executeTool("ka_get_drafts", {}),
+    () => rawSession ? client.getDrafts() : executeTool("ka_get_drafts", {}),
     rows => `${rows.length} abgerufen`
   ));
   results.push(await check(
     "Konversationen",
-    () => executeTool("ka_get_conversations", { limit: 5 }),
+    () => rawSession ? client.getConversations({ limit: 5 }) : executeTool("ka_get_conversations", { limit: 5 }),
     rows => `${rows.length} abgerufen, ${rows.filter(row => row.unread).length} ungelesen`
   ));
   const diagnosis = smokeDiagnosis(results.map(result => result.error));

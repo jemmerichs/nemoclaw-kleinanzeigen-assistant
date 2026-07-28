@@ -67,9 +67,12 @@ const MAX_HISTORY_CHARS = 30000;
 const MAX_MODEL_IMAGES = 12;
 const MAX_MODEL_IMAGE_BYTES = 12 * 1024 * 1024;
 const PENDING_TTL_MS = 30 * 60 * 1000;
+const AUTH_REFRESH_FAILURE_COOLDOWN_MS = 60 * 1000;
 
 let ka = null;
 let kaAuthenticated = false;
+let authRefreshPromise = null;
+let lastAuthRefreshFailure = null;
 let telegram = null;
 let llm = null;
 let sessions = readJson(SESSION_FILE, {});
@@ -147,30 +150,40 @@ function requireAuthenticatedKa() {
 }
 
 async function refreshCsrf() {
-  const client = requireAuthenticatedKa();
-  const newToken = await client.refreshCsrfToken();
-  saveToEnv({ KA_COOKIES: client.cookies });
-  process.env.KA_COOKIES = client.cookies;
-  console.log(`[agent] CSRF erneuert (${newToken.slice(0, 8)}…)`);
-}
-
-function setCookie(cookieString, name, value) {
-  const pairs = String(cookieString || "").split(";").map(part => part.trim()).filter(Boolean);
-  const next = pairs.filter(part => !part.startsWith(`${name}=`));
-  if (value) next.push(`${name}=${value}`);
-  return next.join("; ");
+  if (
+    lastAuthRefreshFailure &&
+    Date.now() - lastAuthRefreshFailure.at < AUTH_REFRESH_FAILURE_COOLDOWN_MS
+  ) {
+    const error = new Error(lastAuthRefreshFailure.message);
+    error.code = lastAuthRefreshFailure.code;
+    throw error;
+  }
+  if (!authRefreshPromise) {
+    authRefreshPromise = (async () => {
+      const client = requireAuthenticatedKa();
+      const newToken = await client.refreshCsrfToken();
+      saveToEnv({ KA_COOKIES: client.cookies });
+      process.env.KA_COOKIES = client.cookies;
+      lastAuthRefreshFailure = null;
+      console.log(`[agent] CSRF erneuert (${newToken.slice(0, 8)}…)`);
+    })().catch(error => {
+      lastAuthRefreshFailure = {
+        at: Date.now(),
+        code: error.code,
+        message: error.message,
+      };
+      throw error;
+    }).finally(() => {
+      authRefreshPromise = null;
+    });
+  }
+  return authRefreshPromise;
 }
 
 async function refreshBearer() {
-  const client = requireAuthenticatedKa();
-  const data = await client.refreshBearerToken();
-  let cookies = process.env.KA_COOKIES || client.cookies || "";
-  cookies = setCookie(cookies, "access_token", data.access_token);
-  if (data.refresh_token) cookies = setCookie(cookies, "refresh_token", data.refresh_token);
-  process.env.KA_COOKIES = cookies;
-  saveToEnv({ KA_COOKIES: cookies, KA_BEARER_TOKEN: null });
-  ka = makeClient(cookies);
-  console.log("[agent] Bearer erneuert.");
+  await refreshCsrf();
+  ka = makeClient(process.env.KA_COOKIES || "");
+  console.log("[agent] Browser-Sitzung und Bearer erneuert.");
 }
 
 function assertImagePath(filePath) {
@@ -760,6 +773,10 @@ async function executeTool(toolName, args) {
       return tool.fn(args || {});
     }
     if (error.code === "KA_SESSION_EXPIRED") {
+      await refreshCsrf();
+      return tool.fn(args || {});
+    }
+    if (error.code === "KA_SESSION_REJECTED") {
       await refreshCsrf();
       return tool.fn(args || {});
     }
@@ -1857,7 +1874,6 @@ module.exports = {
   requireAuthenticatedKa,
   runAgent,
   ensureAssetForListing,
-  setCookie,
   stagePending,
   toolDefinitions,
   toolRequiresApproval,

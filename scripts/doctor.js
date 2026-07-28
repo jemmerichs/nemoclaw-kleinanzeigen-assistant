@@ -123,6 +123,8 @@ function main() {
   const derivedUserId = userIdFromAccessToken(cookieValue("access_token"));
   const userIdOk = hasCookie("user_id") || Boolean(derivedUserId);
   const bearerOk = hasCookie("access_token") || Boolean(process.env.KA_BEARER_TOKEN);
+  const chromeMatch = String(process.env.KA_USER_AGENT || "").match(/\bChrome\/(\d+(?:\.\d+)*)/);
+  const browserFingerprintOk = Boolean(chromeMatch);
   if (kaCookies) {
     line("CSRF", csrfOk, csrfOk ? "vorhanden" : "fehlt");
     line(
@@ -131,6 +133,11 @@ function main() {
       hasCookie("user_id") ? "vorhanden" : (derivedUserId ? "aus Bearer abgeleitet" : "fehlt")
     );
     line("Bearer", bearerOk, bearerOk ? "vorhanden" : "fehlt");
+    line(
+      "Browser-Fingerabdruck",
+      browserFingerprintOk,
+      browserFingerprintOk ? `Chrome ${chromeMatch[1]}` : "fehlt — Login oder cURL-Import erneut ausführen"
+    );
   }
   const chromePath = findChromeExecutable();
   line("Chrome", Boolean(chromePath), chromePath || "nicht gefunden");
@@ -138,7 +145,7 @@ function main() {
   line("Login-Profil", fs.existsSync(profile), fs.existsSync(profile) ? "vorhanden" : "fehlt");
 
   const localReady = nodeOk && modeOk && apiKeyOk;
-  const accountReady = localReady && kaCookies && csrfOk && userIdOk;
+  const accountReady = localReady && kaCookies && csrfOk && userIdOk && browserFingerprintOk;
   const zipCode = String(process.env.KA_DEFAULT_ZIP_CODE || "");
   const locationId = String(process.env.KA_DEFAULT_LOCATION_ID || "").trim();
   const contactName = String(process.env.KA_CONTACT_NAME || "").trim();

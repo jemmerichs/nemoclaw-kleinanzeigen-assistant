@@ -71,7 +71,7 @@ npm run login
 npm run smoke:ka
 ```
 
-`npm run login` opens a native, non-automated Chrome app window with a dedicated persistent profile and navigates to the listing flow. Log in manually and complete any CAPTCHA or 2FA yourself. Once the create-listing page is visible, do not submit anything; press Enter in the terminal. The script gracefully stops only the Chrome process it launched, reopens the closed profile locally without navigating, validates `user_id` and CSRF, and stores the resulting Kleinanzeigen cookie string in the ignored `.env`. This keeps credentials and challenge handling outside browser automation.
+`npm run login` opens a native Chrome window with a dedicated persistent profile and navigates to the current listing flow. Log in manually and complete any CAPTCHA or 2FA yourself; do not submit a listing. The script observes only that dedicated local Chrome process, waits until `user_id`/Bearer identity and CSRF are genuinely present, stores the resulting cookie string plus matching Chrome request identity in the ignored `.env`, and then closes the window automatically. It does not rely on an ENTER prompt or reopen the profile headlessly after login. Keeping the request identity aligned matters because Kleinanzeigen's session-protection cookies can reject a request whose browser version does not match the login.
 
 This dedicated profile is required for the standalone bot. A signed-in Codex in-app browser is useful for read-only UI verification, but its private cookies are intentionally not copied into the Node process. If Kleinanzeigen reports a blocked IP range, stop retrying. Disable VPN/proxy/iCloud Private Relay and retry later from a normal, stable home or mobile connection. The login helper detects common `403`, `429`, IP-range, and unusual-traffic blocks and exits without an automatic retry.
 
@@ -87,7 +87,7 @@ If Kleinanzeigen blocks only the isolated Chrome profile while a normal Chrome p
 4. Run `npm run login:clipboard`.
 5. Copy any harmless text afterwards to replace the sensitive clipboard contents.
 
-The command reads the clipboard only when invoked, never prints its contents, extracts the Cookie header without executing the cURL command, validates `user_id` and `CSRF-TOKEN`, and writes the same ignored `KA_COOKIES` value used by the native-profile flow. This is a bootstrap method, not a separate runtime.
+The command reads the clipboard only when invoked, never prints its contents, extracts the Cookie, User-Agent, and language headers without executing the cURL command, validates `user_id` and `CSRF-TOKEN`, and writes the same ignored session metadata used by the native-profile flow. This is a bootstrap method, not a separate runtime.
 
 The minimum configuration for local operation is:
 
@@ -209,6 +209,7 @@ For an active but weak listing, ask the bot to analyze the asset. It reads the r
 | `npm run doctor` | Secret-safe local configuration diagnosis |
 | `npm run doctor:telegram` | Strict production check including Telegram credentials |
 | `npm run smoke:openrouter` | One inexpensive live model/tool-calling check |
+| `npm run smoke:auth-refresh` | Refresh the dedicated Chrome session, persist it, then verify a private message read |
 | `npm run smoke:ka` | Read-only public + authenticated Kleinanzeigen API checks |
 | `npm run smoke:agent -- --image …` | Flash vision → research → staged-listing dry-run |
 | `npm run smoke:workflows` | Synthetic Flash inbox, scam, negotiation and stale-listing behavior; all external writes dry-run |
@@ -227,7 +228,7 @@ For an active but weak listing, ask the bot to analyze the asset. It reads the r
 | `npm test` | Offline regression suite |
 | `npm run check` | Syntax checks |
 
-`npm run smoke:ka` distinguishes a broken system DNS, a Kleinanzeigen network/IP block, an expired session, and a plain timeout. In particular, a browser may still work through Secure DNS while Node cannot resolve the host; that is not a reason to repeat the account login.
+`npm run smoke:ka` distinguishes a broken system DNS, a public Kleinanzeigen network/IP block, a rejected private browser session, an expired token, and a plain timeout. A private `403` while public search still succeeds is treated as a session/fingerprint problem, not mislabeled as a general IP block. In particular, a browser may still work through Secure DNS while Node cannot resolve the host; that is not a reason to repeat the account login.
 
 The legacy scripts `scripts/test-post.js` and `scripts/test-draft-images.js` mutate the real account and are intentionally excluded from `npm test`. They now require both live mode and a conspicuous command-line opt-in flag. Prefer the bot’s exact-action flow.
 
@@ -238,7 +239,7 @@ tools/
   openrouter.js       OpenRouter client, retries, usage ledger, daily cap
   kleinanzeigen.js    Kleinanzeigen web/gateway client
   telegram.js         Telegram transport and long polling
-  auth.js             Dedicated Playwright login profile
+  auth.js             Dedicated native-Chrome login and profile refresh
   image.js            Immutable originals, bounded edits and provenance
   adstore.js          Guarded SQLite inventory and listing reconciliation
 workspace/

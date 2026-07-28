@@ -101,7 +101,7 @@ test("HTTP access failures distinguish public blocks from expired credentials", 
   );
   assert.equal(accessResponseError(401, { transport: "csrf" }).code, "KA_CSRF_EXPIRED");
   assert.equal(accessResponseError(401, { transport: "bearer" }).code, "KA_BEARER_EXPIRED");
-  assert.equal(accessResponseError(403, { authenticated: true, transport: "csrf" }).code, "KA_ACCESS_DENIED");
+  assert.equal(accessResponseError(403, { authenticated: true, transport: "csrf" }).code, "KA_SESSION_REJECTED");
   assert.equal(accessResponseError(429, { authenticated: true, transport: "bearer" }).code, "KA_ACCESS_DENIED");
   assert.equal(accessResponseError(500, { authenticated: false }), null);
 });
@@ -133,6 +133,13 @@ test("non-success reads throw instead of looking like empty data", async () => {
   const client = new StubClient();
   client.nextWww = { status: 500, body: { error: "down" } };
   await assert.rejects(() => client.getMyAds(), /getMyAds fehlgeschlagen \(500\)/);
+});
+
+test("private ad reads use the current browser route including explicit sort", async () => {
+  const client = new StubClient();
+  client.nextWww = { status: 200, body: { ads: [] } };
+  assert.deepEqual(await client.getMyAds(), []);
+  assert.equal(client.calls[0].path, "/m-meine-anzeigen-verwalten.json?sort=DEFAULT");
 });
 
 test("publishing validates input and parses the returned ad link", async () => {
