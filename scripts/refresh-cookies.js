@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Headless cookie refresh — no login or 2FA required.
+ * Headless refresh of an existing still-valid browser session.
  * Opens the saved browser profile, visits KA, writes fresh cookies to .env.
- * Run this if CSRF errors appear. Agent can call this automatically.
+ * Run this if CSRF errors appear. A fully expired session still needs `npm run login`.
  */
 
 "use strict";

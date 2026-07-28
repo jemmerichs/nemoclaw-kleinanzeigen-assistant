@@ -16,7 +16,18 @@ const KleinanzeigenClient = require("../tools/kleinanzeigen");
 
 const TEST_IMAGE = path.resolve(__dirname, "../workspace/images/raw/photo_1775243732687_7a847955.jpg");
 
+function requireExplicitMutationOptIn() {
+  const flag = "--i-understand-this-writes-a-real-draft";
+  if (process.env.NEMOCLAW_MODE !== "live" || !process.argv.includes(flag)) {
+    throw new Error(
+      `Blockiert. Nur bewusst mit NEMOCLAW_MODE=live und Flag ${flag} ausführen. ` +
+      "Bevorzugt den Agenten mit exakter Go-Freigabe verwenden."
+    );
+  }
+}
+
 async function run() {
+  requireExplicitMutationOptIn();
   const cookies = process.env.KA_COOKIES;
   if (!cookies) throw new Error("KA_COOKIES fehlt. Bitte 'npm run login' ausführen.");
   const ka = new KleinanzeigenClient(cookies);

@@ -1,0 +1,156 @@
+#!/usr/bin/env node
+"use strict";
+
+const fs = require("fs");
+const path = require("path");
+
+const root = path.resolve(__dirname, "..");
+require("dotenv").config({ path: path.join(root, ".env") });
+const { OpenRouterClient } = require("../tools/openrouter");
+const { findChromeExecutable, userIdFromAccessToken } = require("../tools/auth");
+const { normalizeInboxPollMinutes } = require("../workspace/runtime");
+let requiredFailures = 0;
+const requireTelegram = process.argv.includes("--telegram");
+
+function hasCookie(name) {
+  return new RegExp(`(?:^|;\\s*)${name}=`).test(process.env.KA_COOKIES || "");
+}
+
+function cookieValue(name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = String(process.env.KA_COOKIES || "").match(
+    new RegExp(`(?:^|;\\s*)${escaped}=([^;]*)`)
+  );
+  return match ? match[1] : "";
+}
+
+function line(label, ok, detail) {
+  if (!ok) requiredFailures++;
+  console.log(`${ok ? "✓" : "✗"} ${label}: ${detail}`);
+}
+
+function optionalLine(label, configured, detail) {
+  console.log(`${configured ? "✓" : "•"} ${label}: ${detail}`);
+}
+
+function main() {
+  const major = Number(process.versions.node.split(".")[0]);
+  const nodeOk = major >= 20;
+  line("Node", nodeOk, process.version);
+
+  const mode = String(process.env.NEMOCLAW_MODE || "dry-run");
+  const modeOk = ["dry-run", "live"].includes(mode);
+  line("Modus", modeOk, mode);
+
+  const apiKeyOk = /^sk-or-v1-[A-Za-z0-9_-]{20,}$/.test(process.env.OPENROUTER_API_KEY || "");
+  line("OpenRouter-Key", apiKeyOk, apiKeyOk ? "gesetzt" : "fehlt/ungültig");
+  line("Modell", true, process.env.OPENROUTER_MODEL || "google/gemini-3.6-flash");
+  line("Reasoning", true, process.env.OPENROUTER_REASONING_EFFORT || "medium");
+  const routing = process.env.NEMOCLAW_COMPLEXITY_ROUTING || "auto";
+  line("Komplexitätsrouting", ["off", "manual", "auto"].includes(routing), routing);
+  if (routing !== "off") {
+    line("High-Modell", true, process.env.OPENROUTER_HIGH_MODEL || "moonshotai/kimi-k3");
+    const highBudget = Number(process.env.OPENROUTER_HIGH_DAILY_BUDGET_USD || 0.25);
+    line("High-Modellbudget", Number.isFinite(highBudget) && highBudget >= 0.01, `$${highBudget.toFixed(2)} / Tag`);
+  }
+
+  if (apiKeyOk) {
+    try {
+      const client = new OpenRouterClient();
+      const usage = client.usageSummary();
+      line("Tagesbudget", usage.remainingUsd > 0, `$${usage.costUsd.toFixed(4)} / $${usage.dailyBudgetUsd.toFixed(2)} genutzt`);
+      line("Gesamtbudget", usage.totalRemainingUsd > 0, `$${usage.totalCostUsd.toFixed(4)} / $${usage.totalBudgetUsd.toFixed(2)} genutzt`);
+      optionalLine(
+        "Unklare Modellkosten",
+        usage.ambiguousRequests === 0,
+        usage.ambiguousRequests === 0
+          ? "keine"
+          : `${usage.ambiguousRequests} Request(s) konservativ reserviert`
+      );
+    } catch (error) {
+      line("OpenRouter-Konfiguration", false, error.message);
+    }
+  }
+
+  const telegramTokenOk = /^\d+:[A-Za-z0-9_-]{20,}$/.test(process.env.TELEGRAM_BOT_TOKEN || "");
+  const chatIdsOk = /^-?\d+(,-?\d+)*$/.test(
+    String(process.env.TELEGRAM_ALLOWED_CHAT_IDS || process.env.TELEGRAM_ALLOWED_CHAT_ID || "").replace(/\s/g, "")
+  );
+  if (requireTelegram) {
+    line("Telegram-Token", telegramTokenOk, telegramTokenOk ? "gesetzt" : "fehlt/ungültig");
+    line("Telegram-Chat-ID", chatIdsOk, chatIdsOk ? "gesetzt" : "fehlt/ungültig");
+  } else {
+    optionalLine("Telegram-Token", telegramTokenOk, telegramTokenOk ? "gesetzt" : "optional; für npm run chat nicht nötig");
+    optionalLine("Telegram-Chat-ID", chatIdsOk, chatIdsOk ? "gesetzt" : "optional; für npm run chat nicht nötig");
+  }
+  try {
+    const inboxMinutes = normalizeInboxPollMinutes(process.env.NEMOCLAW_INBOX_POLL_MINUTES);
+    line(
+      "Inbox-Monitor",
+      true,
+      inboxMinutes === 0 ? "deaktiviert" : `Startcheck + etwa alle ${inboxMinutes} min (±20%)`
+    );
+  } catch (error) {
+    line("Inbox-Monitor", false, error.message);
+  }
+
+  const kaCookies = Boolean(process.env.KA_COOKIES);
+  line(
+    "Kleinanzeigen-Session",
+    kaCookies,
+    kaCookies ? "gesetzt" : "fehlt — npm run login benötigt einen nicht blockierten Netzwerkpfad"
+  );
+  const csrfOk = hasCookie("CSRF-TOKEN");
+  const derivedUserId = userIdFromAccessToken(cookieValue("access_token"));
+  const userIdOk = hasCookie("user_id") || Boolean(derivedUserId);
+  const bearerOk = hasCookie("access_token") || Boolean(process.env.KA_BEARER_TOKEN);
+  if (kaCookies) {
+    line("CSRF", csrfOk, csrfOk ? "vorhanden" : "fehlt");
+    line(
+      "User-ID",
+      userIdOk,
+      hasCookie("user_id") ? "vorhanden" : (derivedUserId ? "aus Bearer abgeleitet" : "fehlt")
+    );
+    line("Bearer", bearerOk, bearerOk ? "vorhanden" : "fehlt");
+  }
+  const chromePath = findChromeExecutable();
+  line("Chrome", Boolean(chromePath), chromePath || "nicht gefunden");
+  const profile = path.join(root, "workspace", "browser-profile");
+  line("Login-Profil", fs.existsSync(profile), fs.existsSync(profile) ? "vorhanden" : "fehlt");
+
+  const localReady = nodeOk && modeOk && apiKeyOk;
+  const accountReady = localReady && kaCookies && csrfOk && userIdOk;
+  const zipCode = String(process.env.KA_DEFAULT_ZIP_CODE || "");
+  const locationId = String(process.env.KA_DEFAULT_LOCATION_ID || "").trim();
+  const contactName = String(process.env.KA_CONTACT_NAME || "").trim();
+  const publishReady = /^\d{5}$/.test(zipCode) && zipCode !== "00000" && Boolean(locationId) && Boolean(contactName);
+  line("Lokaler Dry-run", localReady, localReady ? "bereit — npm run chat" : "nicht bereit");
+  line(
+    "Kontoaktionen",
+    accountReady,
+    accountReady ? "Basis-Session bereit — mit npm run smoke:ka verifizieren" : "nicht bereit — npm run login"
+  );
+  optionalLine(
+    "Anzeigen-Veröffentlichung",
+    publishReady,
+    publishReady
+      ? "PLZ, Orts-ID und Kontaktname gesetzt"
+      : "vor Live-Veröffentlichung KA_DEFAULT_ZIP_CODE, KA_DEFAULT_LOCATION_ID und KA_CONTACT_NAME setzen"
+  );
+  if (requireTelegram) {
+    line(
+      "Telegram-Betrieb",
+      telegramTokenOk && chatIdsOk,
+      telegramTokenOk && chatIdsOk ? "bereit — npm run launch" : "nicht bereit"
+    );
+  } else {
+    optionalLine(
+    "Telegram-Betrieb",
+    telegramTokenOk && chatIdsOk,
+    telegramTokenOk && chatIdsOk ? "bereit — npm start" : "optional; Token und Chat-ID fehlen"
+    );
+  }
+  if (requiredFailures) process.exitCode = 1;
+}
+
+main();

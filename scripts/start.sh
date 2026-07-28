@@ -9,11 +9,13 @@ if [ ! -f "$PROJECT_DIR/.env" ]; then
   exit 1
 fi
 
+cd "$PROJECT_DIR"
+node scripts/doctor.js --telegram
+
 if command -v openshell >/dev/null 2>&1; then
   echo "[start] Setze Netzwerk-Policy..."
   openshell policy set "$PROJECT_DIR/policies/kleinanzeigen-network.yaml"
 fi
 
 echo "[start] Starte nemoclaw Agent..."
-cd "$PROJECT_DIR"
 exec node workspace/agent.js

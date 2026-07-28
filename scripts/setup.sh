@@ -21,14 +21,16 @@ npm ci
 
 if [ ! -f .env ]; then
   cp .env.example .env
-  chmod 600 .env
-  echo "[setup] .env wurde angelegt. Trage Telegram-Token und erlaubte Chat-ID ein."
+  echo "[setup] .env wurde angelegt. Trage mindestens den OpenRouter-Key ein; Telegram ist optional."
+fi
+chmod 600 .env
+
+if [ "$(uname -s)" = "Darwin" ]; then
+  if [ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; then
+    echo "[setup] Google Chrome gefunden."
+  else
+    echo "[setup] Hinweis: Google Chrome fehlt; der Kleinanzeigen-Login benötigt Chrome."
+  fi
 fi
 
-if command -v claude >/dev/null 2>&1; then
-  echo "[setup] Claude CLI gefunden: $(command -v claude)"
-else
-  echo "[setup] WARNUNG: Claude CLI nicht in PATH. Setze CLAUDE_BIN in .env."
-fi
-
-echo "[setup] Fertig. Login: npm run login | Start: npm start"
+echo "[setup] Fertig. Reihenfolge: npm run doctor | npm run login | npm run verify:account | npm run chat"

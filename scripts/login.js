@@ -2,17 +2,45 @@
 /**
  * One-time setup: opens a real Chrome window with a persistent profile.
  * Log in manually, solve captcha / 2FA. Session is saved permanently.
- * After this, cookies stay fresh via 'node scripts/refresh-cookies.js' — no re-login needed.
+ * A later refresh can renew a still-valid session; an expired account session requires login again.
  */
 
 "use strict";
 
-const { login } = require("../tools/auth");
+const {
+  importSessionFromProfile,
+  importSessionFromClipboard,
+  importSessionFromFile,
+  inspectProfileSession,
+  login,
+  loginWithSystemChrome,
+} = require("../tools/auth");
 
 (async () => {
   try {
-    await login();
-    console.log("Done. Start the agent with: bash scripts/start.sh");
+    const fileIndex = process.argv.indexOf("--file");
+    if (fileIndex >= 0) {
+      const filePath = process.argv[fileIndex + 1];
+      if (!filePath) throw new Error("Pfad zur cURL-Datei fehlt.");
+      console.log("[auth] Importiere die cURL-Datei; Inhalte werden nicht ausgegeben.");
+      await importSessionFromFile(filePath);
+    } else if (process.argv.includes("--clipboard")) {
+      console.log("[auth] Lese einmalig die aktuelle Zwischenablage; Inhalte werden nicht ausgegeben.");
+      await importSessionFromClipboard();
+    } else if (process.argv.includes("--inspect-only")) {
+      const cookies = await inspectProfileSession();
+      console.log(cookies.length ? cookies : "Keine Kleinanzeigen-Cookies im dedizierten Profil.");
+      return;
+    } else if (process.argv.includes("--import-only")) {
+      console.log("[auth] Importiere die bestehende dedizierte Chrome-Sitzung ohne Navigation.");
+      await importSessionFromProfile();
+    } else if (process.argv.includes("--automated")) {
+      console.log("[auth] Expliziter Playwright-Fallback gewählt.");
+      await login();
+    } else {
+      await loginWithSystemChrome();
+    }
+    console.log("Done. Verify with: npm run smoke:ka");
   } catch (e) {
     console.error("Login failed:", e.message);
     process.exit(1);

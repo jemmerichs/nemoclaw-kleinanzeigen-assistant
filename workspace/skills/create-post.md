@@ -1,108 +1,40 @@
 # Skill: Anzeige erstellen
 
-**Wann:** Jannik möchte etwas verkaufen / schickt Fotos.
+## Ziel
 
-**Flow:** Kontext sammeln → Preisrecherche → Fotos aufbereiten → Proposal → "Go" → posten.
+Aus Fotos und kurzem Kontext einen ehrlichen, marktgerechten Anzeigenvorschlag erstellen. Noch vor jeder Kontomutation zeigt die Bridge die exakte Aktion. Ein eigenständiges `Go` führt nur diese vorgemerkte Aktion aus.
 
----
+## Ablauf
 
-## Kontext
+1. Fotos und Caption analysieren. Sichtbare Marke, Modell, Zustand und Mängel nennen; nichts erfinden.
+2. Fehlt genau eine entscheidende Angabe (zum Beispiel Funktionstest oder Größe), höchstens eine gebündelte Rückfrage stellen.
+3. Mit `ka_search_ads` vergleichbare Angebote recherchieren. Bezahlte Top-Anzeigen nicht als normalen Marktpreis behandeln.
+4. Eine konkrete Preisempfehlung und die belastbarste Kategorie-ID wählen. Kategorie-ID nicht aus alten Beispielen raten.
+5. Direkt einen vollständigen Vorschlag mit Titel, Beschreibung, Preis, Kategorie, Ort und Bildanzahl vorbereiten.
+6. Wenn Jannik veröffentlichen möchte, `ka_create_ad` mit den originalen lokalen `imagePaths` aufrufen. Die Bridge führt den Aufruf noch nicht aus, sondern merkt exakt diese Aktion vor.
+7. Nach dem technischen Ergebnis Link und lokalen Asset-Verweis nennen.
 
-Fotos kommen als `[FOTO path:/absoluter/pfad/workspace/images/raw/photo_....jpg]` Tokens an (Bridge speichert sie persistent als absoluten Pfad vor). Artikel und Zustand entweder aus Caption oder nachfragen (max. 1 Rückfrage).
+## Tool-Aufruf zur Veröffentlichung
 
-## Preisrecherche
+`ka_create_ad` bekommt:
 
-Automatisch via `ka_search_ads` durchführen. Einen konkreten Preis empfehlen (keine Spanne).
+- `title` (maximal 65 Zeichen)
+- `description` (ehrlich, inklusive bekannter Mängel)
+- `categoryId` (verifiziert)
+- `price` in EUR
+- `priceType`: `FIXED`, `NEGOTIABLE` oder `GIVE_AWAY`
+- `imagePaths`: exakt die lokalen Pfade aus den `[FOTO path:...]`-Tokens
+- optional `assetName`, `assetId`, `attributes`, `zipCode`, `locationId`, `contactName`
 
-## Fotos aufbereiten
+Die Bridge lädt Bilder erst nach `Go` hoch, veröffentlicht die Anzeige und erfasst sie danach automatisch in der lokalen Datenbank. Keine separaten Upload- oder SQL-Aufrufe nötig.
 
-Bis zu 3 Bilder auswählen (Gesamtansicht, Detail, Zustand). Rohfotos die komplett unbrauchbar sind überspringen.
+## Entwurf statt Veröffentlichung
 
-`processImages` nur aufrufen wenn nötig — schlechte Beleuchtung, unruhiger Hintergrund, schiefes Bild. Handyfotos die schon okay sind direkt verwenden. API-Aufrufe sparen.
+Wenn Jannik ausdrücklich einen Entwurf möchte, `ka_save_draft` mit denselben lokalen Bildpfaden verwenden. Auch ein Entwurf verändert das externe Konto und wird deshalb exakt vorgemerkt.
 
-```
-processImages({ paths: [...], instructions: "item description, mention visible flaws" })
-```
+## Fotos
 
-## Proposal
-
-Fotos senden: `"photo": "/pfad/zum/bild"` Feld in der Antwort (eines pro Nachricht), dann Anzeigentext.
-
-**Beschreibung:** Natürliche Sprache, kein Marketing. Zustand ehrlich beschreiben inkl. Mängel. Kurz halten.
-
-**Titel:** Max. 60 Zeichen, prägnant.
-
-Klar kommunizieren was Jannik mit "Go" bestätigt und was er noch ändern kann.
-
-## Ad-Store (vor und nach "Go")
-
-**Vor "Go" — Entwurf anlegen:**
-```
-// 1. Lokal in DB speichern:
-db_query({ sql: "INSERT INTO assets (name, listing_name, description, last_price_cents) VALUES (?,?,?,?)",
-           params: [name, title, description, priceInCents] })
-→ lastInsertRowid = assetId
-
-// 2. Bilder hochladen (forDraft:true) und Entwurf auf KA speichern (kein Go nötig — nicht veröffentlicht):
-ka_upload_image({ filePath: "/absoluter/pfad/foto.jpg", forDraft: true }) → { imageId, imageUrl }
-ka_save_draft({ title, description, categoryId, priceAmount: price,
-                zipCode: "80636", locationId: "16360",
-                imageUrls: ["https://img.kleinanzeigen.de/..."] })  // Bilder werden am Entwurf gespeichert
-→ { draftId, imageCount }
-// Link teilen: https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html?draftId=<draftId>
-
-// Lokale Bildpfade in DB persistieren (damit sie beim Go abrufbar sind):
-saveImages({ assetId, paths: ["/absoluter/pfad/foto1.jpg", ...] })
-
-// draftId in DB als Referenz speichern (optional):
-db_query({ sql: "UPDATE assets SET ka_draft_id=? WHERE id=?", params: [draftId, assetId] })
-```
-
-**Bildpfade speichern / aktualisieren** (nach Foto-Eingang oder processImages):
-```
-saveImages({ assetId, paths: ["/absoluter/pfad/foto1.jpg", ...] })
-→ { assetId, imageCount, paths }
-```
-Merged automatisch mit bestehenden Pfaden — kein JSON.stringify, kein manuelles Lesen nötig.
-
-**Vor "Go" prüfen:** Falls `image_paths` bereits gesetzt ist, Pfade aus DB laden — kein erneuter Download nötig (Neustart-sicher).
-
-**Nach "Go" — KA erstellen + DB aktualisieren:**
-```
-// Bildpfade aus DB holen:
-db_query({ sql: "SELECT image_paths FROM assets WHERE id=?", params: [assetId] })
-→ JSON.parse(rows[0].image_paths) als paths[]
-
-// Bilder hochladen — einmal pro Pfad, imageUrl merken:
-ka_upload_image({ filePath }) → { imageId, imageUrl }
-// alle imageUrls sammeln, dann Anzeige erstellen:
-ka_create_ad({
-  title, description, categoryId, price, priceType: "NEGOTIABLE",
-  zipCode: "80636", locationId: "16360",   // Jannik's Standort München-Neuhausen
-  imageUrls: ["https://img.kleinanzeigen.de/..."],
-  attributes: { "kategorie_slug.condition": "used" }  // kategoriespezifisch, weglassen wenn unbekannt
-}) → { id: kaId, link }
-// Link teilen: link aus Response an Jannik senden
-
-db_query({ sql: "INSERT INTO ka_listings (asset_id, ka_id, ka_link, price_cents, status, posted_at) VALUES (?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
-           params: [assetId, kaId, link, priceInCents, "active"] })
-db_query({ sql: "UPDATE assets SET has_active_listing=1, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?",
-           params: [assetId] })
-```
-
-Preise als Cent-Integer (45€ → 4500).
-
----
-
-## Kategorien (häufige Beispiele)
-
-| Artikel           | categoryId | categorySlug       |
-|-------------------|------------|--------------------|
-| Fahrräder         | 217        | fahrraeder         |
-| Smartphones       | 162        | handys-smartphones |
-| Laptops           | 278        | laptops            |
-| Kleidung (Herren) | 176        | herrenkleidung     |
-| Möbel             | 83         | moebel             |
-| Sportartikel      | 221        | sportartikel       |
-
-Kategorie unbekannt → `ka_search_ads` aufrufen, Ergebnisse zeigen die richtige Kategorie.
+- Bis zu 20 Bilder sind technisch möglich; konzentriere dich auf die aussagekräftigen Fotos.
+- Kleinanzeigen akzeptiert aktuell höchstens 12 MB pro Bild.
+- Keine Bearbeitung vorschlagen, die Kratzer, Dellen, Flecken oder Verschleiß versteckt.
+- Originalpfade bleiben erhalten und werden erst beim bestätigten Schreibvorgang übertragen.

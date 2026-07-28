@@ -7,6 +7,8 @@ const crypto = require("crypto");
 const KA_AUTH0_CLIENT_ID = "aOq74Cm5fUBoM1JifHTHhlZ2JHXlVUCq";
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+const USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36";
+const PRICE_TYPES = new Set(["FIXED", "NEGOTIABLE", "GIVE_AWAY"]);
 
 function clampInteger(value, { min, max, fallback }) {
   const parsed = Number.parseInt(value, 10);
@@ -18,10 +20,123 @@ function safeFilename(filename) {
   return String(filename || "photo.jpg").replace(/["\r\n\\/]/g, "_");
 }
 
+function validatePriceType(value) {
+  const priceType = String(value || "").toUpperCase();
+  if (!PRICE_TYPES.has(priceType)) {
+    throw new Error("priceType muss FIXED, NEGOTIABLE oder GIVE_AWAY sein.");
+  }
+  return priceType;
+}
+
+function validateAttributes(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    if (value === undefined || value === null) return {};
+    throw new Error("attributes muss ein Objekt sein.");
+  }
+  const entries = Object.entries(value);
+  if (entries.length > 30) throw new Error("Maximal 30 Anzeigenattribute sind erlaubt.");
+  const attributes = {};
+  for (const [key, rawValue] of entries) {
+    if (!/^[A-Za-z0-9_.-]{1,100}$/.test(key)) throw new Error(`Ungültiger Attributname: ${key}`);
+    const stringValue = String(rawValue);
+    if (stringValue.length > 500) throw new Error(`Attribut ${key} ist zu lang.`);
+    attributes[key] = stringValue;
+  }
+  return attributes;
+}
+
+function validateImageUrls(value) {
+  if (!Array.isArray(value)) throw new Error("imageUrls muss eine Liste sein.");
+  if (value.length > 20) throw new Error("Maximal 20 Bilder sind erlaubt.");
+  return value.map(rawUrl => {
+    let url;
+    try { url = new URL(String(rawUrl)); }
+    catch { throw new Error("Ungültige Bild-URL."); }
+    if (url.protocol !== "https:" || !/(^|\.)kleinanzeigen\.de$/i.test(url.hostname)) {
+      throw new Error("Bild-URLs müssen HTTPS-URLs von kleinanzeigen.de sein.");
+    }
+    return url.toString();
+  });
+}
+
+function mergeCookieHeader(cookieString, setCookieHeaders) {
+  const values = new Map();
+  for (const part of String(cookieString || "").split(";")) {
+    const pair = part.trim();
+    const separator = pair.indexOf("=");
+    if (separator > 0) values.set(pair.slice(0, separator), pair.slice(separator + 1));
+  }
+  for (const rawHeader of Array.isArray(setCookieHeaders) ? setCookieHeaders : []) {
+    const pair = String(rawHeader || "").split(";", 1)[0];
+    const separator = pair.indexOf("=");
+    if (separator < 1) continue;
+    const name = pair.slice(0, separator).trim();
+    const value = pair.slice(separator + 1).trim();
+    if (!/^[A-Za-z0-9_.-]{1,128}$/.test(name)) continue;
+    if (/;\s*Max-Age=0(?:;|$)/i.test(rawHeader)) values.delete(name);
+    else values.set(name, value);
+  }
+  return [...values].map(([name, value]) => `${name}=${value}`).join("; ");
+}
+
+function clientError(code, message, status = null) {
+  const error = new Error(message);
+  error.code = code;
+  if (status !== null) error.status = status;
+  return error;
+}
+
+function accessResponseError(status, { authenticated = true, transport = "cookie" } = {}) {
+  if (status === 429) {
+    return clientError(
+      "KA_ACCESS_DENIED",
+      "Kleinanzeigen hat den aktuellen Netzwerkpfad gedrosselt (429). Keine automatischen Wiederholungen.",
+      status
+    );
+  }
+  if (status === 403) {
+    return clientError(
+      authenticated ? "KA_ACCESS_DENIED" : "KA_PUBLIC_ACCESS_DENIED",
+      `${authenticated ? "Kleinanzeigen-Zugriff" : "Öffentlicher Kleinanzeigen-Zugriff"} ` +
+      "abgelehnt (403). Nicht automatisch erneut einloggen oder wiederholen; zuerst Netzwerk/IP-Pfad prüfen.",
+      status
+    );
+  }
+  if (transport === "csrf" && status === 401) {
+    return clientError(
+      "KA_CSRF_EXPIRED",
+      `CSRF abgelaufen (${status}). Bitte 'npm run login' ausführen.`,
+      status
+    );
+  }
+  if (transport === "bearer" && status === 401) {
+    return clientError(
+      "KA_BEARER_EXPIRED",
+      `Bearer token abgelaufen (${status}).`,
+      status
+    );
+  }
+  if (!authenticated && status === 401) {
+    return clientError(
+      "KA_PUBLIC_ACCESS_DENIED",
+      `Öffentlicher Kleinanzeigen-Zugriff abgelehnt (${status}). ` +
+      "Nicht automatisch erneut einloggen; zuerst Netzwerk/IP-Pfad prüfen.",
+      status
+    );
+  }
+  if (authenticated && transport === "cookie" && status === 401) {
+    return clientError(
+      "KA_SESSION_EXPIRED",
+      `Session abgelaufen (${status}). Bitte 'npm run login' erneut ausführen.`,
+      status
+    );
+  }
+  return null;
+}
+
 class KleinanzeigenClient {
   constructor(cookieString, bearerToken = null, refreshToken = null, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
-    if (!cookieString) throw new Error("KA_COOKIES fehlt. Bitte 'node scripts/login.js' ausführen.");
-    this.cookies = cookieString;
+    this.cookies = String(cookieString || "");
     this.timeoutMs = clampInteger(timeoutMs, { min: 1000, max: 120000, fallback: DEFAULT_TIMEOUT_MS });
 
     const at = cookieString.match(/(?:^|;\s*)access_token=([^;]+)/);
@@ -35,12 +150,22 @@ class KleinanzeigenClient {
       this.userId = uid[1];
     } else if (this.bearerToken) {
       try {
-        const payload = JSON.parse(Buffer.from(this.bearerToken.split('.')[1], 'base64').toString());
-        this.userId = String(payload['https://www.kleinanzeigen.de/user_id'] || '');
+        const payload = JSON.parse(Buffer.from(this.bearerToken.split(".")[1], "base64url").toString());
+        const claim = Object.entries(payload || {}).find(
+          ([key, value]) =>
+            (key === "user_id" || /\/user_id$/i.test(key)) &&
+            /^\d+$/.test(String(value))
+        );
+        this.userId = claim ? String(claim[1]) : null;
       } catch { this.userId = null; }
     } else {
       this.userId = null;
     }
+  }
+
+  _requireCookieSession() {
+    if (!this.cookies) throw new Error("KA_COOKIES fehlt. Bitte 'npm run login' ausführen.");
+    return this.cookies;
   }
 
   _requireUserId() {
@@ -67,15 +192,15 @@ class KleinanzeigenClient {
     });
     res.on("end", () => {
       try {
-        resolve({ status: res.statusCode, body: raw ? JSON.parse(raw) : {} });
+        resolve({ status: res.statusCode, body: raw ? JSON.parse(raw) : {}, headers: res.headers });
       } catch {
-        resolve({ status: res.statusCode, body: raw });
+        resolve({ status: res.statusCode, body: raw, headers: res.headers });
       }
     });
     res.on("error", reject);
   }
 
-  _cookieRequest(hostname, path, method, body = null) {
+  _cookieRequest(hostname, path, method, body = null, { cookieString = this.cookies, headers = {} } = {}) {
     return new Promise((resolve, reject) => {
       const data = body ? JSON.stringify(body) : null;
       const options = {
@@ -85,18 +210,26 @@ class KleinanzeigenClient {
         headers: {
           "Accept":        "application/json",
           "Content-Type":  "application/json",
-          "Cookie":        this.cookies,
-          "User-Agent":    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+          "User-Agent":    USER_AGENT,
           "Referer":       "https://www.kleinanzeigen.de/",
+          ...(cookieString ? { "Cookie": cookieString } : {}),
           ...(data ? { "Content-Length": Buffer.byteLength(data) } : {}),
+          ...headers,
         },
       };
 
       let req;
       req = https.request(options, res => {
-        if (res.statusCode === 401 || res.statusCode === 403) {
+        const accessError = accessResponseError(res.statusCode, {
+          authenticated: Boolean(cookieString),
+          transport: "cookie",
+        });
+        if (accessError) {
           res.resume();
-          return reject(new Error(`Session abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' erneut ausführen.`));
+          return reject(accessError);
+        }
+        if (cookieString && res.headers["set-cookie"]) {
+          this.cookies = mergeCookieHeader(this.cookies, res.headers["set-cookie"]);
         }
         this._collectResponse(req, res, resolve, reject);
       });
@@ -108,11 +241,15 @@ class KleinanzeigenClient {
     });
   }
 
-  _wwwRequest(method, path, body = null) {
-    return this._cookieRequest("www.kleinanzeigen.de", path, method, body);
+  _wwwRequest(method, path, body = null, { authenticated = true, headers = {} } = {}) {
+    return this._cookieRequest("www.kleinanzeigen.de", path, method, body, {
+      cookieString: authenticated ? this.cookies : "",
+      headers,
+    });
   }
 
   _csrfWwwRequest(method, path, body = null, extraHeaders = {}) {
+    this._requireCookieSession();
     const csrfToken = this._extractCsrfToken();
     if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies. Bitte 'node scripts/login.js' ausführen.");
     const data = body instanceof Buffer ? body : (body ? Buffer.from(JSON.stringify(body)) : null);
@@ -129,16 +266,20 @@ class KleinanzeigenClient {
           "x-xsrf-token": csrfToken,
           "Origin":       "https://www.kleinanzeigen.de",
           "Referer":      "https://www.kleinanzeigen.de/",
-          "User-Agent":   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+          "User-Agent":   USER_AGENT,
           ...(data ? { "Content-Length": data.length } : {}),
           ...extraHeaders,
         },
       };
       let req;
       req = https.request(opts, res => {
-        if (res.statusCode === 401 || res.statusCode === 403) {
+        const accessError = accessResponseError(res.statusCode, { transport: "csrf" });
+        if (accessError) {
           res.resume();
-          return reject(new Error(`CSRF abgelaufen (${res.statusCode}). Bitte 'node scripts/login.js' ausführen.`));
+          return reject(accessError);
+        }
+        if (res.headers["set-cookie"]) {
+          this.cookies = mergeCookieHeader(this.cookies, res.headers["set-cookie"]);
         }
         this._collectResponse(req, res, resolve, reject);
       });
@@ -162,7 +303,7 @@ class KleinanzeigenClient {
           "Content-Type":  "application/json",
           "Authorization": `Bearer ${this.bearerToken}`,
           "x-ecg-user-agent": "messagebox-1",
-          "User-Agent":    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+          "User-Agent":    USER_AGENT,
           "Origin":        "https://www.kleinanzeigen.de",
           "Referer":       "https://www.kleinanzeigen.de/",
           ...(data ? { "Content-Length": Buffer.byteLength(data) } : {}),
@@ -171,9 +312,10 @@ class KleinanzeigenClient {
 
       let req;
       req = https.request(options, res => {
-        if (res.statusCode === 401 || res.statusCode === 403) {
+        const accessError = accessResponseError(res.statusCode, { transport: "bearer" });
+        if (accessError) {
           res.resume();
-          return reject(new Error(`Bearer token abgelaufen (${res.statusCode}).`));
+          return reject(accessError);
         }
         this._collectResponse(req, res, resolve, reject);
       });
@@ -248,7 +390,7 @@ class KleinanzeigenClient {
 
   async getMessages(conversationId, { limit = 20 } = {}) {
     const userId = this._requireUserId();
-    if (!conversationId) throw new Error("conversationId fehlt.");
+    if (!conversationId || String(conversationId).length > 200) throw new Error("conversationId fehlt oder ist ungültig.");
     const safeLimit = clampInteger(limit, { min: 1, max: 100, fallback: 20 });
     const response = await this._gatewayRequest(
       "GET",
@@ -267,12 +409,14 @@ class KleinanzeigenClient {
   /** Only after explicit "Go" from Jannik */
   async sendMessage(conversationId, text) {
     const userId = this._requireUserId();
-    if (!conversationId) throw new Error("conversationId fehlt.");
-    if (!String(text || "").trim()) throw new Error("Nachrichtentext fehlt.");
+    if (!conversationId || String(conversationId).length > 200) throw new Error("conversationId fehlt oder ist ungültig.");
+    const message = String(text || "").trim();
+    if (!message) throw new Error("Nachrichtentext fehlt.");
+    if (message.length > 4000) throw new Error("Nachrichtentext ist länger als 4000 Zeichen.");
     const response = await this._gatewayRequest(
       "POST",
       `/messagebox/api/users/${userId}/conversations/${encodeURIComponent(conversationId)}/messages`,
-      { message: String(text).trim() }
+      { message }
     );
     return this._ensureSuccess("sendMessage", response, [200, 201]).body;
   }
@@ -281,9 +425,14 @@ class KleinanzeigenClient {
     const normalizedKeyword = String(keyword).trim();
     const safePage = clampInteger(page, { min: 1, max: 100, fallback: 1 });
     const safeLimit = clampInteger(limit, { min: 1, max: 100, fallback: 20 });
-    const safeCategoryId = categoryId === undefined || categoryId === null
-      ? ""
-      : String(clampInteger(categoryId, { min: 1, max: 9999, fallback: 0 }));
+    let safeCategoryId = "";
+    if (categoryId !== undefined && categoryId !== null && categoryId !== "") {
+      const parsedCategoryId = Number(categoryId);
+      if (!Number.isInteger(parsedCategoryId) || parsedCategoryId < 1 || parsedCategoryId > 9999) {
+        throw new Error("searchAds: categoryId ist ungültig.");
+      }
+      safeCategoryId = String(parsedCategoryId);
+    }
     const safeSlug = String(categorySlug || "").toLowerCase().replace(/[^a-z0-9-]/g, "");
 
     const categorySuffix = safeCategoryId ? `c${safeCategoryId}` : "";
@@ -299,7 +448,7 @@ class KleinanzeigenClient {
       searchPath += `/k0${categorySuffix}`;
     }
 
-    const response = await this._wwwRequest("GET", searchPath);
+    const response = await this._wwwRequest("GET", searchPath, null, { authenticated: false });
     const { body } = this._ensureSuccess("searchAds", response);
     if (!Array.isArray(body?.result?.resultList)) {
       throw new Error("searchAds: unerwartetes Antwortformat (möglicherweise Login- oder Bot-Schutz-Seite).");
@@ -311,12 +460,18 @@ class KleinanzeigenClient {
       .slice(0, safeLimit)
       .map(item => {
         const a = item.organicAdPreview;
+        const categoryFromLink = (String(a.seoLink || "").match(/\/\d+-(\d+)-\d+(?:[/?]|$)/) || [])[1];
+        const categoryId = a.categoryId || (categoryFromLink ? Number(categoryFromLink) : undefined);
         return {
           id:          a.id,
           title:       a.title,
           price:       a.price,
           description: a.description?.slice(0, 200),
           location:    a.location,
+          ...(categoryId ? { categoryId } : {}),
+          ...(a.categoryDisplayName || a.categoryName
+            ? { category: a.categoryDisplayName || a.categoryName }
+            : {}),
           topAd:       a.topAd,
           link:        `https://www.kleinanzeigen.de${a.seoLink}`,
         };
@@ -324,6 +479,7 @@ class KleinanzeigenClient {
   }
 
   async getMyAds({ limit = 20 } = {}) {
+    this._requireCookieSession();
     const safeLimit = clampInteger(limit, { min: 1, max: 100, fallback: 20 });
     const response = await this._wwwRequest("GET", "/m-meine-anzeigen-verwalten.json");
     const { body } = this._ensureSuccess("getMyAds", response);
@@ -335,6 +491,7 @@ class KleinanzeigenClient {
       status:   a.adStatus,
       views:    a.pageViewCount,
       category: a.categoryTreePath || "",
+      link:     a.seoLink ? `https://www.kleinanzeigen.de${a.seoLink}` : "",
     }));
   }
 
@@ -377,7 +534,7 @@ class KleinanzeigenClient {
 
   async uploadImage(fileBuffer, filename = "photo.jpg", mimeType = "image/jpeg", { forDraft = false } = {}) {
     if (!Buffer.isBuffer(fileBuffer) || fileBuffer.length === 0) throw new Error("uploadImage: Bilddatei ist leer.");
-    if (fileBuffer.length > 20 * 1024 * 1024) throw new Error("uploadImage: Bild ist größer als 20 MB.");
+    if (fileBuffer.length > 12 * 1024 * 1024) throw new Error("uploadImage: Bild ist größer als 12 MB.");
     const uploadFilename = safeFilename(filename);
     const uploadMimeType = /^image\/(?:jpeg|png|gif|webp|bmp)$/.test(String(mimeType)) ? String(mimeType) : "image/jpeg";
     const boundary = "----KABoundary" + Math.random().toString(36).slice(2);
@@ -409,25 +566,33 @@ class KleinanzeigenClient {
 
   /** Only after explicit "Go" from Jannik. price in EUR. imageUrls from uploadImage. */
   async createAd({ title, description, categoryId, price, priceType = "NEGOTIABLE", zipCode, locationId, contactName, imageUrls = [], attributes = {} }) {
-    if (!String(title || "").trim()) throw new Error("createAd: Titel fehlt.");
-    if (String(title).trim().length > 60) throw new Error("createAd: Titel darf maximal 60 Zeichen lang sein.");
-    if (!String(description || "").trim()) throw new Error("createAd: Beschreibung fehlt.");
+    this._requireCookieSession();
+    const normalizedTitle = String(title || "").trim();
+    const normalizedDescription = String(description || "").trim();
+    if (!normalizedTitle) throw new Error("createAd: Titel fehlt.");
+    if (normalizedTitle.length > 65) throw new Error("createAd: Titel darf maximal 65 Zeichen lang sein.");
+    if (!normalizedDescription) throw new Error("createAd: Beschreibung fehlt.");
+    if (normalizedDescription.length > 4000) throw new Error("createAd: Beschreibung darf maximal 4000 Zeichen lang sein.");
     if (!Number.isInteger(Number(categoryId)) || Number(categoryId) <= 0) throw new Error("createAd: categoryId ist ungültig.");
-    if (!Number.isFinite(Number(price)) || Number(price) < 0) throw new Error("createAd: Preis ist ungültig.");
-    if (!Array.isArray(imageUrls)) throw new Error("createAd: imageUrls muss eine Liste sein.");
+    if (!Number.isInteger(Number(price)) || Number(price) < 0) throw new Error("createAd: Preis muss eine ganze EUR-Zahl sein.");
+    if (zipCode && !/^\d{5}$/.test(String(zipCode))) throw new Error("createAd: PLZ muss aus 5 Ziffern bestehen.");
+    if (String(contactName || "").length > 30) throw new Error("createAd: Kontaktname darf maximal 30 Zeichen lang sein.");
+    const normalizedPriceType = validatePriceType(priceType);
+    const normalizedImageUrls = validateImageUrls(imageUrls);
+    const normalizedAttributes = validateAttributes(attributes);
     const csrfToken = this._extractCsrfToken();
     if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies. Bitte 'node scripts/login.js' ausführen.");
 
     const fields = {
-      adType: "OFFER", title: String(title).trim(), description: String(description).trim(),
+      adType: "OFFER", title: normalizedTitle, description: normalizedDescription,
       categoryId: String(categoryId), priceAmount: String(Math.round(price)),
-      priceType, buyNowEligible: "false",
+      priceType: normalizedPriceType, buyNowEligible: "false",
       zipCode: zipCode || "", locationId: locationId || "", contactName: contactName || "",
       adId: "", trackingId: crypto.randomUUID(), postAdWenkseSessionId: crypto.randomUUID(),
       _csrf: csrfToken,
     };
-    for (const [key, value] of Object.entries(attributes)) fields[`attributeMap[${key}]`] = value;
-    imageUrls.forEach((url, i) => { fields[`adImages[${i}].url`] = url; });
+    for (const [key, value] of Object.entries(normalizedAttributes)) fields[`attributeMap[${key}]`] = value;
+    normalizedImageUrls.forEach((url, i) => { fields[`adImages[${i}].url`] = url; });
 
     const { boundary, body } = this._buildMultipartTextBody(fields);
     const { status, body: parsed } = await this._csrfWwwRequest("POST", "/_actions/postListingWeb.submitListing/", body, {
@@ -464,35 +629,42 @@ class KleinanzeigenClient {
   }
 
   async deleteAd(adId) {
-    if (!adId) throw new Error("adId fehlt.");
-    const { status, body } = await this._csrfWwwRequest("POST", `/m-anzeigen-loeschen.json?ids=${encodeURIComponent(adId)}`, null, {
+    if (!/^\d+$/.test(String(adId || ""))) throw new Error("adId fehlt oder ist ungültig.");
+    const normalizedAdId = String(adId);
+    const { status, body } = await this._csrfWwwRequest("POST", `/m-anzeigen-loeschen.json?ids=${encodeURIComponent(normalizedAdId)}`, null, {
       "Accept":  "application/json, text/plain, */*",
       "Referer": "https://www.kleinanzeigen.de/m-meine-anzeigen.html?tab=PROJECTS",
     });
     if (status !== 200 && status !== 204)
       throw new Error(`deleteAd fehlgeschlagen (${status}): ${JSON.stringify(body).slice(0, 200)}`);
-    return { deleted: adId, status };
+    return { deleted: normalizedAdId, status };
   }
 
-  /** Save a KA draft (no Go needed — not published). Returns draftId.
+  /** Save a KA draft after runtime approval. Returns draftId.
    *  imageUrls from uploadImage({ forDraft: true }) are attached to the draft. */
   async saveDraft({ title = "", description = "", categoryId = null, priceAmount = null, priceType = "NEGOTIABLE", adType = "OFFER", zipCode = "", locationId = "", imageUrls = [], attributes = {} } = {}) {
+    this._requireCookieSession();
     const userId = this._requireUserId();
-    if (!Array.isArray(imageUrls)) throw new Error("saveDraft: imageUrls muss eine Liste sein.");
+    if (String(title).length > 65) throw new Error("saveDraft: Titel darf maximal 65 Zeichen lang sein.");
+    if (String(description).length > 4000) throw new Error("saveDraft: Beschreibung darf maximal 4000 Zeichen lang sein.");
+    if (zipCode && !/^\d{5}$/.test(String(zipCode))) throw new Error("saveDraft: PLZ muss aus 5 Ziffern bestehen.");
+    const normalizedImageUrls = validateImageUrls(imageUrls);
+    const normalizedAttributes = validateAttributes(attributes);
+    const normalizedPriceType = validatePriceType(priceType);
     if (categoryId !== null && (!Number.isInteger(Number(categoryId)) || Number(categoryId) <= 0)) {
       throw new Error("saveDraft: categoryId ist ungültig.");
     }
-    if (priceAmount !== null && (!Number.isFinite(Number(priceAmount)) || Number(priceAmount) < 0)) {
-      throw new Error("saveDraft: priceAmount ist ungültig.");
+    if (priceAmount !== null && (!Number.isInteger(Number(priceAmount)) || Number(priceAmount) < 0)) {
+      throw new Error("saveDraft: priceAmount muss eine ganze EUR-Zahl sein.");
     }
     const body = {
-      adType, title, description, priceType,
+      adType, title, description, priceType: normalizedPriceType,
       zipCode:    zipCode    || "",
       locationId: locationId || "",
       ...(categoryId  !== null ? { categoryId:  Number(categoryId)      } : {}),
       ...(priceAmount !== null ? { priceAmount: Math.round(priceAmount) } : {}),
-      ...(Object.keys(attributes).length ? { attributeMap: attributes } : {}),
-      ...(imageUrls.length ? { adImages: imageUrls } : {}),
+      ...(Object.keys(normalizedAttributes).length ? { attributeMap: normalizedAttributes } : {}),
+      ...(normalizedImageUrls.length ? { adImages: normalizedImageUrls } : {}),
     };
     const { status, body: parsed } = await this._csrfWwwRequest("POST", `/users/${userId}/ad-drafts.json`, body, {
       "Referer": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
@@ -503,10 +675,11 @@ class KleinanzeigenClient {
       throw new Error(`saveDraft fehlgeschlagen: ${JSON.stringify(parsed).slice(0, 300)}`);
     const draftId = String(parsed.adDraft?.id || "");
     if (!draftId) throw new Error(`saveDraft: keine draftId in Antwort: ${JSON.stringify(parsed).slice(0, 300)}`);
-    return { draftId, imageCount: imageUrls.length };
+    return { draftId, imageCount: normalizedImageUrls.length };
   }
 
   async getDrafts() {
+    this._requireCookieSession();
     const userId = this._requireUserId();
     const response = await this._wwwRequest("GET", `/users/${userId}/ad-drafts.json`);
     const { body } = this._ensureSuccess("getDrafts", response);
@@ -517,6 +690,7 @@ class KleinanzeigenClient {
       category:    d.categoryDisplayName,
       categoryId:  d.categoryId,
       priceType:   d.priceType,
+      priceAmount: d.priceAmount,
       description: d.description,
       images:      d.adImages?.length || 0,
       expiresAt:   d.expiryDate,
@@ -524,8 +698,9 @@ class KleinanzeigenClient {
   }
 
   async deleteDraft(draftId) {
+    this._requireCookieSession();
     const userId = this._requireUserId();
-    if (!draftId) throw new Error("draftId fehlt.");
+    if (!draftId || String(draftId).length > 200) throw new Error("draftId fehlt oder ist ungültig.");
     const { status } = await this._csrfWwwRequest("DELETE", `/users/${userId}/ad-drafts/${encodeURIComponent(draftId)}.json`, null, {
       "Referer": "https://www.kleinanzeigen.de/m-meine-anzeigen.html",
     });
@@ -537,3 +712,5 @@ class KleinanzeigenClient {
 }
 
 module.exports = KleinanzeigenClient;
+module.exports.accessResponseError = accessResponseError;
+module.exports.mergeCookieHeader = mergeCookieHeader;

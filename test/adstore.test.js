@@ -26,6 +26,11 @@ test("store initializes the complete asset schema and supports safe writes", () 
 
   const updated = store.query({ sql: "UPDATE assets SET status=? WHERE id=?", params: ["sold", 1] });
   assert.equal(updated.changes, 1);
+  assert.equal(fs.statSync(process.env.NEMOCLAW_DB_PATH).mode & 0o777, 0o600);
+  for (const suffix of ["-wal", "-shm"]) {
+    const file = `${process.env.NEMOCLAW_DB_PATH}${suffix}`;
+    if (fs.existsSync(file)) assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  }
 });
 
 test("store blocks destructive, administrative, commented, and multi-statement SQL", () => {
@@ -36,7 +41,42 @@ test("store blocks destructive, administrative, commented, and multi-statement S
     "SELECT 1; UPDATE assets SET status='sold'",
     "-- harmless\nSELECT 1",
     "WITH row AS (SELECT 1) UPDATE assets SET status='sold'",
+    "UPDATE assets SET status='sold'",
+    "INSERT INTO sqlite_master (type) VALUES ('table')",
   ]) {
     assert.throws(() => store.query({ sql }), /erlaubt|nur ein|nur für lesende/i, sql);
   }
+});
+
+test("specialized cleanup deletes only assets without draft or listing history", () => {
+  const { deleteUnlinkedAsset } = store;
+  const removable = store.query({
+    sql: "INSERT INTO assets (name) VALUES (?)",
+    params: ["Removable"],
+  }).lastInsertRowid;
+  assert.deepEqual(deleteUnlinkedAsset(removable), {
+    deletedAssetId: removable,
+    name: "Removable",
+    changes: 1,
+  });
+  assert.equal(store.query({
+    sql: "SELECT COUNT(*) AS count FROM assets WHERE id=?",
+    params: [removable],
+  })[0].count, 0);
+
+  const withDraft = store.query({
+    sql: "INSERT INTO assets (name,ka_draft_id) VALUES (?,?)",
+    params: ["Draft linked", "draft-locked"],
+  }).lastInsertRowid;
+  assert.throws(() => deleteUnlinkedAsset(withDraft), /Entwurf oder einer Anzeigenhistorie/);
+
+  const withHistory = store.query({
+    sql: "INSERT INTO assets (name) VALUES (?)",
+    params: ["History linked"],
+  }).lastInsertRowid;
+  store.query({
+    sql: "INSERT INTO ka_listings (asset_id,ka_id,status) VALUES (?,?,?)",
+    params: [withHistory, "history-1", "removed"],
+  });
+  assert.throws(() => deleteUnlinkedAsset(withHistory), /Entwurf oder einer Anzeigenhistorie/);
 });

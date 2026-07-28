@@ -1,30 +1,220 @@
 "use strict";
 
 const fs = require("fs");
+const crypto = require("crypto");
 const path = require("path");
 
 function isExplicitApproval(message) {
   return /^\s*go(?:\s+bitte|\s+jetzt)?[.!]?\s*$/i.test(String(message || ""));
 }
 
-function parseClaudeResponse(output) {
-  const text = String(output || "").trim();
-  if (!text) throw new Error("Claude CLI hat eine leere Antwort geliefert.");
-
-  const withoutFence = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  const candidates = [withoutFence];
-  const firstBrace = withoutFence.indexOf("{");
-  const lastBrace = withoutFence.lastIndexOf("}");
-  if (firstBrace >= 0 && lastBrace > firstBrace) candidates.push(withoutFence.slice(firstBrace, lastBrace + 1));
-
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate);
-      if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") continue;
-      return parsed;
-    } catch (_) {}
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
   }
-  throw new Error(`Claude CLI lieferte kein gültiges JSON: ${withoutFence.slice(0, 300)}`);
+  return JSON.stringify(value);
+}
+
+function actionFingerprint(tool, args) {
+  return crypto
+    .createHash("sha256")
+    .update(`${String(tool)}\n${stableJson(args || {})}`)
+    .digest("hex")
+    .slice(0, 12);
+}
+
+function parseToolArguments(value) {
+  if (value === undefined || value === null || value === "") return {};
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value !== "string") throw new Error("Tool-Argumente haben ein ungültiges Format.");
+  let parsed;
+  try { parsed = JSON.parse(value); }
+  catch { throw new Error(`Tool-Argumente sind kein gültiges JSON: ${value.slice(0, 200)}`); }
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+    throw new Error("Tool-Argumente müssen ein JSON-Objekt sein.");
+  }
+  return parsed;
+}
+
+function validateSchema(value, schema, field = "Argumente") {
+  if (!schema || typeof schema !== "object") return value;
+  const type = schema.type;
+  const actualType = Array.isArray(value)
+    ? "array"
+    : value === null
+      ? "null"
+      : Number.isInteger(value)
+        ? "integer"
+        : typeof value;
+
+  if (type === "object") {
+    if (!value || Array.isArray(value) || typeof value !== "object") {
+      throw new Error(`${field} muss ein Objekt sein.`);
+    }
+    const properties = schema.properties || {};
+    for (const required of schema.required || []) {
+      if (!Object.prototype.hasOwnProperty.call(value, required)) {
+        throw new Error(`${field}.${required} fehlt.`);
+      }
+    }
+    const keys = Object.keys(value);
+    if (Number.isFinite(schema.maxProperties) && keys.length > schema.maxProperties) {
+      throw new Error(`${field} enthält zu viele Felder.`);
+    }
+    for (const key of keys) {
+      if (properties[key]) {
+        validateSchema(value[key], properties[key], `${field}.${key}`);
+      } else if (schema.additionalProperties === false) {
+        throw new Error(`${field}.${key} ist nicht erlaubt.`);
+      } else if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
+        validateSchema(value[key], schema.additionalProperties, `${field}.${key}`);
+      }
+    }
+    return value;
+  }
+
+  if (type === "array") {
+    if (!Array.isArray(value)) throw new Error(`${field} muss eine Liste sein.`);
+    if (Number.isFinite(schema.minItems) && value.length < schema.minItems) {
+      throw new Error(`${field} enthält zu wenige Einträge.`);
+    }
+    if (Number.isFinite(schema.maxItems) && value.length > schema.maxItems) {
+      throw new Error(`${field} enthält zu viele Einträge.`);
+    }
+    value.forEach((entry, index) => validateSchema(entry, schema.items, `${field}[${index}]`));
+    return value;
+  }
+
+  if (type === "integer" && actualType !== "integer") {
+    throw new Error(`${field} muss eine ganze Zahl sein.`);
+  }
+  if (type === "number" && !["number", "integer"].includes(actualType)) {
+    throw new Error(`${field} muss eine Zahl sein.`);
+  }
+  if (type === "string" && actualType !== "string") {
+    throw new Error(`${field} muss Text sein.`);
+  }
+  if (type === "boolean" && actualType !== "boolean") {
+    throw new Error(`${field} muss true oder false sein.`);
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) {
+    throw new Error(`${field} hat keinen erlaubten Wert.`);
+  }
+  if (typeof value === "string") {
+    if (Number.isFinite(schema.minLength) && value.length < schema.minLength) {
+      throw new Error(`${field} ist zu kurz.`);
+    }
+    if (Number.isFinite(schema.maxLength) && value.length > schema.maxLength) {
+      throw new Error(`${field} ist zu lang.`);
+    }
+    if (schema.pattern && !(new RegExp(schema.pattern).test(value))) {
+      throw new Error(`${field} hat ein ungültiges Format.`);
+    }
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error(`${field} muss eine endliche Zahl sein.`);
+    if (Number.isFinite(schema.minimum) && value < schema.minimum) {
+      throw new Error(`${field} ist zu klein.`);
+    }
+    if (Number.isFinite(schema.maximum) && value > schema.maximum) {
+      throw new Error(`${field} ist zu groß.`);
+    }
+  }
+  return value;
+}
+
+function extractImagePaths(message, maxImages = 6) {
+  const paths = [];
+  const regex = /\[FOTO path:([^\]]+)\]/g;
+  let match;
+  while ((match = regex.exec(String(message || ""))) !== null && paths.length < maxImages) {
+    paths.push(match[1]);
+  }
+  return [...new Set(paths)];
+}
+
+function normalizeMode(value) {
+  const mode = String(value || "dry-run").trim().toLowerCase();
+  if (!["dry-run", "live"].includes(mode)) {
+    throw new Error("NEMOCLAW_MODE muss 'dry-run' oder 'live' sein.");
+  }
+  return mode;
+}
+
+function normalizeComplexityRouting(value) {
+  const mode = String(value || "auto").trim().toLowerCase();
+  if (!["off", "manual", "auto"].includes(mode)) {
+    throw new Error("NEMOCLAW_COMPLEXITY_ROUTING muss 'off', 'manual' oder 'auto' sein.");
+  }
+  return mode;
+}
+
+function normalizeInboxPollMinutes(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return 45;
+  const parsed = Number(value);
+  if (parsed === 0) return 0;
+  if (!Number.isFinite(parsed) || parsed < 15 || parsed > 360) {
+    throw new Error("NEMOCLAW_INBOX_POLL_MINUTES muss 0 oder eine Zahl zwischen 15 und 360 sein.");
+  }
+  return parsed;
+}
+
+function randomInboxIntervalMs(minutes, random = Math.random) {
+  const normalized = normalizeInboxPollMinutes(minutes);
+  if (normalized === 0) return null;
+  const unit = Math.max(0, Math.min(1, Number(random()) || 0));
+  const jitter = 0.8 + unit * 0.4;
+  return Math.round(normalized * 60 * 1000 * jitter);
+}
+
+function selectModelRoute(message, routingMode = "auto") {
+  const mode = normalizeComplexityRouting(routingMode);
+  const original = String(message || "");
+  const highDirective = original.match(/^\s*\/high(?:\s+([\s\S]*))?$/i);
+  const fastDirective = original.match(/^\s*\/(?:fast|low)(?:\s+([\s\S]*))?$/i);
+  const stripped = highDirective?.[1] ?? fastDirective?.[1] ?? original;
+
+  if (mode === "off") return { tier: "fast", score: 0, reason: "routing-off", message: original };
+  if (highDirective) return { tier: "high", score: 99, reason: "explicit-high", message: stripped.trim() };
+  if (fastDirective) return { tier: "fast", score: 0, reason: "explicit-fast", message: stripped.trim() };
+  if (mode === "manual") return { tier: "fast", score: 0, reason: "manual-default", message: original };
+  if (/^\s*Automatischer Inbox-Check:/i.test(original)) {
+    return { tier: "fast", score: 0, reason: "heartbeat", message: original };
+  }
+
+  let score = 0;
+  const reasons = [];
+  const photoCount = (original.match(/\[FOTO path:[^\]]+\]/g) || []).length;
+  if (photoCount >= 10) {
+    score += 3;
+    reasons.push("many-photos");
+  } else if (photoCount >= 4) {
+    score += 2;
+    reasons.push("several-photos");
+  }
+  if (original.length > 1800) {
+    score += 1;
+    reasons.push("long-context");
+  }
+  if (/\b(mehrere|alle|batch|stapel|sammlung|konvolut|multiple)\b.{0,40}\b(artikel|anzeigen|gegenstände|items|listings)\b/i.test(original)) {
+    score += 2;
+    reasons.push("multi-item");
+  }
+  if (/\b(komplex|strategie|verhandlungsstrategie|authentizität|widersprüch|mehrstufig|vollständige[rn]? workflow|complex|strategy|authenticity|conflicting|multi-step)\b/i.test(original)) {
+    score += 2;
+    reasons.push("complex-intent");
+  }
+  if (/\b(vergleiche|bewerte|analysiere|compare|evaluate|analyze)\b[\s\S]{0,250}\b(und|sowie|gegen|then|and|versus|vs\.?)\b/i.test(original)) {
+    score += 1;
+    reasons.push("compound-analysis");
+  }
+  return {
+    tier: score >= 4 ? "high" : "fast",
+    score,
+    reason: reasons.join(",") || "simple-default",
+    message: original,
+  };
 }
 
 function validateStorageKey(key) {
@@ -76,11 +266,20 @@ function createSerialExecutor() {
 }
 
 module.exports = {
+  actionFingerprint,
   atomicWriteJson,
   boundedJson,
   createSerialExecutor,
+  extractImagePaths,
   isExplicitApproval,
+  normalizeComplexityRouting,
+  normalizeInboxPollMinutes,
+  normalizeMode,
   parseAllowedChatIds,
-  parseClaudeResponse,
+  parseToolArguments,
+  randomInboxIntervalMs,
+  selectModelRoute,
+  stableJson,
+  validateSchema,
   validateStorageKey,
 };

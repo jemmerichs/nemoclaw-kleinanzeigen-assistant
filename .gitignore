@@ -1,9 +1,12 @@
 node_modules/
+.claude/
 .env
 .env.local
 *.log
 .sessions.json
 .state.json
+.pending-actions.json
+.openrouter-usage.json
 workspace/memory/
 workspace/ads.db
 workspace/ads.db-*

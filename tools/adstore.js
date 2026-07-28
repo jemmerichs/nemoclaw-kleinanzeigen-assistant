@@ -1,5 +1,6 @@
 "use strict";
 
+const fs       = require("fs");
 const path     = require("path");
 const Database = require("better-sqlite3");
 
@@ -11,6 +12,9 @@ function getDb() {
   _db = new Database(DB_PATH);
   _db.pragma("journal_mode = WAL");
   _db.pragma("foreign_keys = ON");
+  for (const file of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
+    if (fs.existsSync(file)) fs.chmodSync(file, 0o600);
+  }
   _db.exec(`
     -- Physical item Jannik owns and wants to sell.
     -- Survives across multiple KA listing attempts.
@@ -63,6 +67,9 @@ function getDb() {
   // Migrations — idempotent: SQLite throws if column already exists, safe to swallow
   try { _db.exec("ALTER TABLE assets ADD COLUMN image_paths TEXT"); } catch (_) {}
   try { _db.exec("ALTER TABLE assets ADD COLUMN ka_draft_id TEXT"); } catch (_) {}
+  for (const file of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
+    if (fs.existsSync(file)) fs.chmodSync(file, 0o600);
+  }
   return _db;
 }
 
@@ -79,6 +86,20 @@ function validateSql(sql) {
   }
   if (/\b(?:DELETE|DROP|TRUNCATE|ALTER|CREATE|REPLACE|PRAGMA|ATTACH|DETACH|VACUUM|REINDEX)\b/i.test(normalized)) {
     throw new Error("Destruktive oder administrative SQL-Befehle sind nicht erlaubt.");
+  }
+  if (operation === "UPDATE" && !/\bWHERE\b/i.test(normalized)) {
+    throw new Error("UPDATE ohne WHERE ist nicht erlaubt.");
+  }
+  if (["INSERT", "UPDATE"].includes(operation)) {
+    const match = normalized.match(
+      operation === "INSERT"
+        ? /^INSERT\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)\b/i
+        : /^UPDATE\s+([A-Za-z_][A-Za-z0-9_]*)\b/i
+    );
+    const table = match?.[1]?.toLowerCase();
+    if (!["assets", "ka_listings", "ka_snapshots"].includes(table)) {
+      throw new Error("Schreibzugriffe sind nur auf die Inventar-Tabellen erlaubt.");
+    }
   }
   return { normalized, operation };
 }
@@ -102,9 +123,31 @@ function query({ sql, params = [] }) {
   return { changes: info.changes, lastInsertRowid: Number(info.lastInsertRowid) };
 }
 
+function deleteUnlinkedAsset(assetId) {
+  const id = Number(assetId);
+  if (!Number.isInteger(id) || id < 1) throw new Error("assetId ist ungültig.");
+  const db = getDb();
+  return db.transaction(() => {
+    const asset = db.prepare(
+      "SELECT id,name,has_active_listing,ka_draft_id FROM assets WHERE id=?"
+    ).get(id);
+    if (!asset) throw new Error(`Asset ${id} nicht gefunden.`);
+    const listingCount = Number(db.prepare(
+      "SELECT COUNT(*) AS count FROM ka_listings WHERE asset_id=?"
+    ).get(id)?.count || 0);
+    if (asset.has_active_listing || asset.ka_draft_id || listingCount) {
+      throw new Error(
+        `Asset ${id} ist mit einem Entwurf oder einer Anzeigenhistorie verknüpft und wird nicht gelöscht.`
+      );
+    }
+    const result = db.prepare("DELETE FROM assets WHERE id=?").run(id);
+    return { deletedAssetId: id, name: asset.name, changes: result.changes };
+  })();
+}
+
 function close() {
   if (_db) _db.close();
   _db = null;
 }
 
-module.exports = { query, close, validateSql };
+module.exports = { query, close, deleteUnlinkedAsset, validateSql };

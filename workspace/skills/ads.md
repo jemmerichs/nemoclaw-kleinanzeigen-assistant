@@ -1,17 +1,13 @@
-# Skill: Anzeigen & Entwürfe
+# Skill: Anzeigen und Entwürfe
 
-Jannik's aktive Anzeigen und Entwürfe anzeigen.
+- Aktive Anzeigen: `ka_get_my_ads`
+- Alle Anzeigen-Bundles inklusive pausierter: `ka_get_ad_bundles`
+- Entwürfe: `ka_get_drafts`
+- Lokales Inventar: `inventory_list`
+- Entwurf speichern: vollständigen Vorschlag zeigen, dann `ka_save_draft` vormerken
+- Entwurf löschen: ID und Titel zeigen, dann `ka_delete_draft` vormerken
+- Anzeige löschen: ID und Titel zeigen, dann `ka_delete_ad` vormerken
+- Lokal als verkauft markieren: `inventory_mark_sold` vormerken; klar sagen, dass dies keine externe Anzeige löscht
+- Unverknüpften lokalen Fehl-/Testeintrag löschen: `inventory_delete_asset` vormerken
 
-**Wann:** Jannik fragt nach seinen Anzeigen oder Entwürfen.
-
-**Ablauf:**
-- Aktive Anzeigen: `ka_get_my_ads` → Titel, Preis, Aufrufe, Status
-- Alle inkl. pausierte: `ka_get_ad_bundles`
-- Entwürfe: `ka_get_drafts` → Titel, Kategorie, Preis-Typ, Anzahl Fotos
-- Entwurf speichern/aktualisieren: `ka_save_draft` → speichert auf KA, kein Go nötig, wird NICHT veröffentlicht
-- Entwurf löschen: Vorschlag zeigen, auf eigenständiges "Go" warten, dann `ka_delete_draft({ draftId })`
-
-Entwürfe haben ggf. leere Beschreibung und keine Fotos — darauf hinweisen.
-Entwurf zur Bearbeitung ausgewählt → `create-post` Skill.
-
-**Snapshots:** Nach jedem Abruf von KA-Anzeigendaten und nach jeder Preisänderung einen Eintrag in `ka_snapshots` schreiben (`listing_id`, `price_cents`, `views`).
+Nie aus einem leeren oder fehlerhaften API-Ergebnis schließen, dass keine Anzeigen existieren.

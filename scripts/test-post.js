@@ -2,7 +2,7 @@
 /**
  * End-to-end post test for asset id=1 (Klettersteigset).
  * Uploads 2 images → creates ad → prints link → deletes ad.
- * Does NOT require agent interaction — run directly.
+ * Dangerous manual diagnostic: briefly publishes a real ad.
  */
 
 "use strict";
@@ -15,7 +15,18 @@ const path = require("path");
 const KleinanzeigenClient = require("../tools/kleinanzeigen");
 const { query: dbQuery }  = require("../tools/adstore");
 
+function requireExplicitMutationOptIn() {
+  const flag = "--i-understand-this-publishes-a-real-ad";
+  if (process.env.NEMOCLAW_MODE !== "live" || !process.argv.includes(flag)) {
+    throw new Error(
+      `Blockiert. Nur bewusst mit NEMOCLAW_MODE=live und Flag ${flag} ausführen. ` +
+      "Bevorzugt den Agenten mit exakter Go-Freigabe verwenden."
+    );
+  }
+}
+
 async function run() {
+  requireExplicitMutationOptIn();
   // ── 1. Load asset from DB ──────────────────────────────────────────────────
   const rows = dbQuery({ sql: "SELECT * FROM assets WHERE id=1" });
   if (!rows.length) throw new Error("Asset id=1 nicht gefunden.");
@@ -49,14 +60,11 @@ async function run() {
     categoryId:  asset.category_id,
     price:       asset.last_price_cents / 100,
     priceType:   "NEGOTIABLE",
-    zipCode:     "80636",
-    locationId:  "16360",
-    contactName: "Jannik",
+    zipCode:     process.env.KA_DEFAULT_ZIP_CODE,
+    locationId:  process.env.KA_DEFAULT_LOCATION_ID,
+    contactName: process.env.KA_CONTACT_NAME,
     imageUrls,
-    attributes: {
-      "sport_camping.art_s":     "camping",  // Camping & Outdoor (closest to Klettern)
-      "sport_camping.versand_s": "nein",       // Nur Abholung (avoids shippingOptions requirement)
-    },
+    attributes: {},
   });
 
   console.log(`[test] ✓ Anzeige erstellt: id=${kaId}  link=${link}`);
