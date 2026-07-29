@@ -33,6 +33,7 @@ function getDb() {
       sold_price_cents    INTEGER,
       image_paths         TEXT,
       ka_draft_id         TEXT,
+      vinted_draft_id     TEXT,
       last_listing_payload_json TEXT,
       created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
       updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
@@ -43,6 +44,7 @@ function getDb() {
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       asset_id    INTEGER NOT NULL REFERENCES assets(id),
       ka_id       TEXT UNIQUE,          -- KA ad ID; NULL for manually added history
+      external_id TEXT,                 -- Marketplace-native ID (KA mirrors ka_id)
       ka_link     TEXT,
       price_cents INTEGER,              -- price at time of posting
       status      TEXT NOT NULL DEFAULT 'active', -- active | expired | removed | draft
@@ -54,6 +56,7 @@ function getDb() {
       remote_status TEXT,
       alerted_state TEXT,
       pending_event_json TEXT,
+      marketplace TEXT NOT NULL DEFAULT 'kleinanzeigen',
       created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     );
 
@@ -93,6 +96,7 @@ function getDb() {
   // Migrations — idempotent: SQLite throws if column already exists, safe to swallow
   try { _db.exec("ALTER TABLE assets ADD COLUMN image_paths TEXT"); } catch (_) {}
   try { _db.exec("ALTER TABLE assets ADD COLUMN ka_draft_id TEXT"); } catch (_) {}
+  try { _db.exec("ALTER TABLE assets ADD COLUMN vinted_draft_id TEXT"); } catch (_) {}
   try { _db.exec("ALTER TABLE assets ADD COLUMN last_listing_payload_json TEXT"); } catch (_) {}
   try { _db.exec("ALTER TABLE ka_listings ADD COLUMN payload_json TEXT"); } catch (_) {}
   try { _db.exec("ALTER TABLE ka_listings ADD COLUMN last_seen_at TEXT"); } catch (_) {}
@@ -100,6 +104,19 @@ function getDb() {
   try { _db.exec("ALTER TABLE ka_listings ADD COLUMN remote_status TEXT"); } catch (_) {}
   try { _db.exec("ALTER TABLE ka_listings ADD COLUMN alerted_state TEXT"); } catch (_) {}
   try { _db.exec("ALTER TABLE ka_listings ADD COLUMN pending_event_json TEXT"); } catch (_) {}
+  try { _db.exec("ALTER TABLE ka_listings ADD COLUMN marketplace TEXT NOT NULL DEFAULT 'kleinanzeigen'"); } catch (_) {}
+  try { _db.exec("ALTER TABLE ka_listings ADD COLUMN external_id TEXT"); } catch (_) {}
+  _db.exec(`
+    UPDATE ka_listings
+    SET external_id=ka_id
+    WHERE external_id IS NULL AND ka_id IS NOT NULL
+  `);
+  _db.exec("CREATE INDEX IF NOT EXISTS idx_ka_listings_marketplace ON ka_listings(marketplace)");
+  _db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ka_listings_marketplace_external_id
+    ON ka_listings(marketplace,external_id)
+    WHERE external_id IS NOT NULL
+  `);
   for (const file of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
     if (fs.existsSync(file)) fs.chmodSync(file, 0o600);
   }
@@ -162,13 +179,13 @@ function deleteUnlinkedAsset(assetId) {
   const db = getDb();
   return db.transaction(() => {
     const asset = db.prepare(
-      "SELECT id,name,has_active_listing,ka_draft_id FROM assets WHERE id=?"
+      "SELECT id,name,has_active_listing,ka_draft_id,vinted_draft_id FROM assets WHERE id=?"
     ).get(id);
     if (!asset) throw new Error(`Asset ${id} nicht gefunden.`);
     const listingCount = Number(db.prepare(
       "SELECT COUNT(*) AS count FROM ka_listings WHERE asset_id=?"
     ).get(id)?.count || 0);
-    if (asset.has_active_listing || asset.ka_draft_id || listingCount) {
+    if (asset.has_active_listing || asset.ka_draft_id || asset.vinted_draft_id || listingCount) {
       throw new Error(
         `Asset ${id} ist mit einem Entwurf oder einer Anzeigenhistorie verknüpft und wird nicht gelöscht.`
       );
@@ -282,7 +299,7 @@ function getAssetBundle(assetId) {
   const asset = db.prepare(`
     SELECT id,name,listing_name,description,category_id,last_price_cents,
            has_active_listing,status,sold_at,sold_price_cents,image_paths,
-           ka_draft_id,last_listing_payload_json,created_at,updated_at
+           ka_draft_id,vinted_draft_id,last_listing_payload_json,created_at,updated_at
     FROM assets WHERE id=?
   `).get(id);
   if (!asset) throw new Error(`Asset ${id} nicht gefunden.`);
@@ -296,7 +313,7 @@ function getAssetBundle(assetId) {
     operations_json: undefined,
   }));
   const listings = db.prepare(`
-    SELECT id,ka_id,ka_link,price_cents,status,posted_at,expired_at,
+    SELECT id,marketplace,ka_id,external_id,ka_link,price_cents,status,posted_at,expired_at,
            payload_json,last_seen_at,missing_checks,remote_status,alerted_state,
            pending_event_json,created_at
     FROM ka_listings WHERE asset_id=? ORDER BY id DESC
@@ -332,15 +349,23 @@ function getAssetBundle(assetId) {
 }
 
 function getAssetBundleByKaId(kaId) {
-  const normalized = String(kaId ?? "").trim();
+  return getAssetBundleByExternalId("kleinanzeigen", kaId);
+}
+
+function getAssetBundleByExternalId(marketplace, externalId) {
+  const normalizedMarketplace = String(marketplace || "").trim().toLowerCase();
+  if (!/^[a-z][a-z0-9_-]{1,30}$/.test(normalizedMarketplace)) {
+    throw new Error("marketplace ist ungültig.");
+  }
+  const normalized = String(externalId ?? "").trim();
   if (!normalized) return null;
   const row = getDb().prepare(`
     SELECT asset_id
     FROM ka_listings
-    WHERE ka_id=?
+    WHERE marketplace=? AND COALESCE(external_id,ka_id)=?
     ORDER BY id DESC
     LIMIT 1
-  `).get(normalized);
+  `).get(normalizedMarketplace, normalized);
   return row ? getAssetBundle(row.asset_id) : null;
 }
 
@@ -360,8 +385,19 @@ function remotePriceCents(ad) {
   return Math.round(parsed * 100);
 }
 
-function reconcileRemoteListings(remoteAds, { missingThreshold = 2, now = new Date().toISOString() } = {}) {
+function reconcileRemoteListings(
+  remoteAds,
+  {
+    marketplace = "kleinanzeigen",
+    missingThreshold = 2,
+    now = new Date().toISOString(),
+  } = {}
+) {
   if (!Array.isArray(remoteAds)) throw new Error("remoteAds muss eine Liste sein.");
+  const normalizedMarketplace = String(marketplace || "").trim().toLowerCase();
+  if (!/^[a-z][a-z0-9_-]{1,30}$/.test(normalizedMarketplace)) {
+    throw new Error("marketplace ist ungültig.");
+  }
   const threshold = Number(missingThreshold);
   if (!Number.isInteger(threshold) || threshold < 2 || threshold > 10) {
     throw new Error("missingThreshold muss zwischen 2 und 10 liegen.");
@@ -374,13 +410,14 @@ function reconcileRemoteListings(remoteAds, { missingThreshold = 2, now = new Da
   const db = getDb();
   const eventRows = db.transaction(() => {
     const listings = db.prepare(`
-      SELECT l.id,l.asset_id,l.ka_id,l.status,l.missing_checks,l.alerted_state,
+      SELECT l.id,l.asset_id,l.ka_id,COALESCE(l.external_id,l.ka_id) AS external_id,
+             l.status,l.missing_checks,l.alerted_state,
              l.pending_event_json,l.price_cents,l.payload_json,a.last_listing_payload_json,
              a.listing_name,a.last_price_cents
       FROM ka_listings l
       JOIN assets a ON a.id=l.asset_id
-      WHERE l.ka_id IS NOT NULL
-    `).all();
+      WHERE l.marketplace=? AND COALESCE(l.external_id,l.ka_id) IS NOT NULL
+    `).all(normalizedMarketplace);
     const queueEvent = (listing, event, eventKey) => {
       const pending = parseJson(listing.pending_event_json);
       if (listing.alerted_state === eventKey || pending?.eventKey === eventKey) return;
@@ -390,7 +427,7 @@ function reconcileRemoteListings(remoteAds, { missingThreshold = 2, now = new Da
       listing.pending_event_json = queued;
     };
     for (const listing of listings) {
-      const remote = remoteById.get(String(listing.ka_id));
+      const remote = remoteById.get(String(listing.external_id));
       if (remote) {
         const remoteStatus = normalizeRemoteStatus(remote.status);
         const eventState = remoteStatus === "active" ? null : `remote_${remoteStatus}`;
@@ -478,7 +515,11 @@ function reconcileRemoteListings(remoteAds, { missingThreshold = 2, now = new Da
             type: "remote_status",
             listingId: listing.id,
             assetId: listing.asset_id,
-            kaId: String(listing.ka_id),
+            ...(normalizedMarketplace !== "kleinanzeigen" ? { marketplace: normalizedMarketplace } : {}),
+            ...(normalizedMarketplace !== "kleinanzeigen"
+              ? { externalId: String(listing.external_id) }
+              : {}),
+            ...(normalizedMarketplace === "kleinanzeigen" ? { kaId: String(listing.external_id) } : {}),
             status: remoteStatus,
           }, eventState);
         }
@@ -492,7 +533,11 @@ function reconcileRemoteListings(remoteAds, { missingThreshold = 2, now = new Da
             type: "remote_changed",
             listingId: listing.id,
             assetId: listing.asset_id,
-            kaId: String(listing.ka_id),
+            ...(normalizedMarketplace !== "kleinanzeigen" ? { marketplace: normalizedMarketplace } : {}),
+            ...(normalizedMarketplace !== "kleinanzeigen"
+              ? { externalId: String(listing.external_id) }
+              : {}),
+            ...(normalizedMarketplace === "kleinanzeigen" ? { kaId: String(listing.external_id) } : {}),
             status: "active",
             changes,
           }, `remote_changed:${changeKey}`);
@@ -532,7 +577,11 @@ function reconcileRemoteListings(remoteAds, { missingThreshold = 2, now = new Da
           type: "missing_remote",
           listingId: listing.id,
           assetId: listing.asset_id,
-          kaId: String(listing.ka_id),
+          ...(normalizedMarketplace !== "kleinanzeigen" ? { marketplace: normalizedMarketplace } : {}),
+          ...(normalizedMarketplace !== "kleinanzeigen"
+            ? { externalId: String(listing.external_id) }
+            : {}),
+          ...(normalizedMarketplace === "kleinanzeigen" ? { kaId: String(listing.external_id) } : {}),
           status: "needs_review",
           missingChecks,
         }, eventState);
@@ -554,9 +603,9 @@ function reconcileRemoteListings(remoteAds, { missingThreshold = 2, now = new Da
     return db.prepare(`
       SELECT pending_event_json
       FROM ka_listings
-      WHERE pending_event_json IS NOT NULL
+      WHERE marketplace=? AND pending_event_json IS NOT NULL
       ORDER BY id
-    `).all().map(row => parseJson(row.pending_event_json)).filter(Boolean);
+    `).all(normalizedMarketplace).map(row => parseJson(row.pending_event_json)).filter(Boolean);
   })();
 
   return {
@@ -600,6 +649,7 @@ module.exports = {
   acknowledgeLifecycleEvent,
   deleteUnlinkedAsset,
   getAssetBundle,
+  getAssetBundleByExternalId,
   getAssetBundleByKaId,
   normalizeRemoteStatus,
   query,

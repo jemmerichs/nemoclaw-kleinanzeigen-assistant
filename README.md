@@ -1,6 +1,6 @@
 # nemoclaw-kleinanzeigen
 
-A German-language selling assistant for Kleinanzeigen. It analyzes and selects item photos, makes only targeted non-generative corrections, researches comparable offers, proposes an honest listing, monitors conversations and listing lifecycles, and manages a local inventory. OpenRouter provides the model; Telegram is the normal remote interface, while a local console makes testing cheap and predictable.
+A German-language selling assistant for Kleinanzeigen and Vinted. It analyzes and selects item photos, makes only targeted non-generative corrections, researches comparable offers, proposes honest marketplace-specific listings, and manages one shared local inventory. OpenRouter provides the model; Telegram is the normal remote interface, while a local console makes testing cheap and predictable.
 
 ## What is safe by construction
 
@@ -13,9 +13,9 @@ A German-language selling assistant for Kleinanzeigen. It analyzes and selects i
 - Every saved draft or published listing stores a canonical relist payload plus ordered image provenance.
 - Automatic inbox and listing checks cannot delete or replace an action already waiting for `Go`.
 - A listing must be absent from two consecutive successful own-ad reads before a lifecycle alert. The bot may propose the stored relist, but can never publish it automatically.
-- Sold assets and assets with an already-active listing are blocked from duplicate publication.
+- Sold assets are blocked from publication. One physical asset may be cross-posted once on each marketplace, but a second active listing on the same marketplace is blocked.
 - A failed external write is never retried automatically after an ambiguous network failure.
-- Kleinanzeigen messages and search results are treated as untrusted data, not agent instructions.
+- Marketplace messages and search results are treated as untrusted data, not agent instructions.
 - Telegram accepts only configured owner chat IDs.
 - OpenRouter spend is capped locally per day (`$1` by default) and cumulatively for this app (`$3` by default). Before each call, its maximum configured output is reserved against those caps; concurrent calls share the same ledger lock, and ambiguous post-send failures reserve their projected cost.
 - Secrets, browser state, sessions, pending actions, images, usage records, and the SQLite database are ignored by Git.
@@ -24,11 +24,11 @@ A German-language selling assistant for Kleinanzeigen. It analyzes and selects i
 
 - Node.js 20+
 - An OpenRouter API key
-- Google Chrome/Chromium for the one-time Kleinanzeigen login
-- A stable connection on which Kleinanzeigen permits normal browser access (no blocked VPN, proxy, corporate/hosting range, or Private Relay)
+- Google Chrome/Chromium and a separate one-time login profile for each marketplace
+- A stable connection on which the marketplaces permit normal browser access (no blocked VPN, proxy, corporate/hosting range, or Private Relay)
 - For Telegram operation: a BotFather token and your numeric Telegram chat ID
 
-The default model is `google/gemini-3.6-flash` with medium reasoning. A conservative router can escalate a clearly complex turn to `moonshotai/kimi-k3`; normal listing, search, inbox, and inventory work remains on Flash. Kimi has its own daily cap in addition to the global cap, and is not needed for the smoke tests.
+The default model is `google/gemini-3.6-flash` with medium reasoning. Automatic high-tier routing is disabled by default so all normal work stays on Flash; `/high` is unavailable while routing is `off`. If explicitly enabled later, the optional Kimi tier has its own daily cap in addition to the global cap and is not needed for smoke tests.
 
 ## Setup
 
@@ -45,7 +45,7 @@ OPENROUTER_REASONING_EFFORT=medium
 OPENROUTER_DAILY_BUDGET_USD=1.00
 OPENROUTER_TOTAL_BUDGET_USD=3.00
 
-NEMOCLAW_COMPLEXITY_ROUTING=auto
+NEMOCLAW_COMPLEXITY_ROUTING=off
 OPENROUTER_HIGH_MODEL=moonshotai/kimi-k3
 OPENROUTER_HIGH_DAILY_BUDGET_USD=0.25
 
@@ -69,11 +69,17 @@ npm run doctor
 npm run smoke:openrouter
 npm run login
 npm run smoke:ka
+npm run login:vinted
+npm run smoke:vinted
 ```
 
 `npm run login` opens a native Chrome window with a dedicated persistent profile and navigates to the current listing flow. Log in manually and complete any CAPTCHA or 2FA yourself; do not submit a listing. The script observes only that dedicated local Chrome process, waits until `user_id`/Bearer identity and CSRF are genuinely present, stores the resulting cookie string plus matching Chrome request identity in the ignored `.env`, and then closes the window automatically. It does not rely on an ENTER prompt or reopen the profile headlessly after login. Keeping the request identity aligned matters because Kleinanzeigen's session-protection cookies can reject a request whose browser version does not match the login.
 
 This dedicated profile is required for the standalone bot. A signed-in Codex in-app browser is useful for read-only UI verification, but its private cookies are intentionally not copied into the Node process. If Kleinanzeigen reports a blocked IP range, stop retrying. Disable VPN/proxy/iCloud Private Relay and retry later from a normal, stable home or mobile connection. The login helper detects common `403`, `429`, IP-range, and unusual-traffic blocks and exits without an automatic retry.
+
+`npm run login:vinted` opens a second, Vinted-only ordinary Chrome profile without DevTools attachment, polling, or scripted page interaction. Log in manually, complete any human check yourself, then close that dedicated window completely. Only after it exits does the helper open `about:blank`, import the profile's Vinted cookies into the ignored `.env`, and close again. Do not paste a raw Vinted token into chat or source files. `npm run smoke:vinted` then performs one read-only profile check in a visible browser; `--full` deliberately adds own-item and inbox reads.
+
+Vinted runtime operations use current visible UI controls in that isolated profile, not guessed private endpoints. They fail closed on a challenge, login redirect, unknown field, ambiguous control, or unconfirmed write and do not retry automatically. The currently verified publishing path covers the laptop form and its observed package controls (IDs 8/9/10 for 5/10/20 kg). Other categories remain proposal/read-only work until their current required fields are sampled. The Vinted inbox empty-state can be checked; reading a populated thread, sending messages, and listing/deleting saved drafts are intentionally not exposed until harmless real UI examples can be verified.
 
 `npm run login:automated` preserves the older Playwright-driven flow as a diagnostic fallback. It is not the default because Kleinanzeigen may classify browser automation more aggressively than an ordinary native login.
 
@@ -92,12 +98,12 @@ The command reads the clipboard only when invoked, never prints its contents, ex
 The minimum configuration for local operation is:
 
 1. `OPENROUTER_API_KEY` and the existing low-cost model/budget defaults.
-2. A valid `KA_COOKIES` session created by one successful `npm run login`.
+2. A valid `KA_COOKIES` session for Kleinanzeigen and/or a Vinted session created by `npm run login:vinted`, depending on which marketplace is used.
 3. `NEMOCLAW_MODE=dry-run` until the read-only and agent smoke tests pass.
 
 Telegram is optional: `npm run chat` works without a bot token or chat ID. Set the two Telegram values only when remote operation is wanted.
 
-Codex and its in-app browser are development aids only. They are not runtime dependencies. The production Mac needs Node.js, this repository, Chrome, the OpenRouter key, and its own successful one-time dedicated-profile login.
+Codex and its in-app browser are development aids only. They are not runtime dependencies. The production Mac needs Node.js, this repository, Chrome, the OpenRouter key, and its own successful dedicated-profile login for each enabled marketplace.
 
 Before unattended Telegram operation, also set a real `KA_DEFAULT_ZIP_CODE`, `KA_DEFAULT_LOCATION_ID`, and `KA_CONTACT_NAME`, then run `npm run doctor:telegram`. `npm run launch` runs that strict startup check itself and refuses to start when Telegram configuration is incomplete.
 
@@ -111,6 +117,7 @@ cd nemoclaw-kleinanzeigen
 npm run setup
 # Fill .env: OpenRouter, Telegram owner/token, listing defaults; keep dry-run.
 npm run login
+npm run login:vinted
 npm run verify
 npm run verify:account
 npm run doctor:telegram
@@ -180,7 +187,8 @@ This command forces Flash/manual routing and dry-run, requires current public pr
 
 ### Complexity routing
 
-- `auto` (default) stays on Flash unless visible task complexity crosses a deterministic threshold, such as a multi-item workflow with several photos and compound analysis.
+- `off` is the recommended low-budget default and prevents any expensive-model escalation.
+- `auto` stays on Flash unless visible task complexity crosses a deterministic threshold, such as a multi-item workflow with several photos and compound analysis.
 - `/high <Aufgabe>` selects the configured high model for one turn.
 - `/fast <Aufgabe>` forces Flash for one turn.
 - `manual` disables automatic escalation but keeps `/high`; `off` disables the high tier.
@@ -203,7 +211,7 @@ npm run launch
 
 The bot supports:
 
-- `/status` — mode, model, Kleinanzeigen session, pending action, spend
+- `/status` — mode, model, both marketplace sessions, pending action, spend
 - `/budget` — today’s OpenRouter usage
 - `/cancel` — invalidate the pending action
 - `/help` — short usage guide
@@ -227,14 +235,19 @@ For an active but weak listing, ask the bot to analyze the asset. It reads the r
 | `npm run smoke:openrouter` | One inexpensive live model/tool-calling check |
 | `npm run smoke:auth-refresh` | Refresh the dedicated Chrome session, persist it, then verify a private message read |
 | `npm run smoke:ka` | Read-only public + authenticated Kleinanzeigen API checks |
+| `npm run smoke:vinted` | One minimal read-only Vinted profile check (`--full` adds items and inbox) |
 | `npm run smoke:agent -- --image …` | Flash vision → research → staged-listing dry-run |
 | `npm run smoke:workflows` | Synthetic Flash inbox, scam, negotiation and stale-listing behavior; all external writes dry-run |
 | `npm run test:journey` | One offline album → approval → persisted listing → relist → buyer-reply journey |
 | `npm run test:scenarios` | Offline journey plus edit, lifecycle, inbox, restart and idempotency scenarios |
 | `npm run verify` | Free offline regression, syntax, and configuration gate |
-| `npm run verify:account` | `verify` plus all read-only Kleinanzeigen account checks |
+| `npm run verify:account` | `verify` plus read-only Kleinanzeigen and Vinted account checks |
 | `npm run chat` | Interactive local agent |
 | `npm run login` | Native manual login, then local session import |
+| `npm run login:vinted` | Ordinary isolated Vinted login; import only after the window is closed |
+| `npm run login:vinted:import` | Retry only the Vinted import from the closed profile |
+| `npm run login:vinted:inspect` | Show only Vinted cookie names/domains |
+| `npm run refresh-auth:vinted` | Re-import saved Vinted session metadata from `about:blank`; use the smoke test to validate |
 | `npm run login:clipboard` | macOS fallback: import an authenticated Copy-as-cURL request |
 | `npm run login:import-file -- /path/request.txt` | Import an authenticated Copy-as-cURL text file |
 | `npm run login:import` | Retry only the local import from the closed dedicated profile |
@@ -258,6 +271,8 @@ The legacy scripts `scripts/test-post.js` and `scripts/test-draft-images.js` mut
 tools/
   openrouter.js       OpenRouter client, retries, usage ledger, daily cap
   kleinanzeigen.js    Kleinanzeigen web/gateway client
+  vinted.js           Fail-closed Vinted browser/UI client
+  vinted-auth.js      Isolated ordinary-Chrome login and session import
   telegram.js         Telegram transport and long polling
   auth.js             Dedicated native-Chrome login and profile refresh
   image.js            Immutable originals, bounded edits and provenance
@@ -277,8 +292,8 @@ workspace/
 - A lifecycle alert is deduplicated; if the listing reappears, its missing counter and alert state reset. View/price snapshots remain available for later listing analysis.
 - Telegram media groups are processed as one item so the model sees the whole photo set together.
 - Photo and listing records are durable local state under `workspace/images` and `workspace/ads.db`. Existing databases are migrated in place on first use. Back them up before moving versions, and copy these ignored paths together with `.env` when intentionally migrating the running instance; do not commit them.
-- OpenRouter receives the current task text and attached selling photos. It never receives Telegram tokens, Kleinanzeigen cookies, or login credentials.
+- OpenRouter receives the current task text and attached selling photos. It never receives Telegram tokens, marketplace cookies, or login credentials.
 - The model can read inventory through narrow tools. It cannot self-edit code or skill files.
-- Private Kleinanzeigen endpoints are unofficial and may change. Run the read-only smoke checks after login and after any site change before enabling live mode.
+- Kleinanzeigen private endpoints and the Vinted web UI may change. Run the corresponding minimal read-only smoke check after login and after a site change before enabling live mode.
 
 The acceptance scenarios and adjacent-use-case decisions for the current production goal are recorded in [GOAL_SESSION.md](./GOAL_SESSION.md).

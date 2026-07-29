@@ -12,10 +12,11 @@ Aus Fotos und kurzem Kontext einen ehrlichen, marktgerechten Anzeigenvorschlag e
    - Fotos mit Briefen, Adressen, Gesichtern oder anderen unnötigen privaten Informationen nicht verwenden. Nur peripheren privaten Inhalt wegschneiden, wenn Produkt und Zustand vollständig ehrlich sichtbar bleiben; sonst das Foto auslassen und Jannik darauf hinweisen.
 3. Nur einzelne Fotos mit einem konkreten Problem über `image_edit` korrigieren. Das Tool zeigt jede bearbeitete Version als Telegram-Vorschau; nach der visuellen Kontrolle Original oder Ausgabe auswählen.
 4. Fehlt genau eine entscheidende Angabe (zum Beispiel Funktionstest oder Größe), höchstens eine gebündelte Rückfrage stellen.
-5. Mit `ka_search_ads` vergleichbare Angebote recherchieren. Bezahlte Top-Anzeigen nicht als normalen Marktpreis behandeln.
-6. Eine konkrete Preisempfehlung und die belastbarste Kategorie-ID wählen. Kategorie-ID nicht aus alten Beispielen raten.
-7. Direkt einen vollständigen Vorschlag mit Titel, Beschreibung, Preis, Kategorie, Ort und ausgewählter Bildreihenfolge vorbereiten.
-8. Wenn Jannik veröffentlichen möchte, `ka_create_ad` mit genau den ausgewählten Original- und/oder bearbeiteten `imagePaths` in der gewünschten Reihenfolge aufrufen. Die Bridge führt den Aufruf noch nicht aus, sondern merkt exakt diese Aktion vor.
+5. Den Zielmarktplatz klären. Mit `ka_search_ads` oder `vinted_search_items` vergleichbare Angebote dort recherchieren. Bezahlte Top-/Bumped-Anzeigen nicht als normalen Marktpreis behandeln.
+6. Eine konkrete Preisempfehlung und die belastbarste Kategorie wählen. Kleinanzeigen-Kategorie-ID, Vinted-Kategoriepfad, Attribute, Zustand und Paketgröße nie aus alten Beispielen raten.
+7. Direkt einen vollständigen plattformspezifischen Vorschlag mit Titel, Beschreibung, Preis, Kategorie und ausgewählter Bildreihenfolge vorbereiten.
+8. Wenn Jannik veröffentlichen möchte, `ka_create_ad` oder `vinted_create_item` mit genau den ausgewählten Original- und/oder bearbeiteten `imagePaths` in der gewünschten Reihenfolge aufrufen. Die Bridge führt den Aufruf noch nicht aus, sondern merkt exakt diese Aktion vor.
+   - Soll derselbe Artikel auf beiden Marktplätzen erscheinen, zuerst nur eine Plattform vormerken und ausführen. Danach die zweite Aktion separat vollständig zeigen und ein neues `Go` verlangen.
 9. Nach dem technischen Ergebnis Link und lokalen Asset-Verweis nennen.
 
 ## Tool-Aufruf zur Veröffentlichung
@@ -35,6 +36,8 @@ Die Bridge lädt Bilder erst nach `Go` hoch, veröffentlicht die Anzeige und erf
 ## Entwurf statt Veröffentlichung
 
 Wenn Jannik ausdrücklich einen Entwurf möchte, `ka_save_draft` mit denselben lokalen Bildpfaden verwenden. Auch ein Entwurf verändert das externe Konto und wird deshalb exakt vorgemerkt.
+
+Für Vinted `vinted_save_draft` verwenden. Die aktuelle UI muss alle angegebenen Felder eindeutig anbieten; bei einem unbekannten Kategorie-, Marken-, Zustands-, Attribut- oder Paketwert abbrechen, nicht approximieren.
 
 ## Fotos
 

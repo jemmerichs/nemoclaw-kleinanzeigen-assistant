@@ -352,3 +352,29 @@ test("explicit paused and removed states alert, do not become false misses, and 
   assert.equal(removed.events[0].eventKey, "remote_removed");
   assert.equal(store.getAssetBundle(removedAssetId).asset.has_active_listing, 0);
 });
+
+test("marketplace reconciliation does not leak pending Vinted events into Kleinanzeigen checks", () => {
+  const assetId = store.query({
+    sql: "INSERT INTO assets (name,has_active_listing) VALUES (?,?)",
+    params: ["Vinted lifecycle isolation", 1],
+  }).lastInsertRowid;
+  store.query({
+    sql: "INSERT INTO ka_listings (asset_id,external_id,status,marketplace) VALUES (?,?,?,?)",
+    params: [assetId, "vinted-isolated-1", "active", "vinted"],
+  });
+  store.reconcileRemoteListings([], {
+    marketplace: "vinted",
+    now: "2026-07-29T10:00:00.000Z",
+  });
+  const vinted = store.reconcileRemoteListings([], {
+    marketplace: "vinted",
+    now: "2026-07-29T11:00:00.000Z",
+  });
+  assert.equal(vinted.events.some(event => event.marketplace === "vinted"), true);
+
+  const kleinanzeigen = store.reconcileRemoteListings([], {
+    marketplace: "kleinanzeigen",
+    now: "2026-07-29T12:00:00.000Z",
+  });
+  assert.equal(kleinanzeigen.events.some(event => event.marketplace === "vinted"), false);
+});

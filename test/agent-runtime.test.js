@@ -80,6 +80,50 @@ test("protected model action is staged exactly and Go is consumed once", async (
   assert.match(sent[2], /keine aktuelle/);
 });
 
+test("a Vinted draft is normalized and staged without an external call", async () => {
+  const sent = [];
+  const gateway = { async send(_chatId, text) { sent.push(text); } };
+  const llmClient = {
+    model: "stub",
+    async complete() {
+      return {
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "vinted-draft-call",
+            type: "function",
+            function: {
+              name: "vinted_save_draft",
+              arguments: JSON.stringify({
+                title: "Privater Vinted-Testentwurf",
+                imagePaths: [],
+              }),
+            },
+          }],
+        },
+        usage: { totalTokens: 1, costUsd: 0 },
+      };
+    },
+  };
+
+  try {
+    const result = await runAgent("vinted-draft-stage", "Speichere nur einen Vinted-Entwurf.", {
+      llmClient,
+      gateway,
+    });
+    const pending = getPending("vinted-draft-stage");
+    assert.equal(pending.tool, "vinted_save_draft");
+    assert.equal(pending.args.title, "Privater Vinted-Testentwurf");
+    assert.equal("price" in pending.args, false);
+    assert.equal("condition" in pending.args, false);
+    assert.match(sent[0], /Entwurf im Vinted-Konto/);
+    assert.equal(result.toolTrace[0].staged, true);
+  } finally {
+    clearPending("vinted-draft-stage");
+  }
+});
+
 test("an ambiguous protected write is never retried by a second Go", async () => {
   const agent = require("../workspace/agent");
   const originalSend = agent.TOOLS.ka_send_message.fn;
@@ -1274,6 +1318,60 @@ test("removing one listing preserves the flag while another active listing remai
     sql: "SELECT has_active_listing FROM assets WHERE id=?",
     params: [inserted.lastInsertRowid],
   })[0].has_active_listing, 0);
+});
+
+test("one asset may be cross-posted once per marketplace but not duplicated within Vinted", () => {
+  const imagePath = path.join(process.env.NEMOCLAW_IMAGE_DIR, "raw", "cross-post.jpg");
+  fs.mkdirSync(path.dirname(imagePath), { recursive: true });
+  fs.writeFileSync(imagePath, Buffer.from("cross-post-image"));
+  const assetId = store.query({
+    sql: "INSERT INTO assets (name) VALUES (?)",
+    params: ["Cross-post item"],
+  }).lastInsertRowid;
+  const agent = require("../workspace/agent");
+  agent.recordPublishedListing({
+    assetId,
+    title: "Cross-post on Kleinanzeigen",
+    description: "Same physical item",
+    categoryId: 278,
+    price: 30,
+    priceType: "FIXED",
+    imagePaths: [imagePath],
+  }, { id: "ka-cross-1", link: "https://www.kleinanzeigen.de/s-anzeige/ka-cross-1" });
+
+  const vintedArgs = agent.TOOLS.vinted_create_item.prepare({
+    assetId,
+    title: "Cross-post on Vinted",
+    description: "Same physical item",
+    category: "Laptops",
+    categoryPath: "Electronics > Computers & accessories",
+    brand: "Lenovo",
+    condition: "Good",
+    price: 30,
+    packageTypeId: 8,
+    imagePaths: [imagePath],
+    attributes: {},
+  });
+  agent.recordPublishedListing(vintedArgs, {
+    id: "vinted-cross-1",
+    link: "https://www.vinted.de/items/vinted-cross-1",
+  }, "vinted");
+
+  assert.deepEqual(
+    store.query({
+      sql: "SELECT marketplace,COALESCE(external_id,ka_id) AS external_id FROM ka_listings WHERE asset_id=? ORDER BY marketplace",
+      params: [assetId],
+    }),
+    [
+      { marketplace: "kleinanzeigen", external_id: "ka-cross-1" },
+      { marketplace: "vinted", external_id: "vinted-cross-1" },
+    ]
+  );
+  assert.equal(store.getAssetBundleByExternalId("vinted", "vinted-cross-1").asset.id, assetId);
+  assert.throws(
+    () => agent.TOOLS.vinted_create_item.prepare(vintedArgs),
+    /auf vinted bereits eine aktive Anzeige/
+  );
 });
 
 test("pending approval survives a fresh Node process with the exact fingerprint", () => {

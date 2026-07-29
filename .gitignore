@@ -11,5 +11,7 @@ workspace/memory/
 workspace/ads.db
 workspace/ads.db-*
 workspace/browser-profile/
+workspace/vinted-browser-profile/
+workspace/vinted-api-evidence.json
 workspace/images/raw/
 workspace/images/optimized/

@@ -20,6 +20,9 @@ test("every externally destructive bridge tool requires approval", () => {
     "ka_save_draft",
     "ka_delete_draft",
     "ka_delete_ad",
+    "vinted_create_item",
+    "vinted_save_draft",
+    "vinted_delete_item",
     "inventory_mark_sold",
     "inventory_delete_asset",
   ]) {
@@ -27,6 +30,7 @@ test("every externally destructive bridge tool requires approval", () => {
   }
   assert.equal(TOOLS.ka_get_my_ads.requiresApproval, undefined);
   assert.equal(TOOLS.ka_search_ads.requiresApproval, undefined);
+  assert.equal(TOOLS.vinted_search_items.requiresApproval, undefined);
 });
 
 test("model only sees narrow tools and cannot call raw SQL", () => {
@@ -34,6 +38,8 @@ test("model only sees narrow tools and cannot call raw SQL", () => {
   assert.equal(names.includes("db_query"), false);
   assert.equal(names.includes("ka_create_ad"), true);
   assert.equal(names.includes("ka_delete_ad"), true);
+  assert.equal(names.includes("vinted_create_item"), true);
+  assert.equal(names.includes("vinted_delete_item"), true);
   assert.equal(names.includes("updateSkillFile"), false);
 });
 

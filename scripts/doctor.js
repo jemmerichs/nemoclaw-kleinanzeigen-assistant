@@ -8,6 +8,7 @@ const root = path.resolve(__dirname, "..");
 require("dotenv").config({ path: path.join(root, ".env") });
 const { OpenRouterClient } = require("../tools/openrouter");
 const { findChromeExecutable, userIdFromAccessToken } = require("../tools/auth");
+const { PROFILE_DIR: VINTED_PROFILE_DIR } = require("../tools/vinted-auth");
 const {
   normalizeInboxPollMinutes,
   normalizeListingPollMinutes,
@@ -143,6 +144,20 @@ function main() {
   line("Chrome", Boolean(chromePath), chromePath || "nicht gefunden");
   const profile = path.join(root, "workspace", "browser-profile");
   line("Login-Profil", fs.existsSync(profile), fs.existsSync(profile) ? "vorhanden" : "fehlt");
+  const vintedCookies = Boolean(process.env.VINTED_COOKIES);
+  const vintedProfile = fs.existsSync(VINTED_PROFILE_DIR);
+  optionalLine(
+    "Vinted-Session",
+    vintedCookies && vintedProfile,
+    vintedCookies && vintedProfile
+      ? `importiert${process.env.VINTED_USER_ID ? `; Benutzer-ID ${process.env.VINTED_USER_ID}` : "; Benutzer-ID wird beim Smoke-Test ermittelt"}`
+      : "fehlt — npm run login:vinted"
+  );
+  optionalLine(
+    "Vinted-Profil",
+    vintedProfile,
+    vintedProfile ? VINTED_PROFILE_DIR : "wird beim Vinted-Login angelegt"
+  );
 
   const localReady = nodeOk && modeOk && apiKeyOk;
   const accountReady = localReady && kaCookies && csrfOk && userIdOk && browserFingerprintOk;
@@ -155,6 +170,13 @@ function main() {
     "Kontoaktionen",
     accountReady,
     accountReady ? "Basis-Session bereit — mit npm run smoke:ka verifizieren" : "nicht bereit — npm run login"
+  );
+  optionalLine(
+    "Vinted-Kontoaktionen",
+    localReady && vintedCookies && vintedProfile,
+    localReady && vintedCookies && vintedProfile
+      ? "Basis-Session bereit — mit npm run smoke:vinted minimal verifizieren"
+      : "nicht bereit — npm run login:vinted"
   );
   optionalLine(
     "Anzeigen-Veröffentlichung",

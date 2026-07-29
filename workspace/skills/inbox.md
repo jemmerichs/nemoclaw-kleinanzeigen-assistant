@@ -23,3 +23,7 @@ Neue Nachrichten aus dem Kleinanzeigen-Postfach lesen, verständlich einordnen u
 - Bei Drohungen, rechtlichen Behauptungen, Rückabwicklung, Betrugsverdacht oder einem Konflikt keine eigenständige Verhandlung führen: Originaltext zeigen und Jannik entscheiden lassen.
 - Käufer nie behaupten lassen, eine Nachricht sei bereits gesendet; Erfolg erst nach technischem Tool-Ergebnis nennen.
 - „Skip“ bedeutet: diese Konversation nicht beantworten und bei Bedarf die nächste aktuelle Konversation neu abrufen.
+
+## Vinted
+
+Die Vinted-Inbox darf mit `vinted_get_conversations` read-only geprüft werden; die aktuelle Leeransicht ist belegt. Gefüllte Verläufe und der Nachrichten-Composer sind noch nicht eindeutig an einem harmlosen echten Verlauf belegt. Deshalb keinen Nachrichteninhalt oder Versand behaupten und kein nicht vorhandenes Tool ersetzen.
