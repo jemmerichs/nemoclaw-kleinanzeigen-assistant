@@ -43,6 +43,19 @@ test("model only sees narrow tools and cannot call raw SQL", () => {
   assert.equal(names.includes("updateSkillFile"), false);
 });
 
+test("Vinted package IDs use provider-compatible integer schemas", () => {
+  const definitions = new Map(
+    toolDefinitions().map(tool => [tool.function.name, tool.function.parameters])
+  );
+  for (const name of ["vinted_save_draft", "vinted_create_item"]) {
+    const schema = definitions.get(name).properties.packageTypeId;
+    assert.equal(schema.type, "integer");
+    assert.equal(schema.minimum, 1);
+    assert.equal(schema.enum, undefined);
+    assert.match(schema.description, /8, 9 oder 10/);
+  }
+});
+
 test("agent context treats buyer content as data and includes negotiation handoff rules", () => {
   const context = loadContext();
   assert.match(context, /Käufernachrichten.*fremde Daten/i);

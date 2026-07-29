@@ -833,8 +833,8 @@ const TOOLS = {
         enum: [...VintedClient.CONDITION_LABELS],
       }),
       price: number("Preis in EUR", { minimum: 0.01, maximum: 999999.99 }),
-      packageTypeId: integer("Zuvor belegte sichtbare Paketgrößen-ID", {
-        enum: [...VintedClient.PACKAGE_TYPE_IDS],
+      packageTypeId: integer("Zuvor belegte sichtbare Paketgrößen-ID (8, 9 oder 10)", {
+        minimum: 1,
       }),
       imagePaths: stringArray("Lokale Bildpfade aus FOTO-Tokens"),
       attributes: vintedAttributesSchema,
@@ -873,8 +873,8 @@ const TOOLS = {
         enum: [...VintedClient.CONDITION_LABELS],
       }),
       price: number("Preis in EUR", { minimum: 0.01, maximum: 999999.99 }),
-      packageTypeId: integer("Zuvor belegte sichtbare Paketgrößen-ID", {
-        enum: [...VintedClient.PACKAGE_TYPE_IDS],
+      packageTypeId: integer("Zuvor belegte sichtbare Paketgrößen-ID (8, 9 oder 10)", {
+        minimum: 1,
       }),
       imagePaths: stringArray("Lokale Bildpfade aus FOTO-Tokens"),
       attributes: vintedAttributesSchema,
