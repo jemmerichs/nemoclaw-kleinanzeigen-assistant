@@ -68,7 +68,7 @@ const PENDING_FILE = process.env.NEMOCLAW_PENDING_FILE
 const IMAGE_ROOT = process.env.NEMOCLAW_IMAGE_DIR
   ? path.resolve(process.env.NEMOCLAW_IMAGE_DIR)
   : path.resolve(__dirname, "images");
-const MAX_AGENT_STEPS = 8;
+const MAX_AGENT_STEPS = 13;
 const MAX_HISTORY_ENTRIES = 7;
 const MAX_HISTORY_CHARS = 4000;
 const MAX_HISTORY_ENTRY_CHARS = 1500;
@@ -2027,6 +2027,16 @@ async function runAgent(
   }
   try {
     for (let step = 0; step < MAX_AGENT_STEPS; step++) {
+      if (step === MAX_AGENT_STEPS - 1) {
+        messages.push({
+          role: "user",
+          content:
+            "Letzte interne Verarbeitungsrunde für diesen Auftrag: Schließe jetzt zuverlässig ab. " +
+            "Wenn alle nötigen Fakten vorliegen, fordere genau die passende bestätigungspflichtige Aktion an. " +
+            "Andernfalls antworte konkret mit dem Ergebnis oder der noch fehlenden Nutzerentscheidung. " +
+            "Starte keine weitere optionale Recherche.",
+        });
+      }
       console.log(`[llm →] ${routedClient.model} [${route.tier}:${route.reason}] (step ${step + 1})`);
       const response = await completeModelTurn(routedClient, {
         messages,
@@ -2296,7 +2306,12 @@ async function runAgent(
     }
 
     if (!answered) {
-      const fallback = "Ich konnte die Aufgabe nicht zuverlässig abschließen. Es wurde keine bestätigungspflichtige Aktion ausgeführt.";
+      const lastTool = toolTrace.at(-1)?.tool;
+      const fallback = [
+        `Der Ablauf hat auch nach ${MAX_AGENT_STEPS} internen Verarbeitungsschritten keinen sicheren Abschluss erreicht.`,
+        ...(lastTool ? [`Letzter Werkzeugschritt: ${lastTool}.`] : []),
+        "Es wurde keine bestätigungspflichtige Aktion ausgeführt.",
+      ].join("\n");
       await gateway.send(chatId, fallback);
       appendHistory(chatId, `Agent: ${fallback}`);
     }

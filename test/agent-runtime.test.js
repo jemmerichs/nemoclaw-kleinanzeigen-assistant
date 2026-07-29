@@ -182,6 +182,83 @@ test("a truncated model response gets one compact recovery attempt", async () =>
   assert.deepEqual(sent, ["Kurze vollständige Recovery-Antwort."]);
 });
 
+test("a progressing listing flow may finish after the old eight-step ceiling", async () => {
+  const agent = require("../workspace/agent");
+  const originalSearch = agent.TOOLS.ka_search_ads.fn;
+  agent.TOOLS.ka_search_ads.fn = async args => [{
+    id: args.keyword,
+    title: "Vergleichsartikel",
+    price: 10,
+    categoryId: 278,
+  }];
+  const sent = [];
+  const gateway = { async send(_chatId, text) { sent.push(text); } };
+  let step = 0;
+  const llmClient = {
+    model: "stub",
+    async complete() {
+      step++;
+      if (step <= 8) {
+        return {
+          message: {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: `search-${step}`,
+              type: "function",
+              function: {
+                name: "ka_search_ads",
+                arguments: JSON.stringify({ keyword: `Testartikel ${step}`, limit: 1 }),
+              },
+            }],
+          },
+        };
+      }
+      return {
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "create-after-eight",
+            type: "function",
+            function: {
+              name: "ka_create_ad",
+              arguments: JSON.stringify({
+                title: "Testartikel nach ausführlicher Prüfung",
+                description: "Ehrlicher Testtext.",
+                categoryId: 278,
+                price: 10,
+                priceType: "FIXED",
+                zipCode: "80636",
+                locationId: "16360",
+                contactName: "Jannik",
+                imagePaths: [],
+              }),
+            },
+          }],
+        },
+      };
+    },
+  };
+
+  try {
+    const result = await runAgent(
+      "long-listing-flow",
+      "Recherchiere ausführlich und erstelle eine Kleinanzeigen-Anzeige.",
+      { llmClient, gateway }
+    );
+    assert.equal(step, 9);
+    assert.equal(result.answered, true);
+    assert.equal(result.toolCalls.length, 9);
+    assert.equal(getPending("long-listing-flow").tool, "ka_create_ad");
+    assert.match(sent[0], /Testartikel nach ausführlicher Prüfung/);
+    assert.doesNotMatch(sent.join("\n"), /keinen sicheren Abschluss erreicht/);
+  } finally {
+    agent.TOOLS.ka_search_ads.fn = originalSearch;
+    clearPending("long-listing-flow");
+  }
+});
+
 test("/context reports bounded transient history and separate durable state without a model call", async () => {
   const sent = [];
   const gateway = { async send(_chatId, text) { sent.push(text); } };
