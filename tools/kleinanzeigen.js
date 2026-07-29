@@ -474,10 +474,10 @@ class KleinanzeigenClient {
     return this._ensureSuccess("sendMessage", response, [200, 201]).body;
   }
 
-  async searchAds({ keyword = "", categoryId, categorySlug, page = 1, limit = 20 } = {}) {
+  async searchAds({ keyword = "", categoryId, categorySlug, page = 1, limit = 10 } = {}) {
     const normalizedKeyword = String(keyword).trim();
     const safePage = clampInteger(page, { min: 1, max: 100, fallback: 1 });
-    const safeLimit = clampInteger(limit, { min: 1, max: 100, fallback: 20 });
+    const safeLimit = clampInteger(limit, { min: 1, max: 50, fallback: 10 });
     let safeCategoryId = "";
     if (categoryId !== undefined && categoryId !== null && categoryId !== "") {
       const parsedCategoryId = Number(categoryId);
@@ -658,7 +658,14 @@ class KleinanzeigenClient {
     const validationError = listingValidationError(parsed, categoryId, status);
     if (validationError) throw validationError;
     if (status !== 200 && status !== 201) {
-      throw new Error(`createAd fehlgeschlagen (${status}): ${JSON.stringify(parsed).slice(0, 300)}`);
+      const error = new Error(
+        status >= 500
+          ? `createAd: Kleinanzeigen meldete einen internen Serverfehler (HTTP ${status}).`
+          : `createAd: Kleinanzeigen hat die Anfrage abgelehnt (HTTP ${status}).`
+      );
+      error.code = status >= 500 ? "KA_CREATE_SERVER_ERROR" : "KA_CREATE_REJECTED";
+      error.status = status;
+      throw error;
     }
 
     // Response is an indexed array — [{"success":1,"redirectUrl":2}, true, "/...?adId=123"]

@@ -32,6 +32,7 @@ const {
   getPending,
   normalizeHistoryEntry,
   runAgent,
+  selectTurnScope,
   stagePending,
 } = require("../workspace/agent");
 
@@ -200,17 +201,19 @@ test("/context reports bounded transient history and separate durable state with
   const stats = contextStats("context-report");
   assert.ok(stats.historyChars <= stats.historyCharLimit);
   assert.ok(stats.historyEntries <= stats.historyEntryLimit);
-  assert.equal(stats.historyEntryLimit, 13);
-  assert.equal(stats.historyCharLimit, 12000);
-  assert.equal(stats.perEntryCharLimit, 4000);
+  assert.equal(stats.historyEntryLimit, 7);
+  assert.equal(stats.historyCharLimit, 4000);
+  assert.equal(stats.perEntryCharLimit, 1500);
   assert.equal(stats.retentionHours, 24);
+  assert.ok(stats.approximateFixedInputTokens < 6500);
   assert.match(sent.at(-1), /Context-Management/);
   assert.match(sent.at(-1), /letzten 24 Stunden/);
+  assert.match(sent.at(-1), /Schlanker Standardkontext/);
   assert.match(sent.at(-1), /Fotos werden nur im aktuellen Turn/);
   assert.match(sent.at(-1), /Output-Limit/);
 });
 
-test("conversation history keeps at most 13 entries from the last 24 hours", () => {
+test("conversation history keeps at most 7 entries from the last 24 hours", () => {
   const chatId = "history-retention";
   const now = Date.now();
   assert.equal(normalizeHistoryEntry("legacy entry without timestamp"), null);
@@ -220,7 +223,40 @@ test("conversation history keeps at most 13 entries from the last 24 hours", () 
   }
   assert.deepEqual(
     getHistory(chatId, now),
-    Array.from({ length: 13 }, (_value, index) => `message-${index + 2}`)
+    Array.from({ length: 7 }, (_value, index) => `message-${index + 8}`)
+  );
+});
+
+test("routine listing turns omit unrelated tools and skills to reduce fixed input tokens", () => {
+  const scope = selectTurnScope("Recherchiere den Preis und erstelle eine Kleinanzeigen-Anzeige.");
+  const names = require("../workspace/agent")
+    .toolDefinitions({ include: scope.tools })
+    .map(tool => tool.function.name);
+  const leanContext = require("../workspace/agent").loadContext({
+    includeTools: scope.tools,
+    includeSkills: scope.skills,
+  });
+  const fullContext = require("../workspace/agent").loadContext();
+  const leanFixedChars = leanContext.length + JSON.stringify(
+    require("../workspace/agent").toolDefinitions({ include: scope.tools })
+  ).length;
+  const fullFixedChars = fullContext.length + JSON.stringify(
+    require("../workspace/agent").toolDefinitions()
+  ).length;
+
+  assert.equal(scope.name, "kleinanzeigen-listing");
+  assert.equal(names.includes("ka_search_ads"), true);
+  assert.equal(names.includes("ka_create_ad"), true);
+  assert.equal(names.includes("vinted_search_items"), false);
+  assert.equal(names.includes("ka_get_messages"), false);
+  assert.doesNotMatch(leanContext, /Skill: Inbox/);
+  assert.ok(leanFixedChars < fullFixedChars * 0.6);
+
+  const fallbackScope = selectTurnScope("Hilf mir bei dieser gemischten Aufgabe.");
+  assert.equal(fallbackScope.name, "vollstaendig");
+  assert.equal(
+    require("../workspace/agent").toolDefinitions({ include: fallbackScope.tools }).length,
+    require("../workspace/agent").toolDefinitions().length
   );
 });
 
@@ -363,16 +399,22 @@ test("an ambiguous protected write is never retried by a second Go", async () =>
   process.env.NEMOCLAW_MODE = "live";
   const sent = [];
   const gateway = { async send(_chatId, text) { sent.push(text); } };
-  stagePending("ambiguous-write", "ka_send_message", {
+  const ambiguousArgs = {
     conversationId: "conversation-ambiguous",
     text: "Exakte Nachricht",
-  });
+  };
+  stagePending("ambiguous-write", "ka_send_message", ambiguousArgs);
 
   try {
     await runAgent("ambiguous-write", "Go", { llmClient: null, gateway });
     assert.equal(attempts, 1);
     assert.equal(getPending("ambiguous-write"), null);
-    assert.match(sent[0], /nicht eindeutig als abgeschlossen bestätigt/);
+    assert.match(sent[0], /nicht sicher als abgeschlossen bestätigt/);
+    assert.doesNotMatch(sent[0], /Verbindung nach dem Senden|Remote-Status/);
+    assert.throws(
+      () => stagePending("ambiguous-write", "ka_send_message", ambiguousArgs),
+      /unveränderte Aktion .* gesperrt/
+    );
 
     await runAgent("ambiguous-write", "Go", { llmClient: null, gateway });
     assert.equal(attempts, 1);

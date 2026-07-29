@@ -91,6 +91,14 @@ test("known category requirements are enforced while preparing the exact action"
       "haushaltsgeraete.versand": "nein",
     },
   }));
+  assert.throws(() => TOOLS.ka_create_ad.prepare({
+    ...base,
+    locationId: base.zipCode,
+    attributes: {
+      "haushaltsgeraete.art": "haushaltskleingeraete",
+      "haushaltsgeraete.versand": "nein",
+    },
+  }), /PLZ .* auch als Location-ID/);
   assert.equal(TOOLS.ka_get_category_requirements.requiresApproval, undefined);
 });
 

@@ -6,7 +6,7 @@ const path = require("path");
 
 const DEFAULT_MODEL = "google/gemini-3.6-flash";
 const DEFAULT_TIMEOUT_MS = 120000;
-const DEFAULT_MAX_TOKENS = 2048;
+const DEFAULT_MAX_TOKENS = 1536;
 const DEFAULT_DAILY_BUDGET_USD = 1;
 const DEFAULT_TOTAL_BUDGET_USD = 3;
 const DEFAULT_INPUT_PRICE_PER_MILLION = 1.5;
@@ -159,7 +159,7 @@ class OpenRouterClient {
   constructor({
     apiKey = process.env.OPENROUTER_API_KEY,
     model = process.env.OPENROUTER_MODEL || DEFAULT_MODEL,
-    reasoningEffort = process.env.OPENROUTER_REASONING_EFFORT || "medium",
+    reasoningEffort = process.env.OPENROUTER_REASONING_EFFORT || "minimal",
     maxTokens = process.env.OPENROUTER_MAX_TOKENS,
     timeoutMs = process.env.OPENROUTER_TIMEOUT_MS,
     dailyBudgetUsd = process.env.OPENROUTER_DAILY_BUDGET_USD,

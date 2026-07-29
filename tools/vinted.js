@@ -305,10 +305,10 @@ class VintedClient {
     });
   }
 
-  async searchAds({ keyword = "", catalogId = null, page = 1, limit = 20 } = {}) {
+  async searchAds({ keyword = "", catalogId = null, page = 1, limit = 10 } = {}) {
     const normalizedKeyword = boundedText(keyword, "Suchbegriff", { min: 1, max: 200 });
     const safePage = clampInteger(page, { min: 1, max: 100, fallback: 1 });
-    const safeLimit = clampInteger(limit, { min: 1, max: 50, fallback: 20 });
+    const safeLimit = clampInteger(limit, { min: 1, max: 50, fallback: 10 });
     let catalogPath = "/catalog";
     if (catalogId !== null && catalogId !== undefined && catalogId !== "") {
       const normalizedCatalogId = Number(catalogId);

@@ -69,9 +69,9 @@ const IMAGE_ROOT = process.env.NEMOCLAW_IMAGE_DIR
   ? path.resolve(process.env.NEMOCLAW_IMAGE_DIR)
   : path.resolve(__dirname, "images");
 const MAX_AGENT_STEPS = 8;
-const MAX_HISTORY_ENTRIES = 13;
-const MAX_HISTORY_CHARS = 12000;
-const MAX_HISTORY_ENTRY_CHARS = 4000;
+const MAX_HISTORY_ENTRIES = 7;
+const MAX_HISTORY_CHARS = 4000;
+const MAX_HISTORY_ENTRY_CHARS = 1500;
 const HISTORY_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_MODEL_IMAGES = 12;
 const MAX_MODEL_IMAGE_BYTES = 12 * 1024 * 1024;
@@ -446,6 +446,31 @@ function defaultsForListing(args) {
   };
 }
 
+function assertConfiguredListingLocation(args) {
+  const zipCode = String(args.zipCode || "").trim();
+  const locationId = String(args.locationId || "").trim();
+  const configuredZipCode = String(process.env.KA_DEFAULT_ZIP_CODE || "").trim();
+  const configuredLocationId = String(process.env.KA_DEFAULT_LOCATION_ID || "").trim();
+  if (zipCode && locationId && zipCode === locationId) {
+    throw new Error(
+      `Ungültiges Standortpaar: Die PLZ ${zipCode} wurde auch als Location-ID verwendet. ` +
+      "Die interne Kleinanzeigen-Location-ID ist ein eigener Wert und darf nicht aus der PLZ geraten werden."
+    );
+  }
+  if (
+    configuredZipCode
+    && configuredLocationId
+    && (zipCode !== configuredZipCode || locationId !== configuredLocationId)
+  ) {
+    throw new Error(
+      `Der Standort muss dem zusammen verifizierten Profilpaar entsprechen: PLZ ${configuredZipCode}, ` +
+      `Location-ID ${configuredLocationId}. Erhalten wurde PLZ ${zipCode || "(leer)"}, ` +
+      `Location-ID ${locationId || "(leer)"}. Zum Ändern des Standorts müssen beide Werte gemeinsam ` +
+      "neu verifiziert und in der Konfiguration aktualisiert werden."
+    );
+  }
+}
+
 function prepareListingArgs(rawArgs, { includeContact = false } = {}) {
   const defaults = defaultsForListing(rawArgs);
   const imagePaths = (rawArgs.imagePaths || []).map(assertImagePath);
@@ -507,6 +532,7 @@ function prepareCreateArgs(rawArgs) {
       "müssen für die Veröffentlichung gesetzt sein; diese Formularfelder dürfen nicht entfernt werden."
     );
   }
+  assertConfiguredListingLocation(args);
   validateCategoryAttributes(args.categoryId, args.attributes, {
     requireRequired: true,
     requireVerified: true,
@@ -1025,6 +1051,146 @@ function toolManifest({ exclude = [], include = null } = {}) {
     .join("\n");
 }
 
+const TURN_SCOPES = Object.freeze({
+  listing: Object.freeze({
+    name: "kleinanzeigen-listing",
+    tools: Object.freeze([
+      "ka_search_ads",
+      "ka_get_category_requirements",
+      "image_edit",
+      "ka_save_draft",
+      "ka_create_ad",
+      "inventory_list",
+      "inventory_get_asset",
+      "inventory_mark_sold",
+      "inventory_delete_asset",
+      "memoryRead",
+    ]),
+    skills: Object.freeze(["create-post.md", "price-research.md", "memory.md"]),
+  }),
+  management: Object.freeze({
+    name: "kleinanzeigen-verwaltung",
+    tools: Object.freeze([
+      "ka_get_my_ads",
+      "ka_get_ad_bundles",
+      "ka_get_drafts",
+      "ka_search_ads",
+      "ka_get_category_requirements",
+      "image_edit",
+      "ka_save_draft",
+      "ka_delete_draft",
+      "ka_create_ad",
+      "ka_delete_ad",
+      "inventory_list",
+      "inventory_get_asset",
+      "inventory_mark_sold",
+      "inventory_delete_asset",
+      "memoryRead",
+    ]),
+    skills: Object.freeze([
+      "ads.md",
+      "manage-ads.md",
+      "create-post.md",
+      "price-research.md",
+      "memory.md",
+    ]),
+  }),
+  inbox: Object.freeze({
+    name: "kleinanzeigen-inbox",
+    tools: Object.freeze([
+      "ka_get_conversations",
+      "ka_get_messages",
+      "ka_send_message",
+      "inventory_get_asset",
+      "memoryRead",
+    ]),
+    skills: Object.freeze(["inbox.md", "negotiation.md", "memory.md"]),
+  }),
+  preloadedInbox: Object.freeze({
+    name: "kleinanzeigen-inbox-vorgeladen",
+    tools: Object.freeze(["ka_send_message", "memoryRead"]),
+    skills: Object.freeze(["inbox.md", "negotiation.md", "memory.md"]),
+  }),
+  vinted: Object.freeze({
+    name: "vinted",
+    tools: Object.freeze([
+      "ka_search_ads",
+      "ka_get_category_requirements",
+      "vinted_get_account",
+      "vinted_search_items",
+      "vinted_get_my_items",
+      "vinted_get_conversations",
+      "image_edit",
+      "ka_save_draft",
+      "ka_create_ad",
+      "vinted_save_draft",
+      "vinted_create_item",
+      "vinted_delete_item",
+      "inventory_list",
+      "inventory_get_asset",
+      "inventory_mark_sold",
+      "inventory_delete_asset",
+      "memoryRead",
+    ]),
+    skills: Object.freeze([
+      "vinted.md",
+      "create-post.md",
+      "price-research.md",
+      "ads.md",
+      "memory.md",
+    ]),
+  }),
+  photoReturn: Object.freeze({
+    name: "foto-rueckgabe",
+    tools: Object.freeze([]),
+    skills: Object.freeze(["memory.md"]),
+  }),
+  all: Object.freeze({
+    name: "vollstaendig",
+    tools: Object.freeze(
+      Object.entries(TOOLS)
+        .filter(([_name, tool]) => tool.expose !== false)
+        .map(([name]) => name)
+    ),
+    skills: Object.freeze([
+      "ads.md",
+      "create-post.md",
+      "inbox.md",
+      "manage-ads.md",
+      "memory.md",
+      "negotiation.md",
+      "price-research.md",
+      "vinted.md",
+    ]),
+  }),
+});
+
+function selectTurnScope(message, { source = "user", preloaded = false } = {}) {
+  if (preloaded) return TURN_SCOPES.preloadedInbox;
+  const text = String(message || "").toLowerCase();
+  if (/\bvinted\b/.test(text)) return TURN_SCOPES.vinted;
+  if (/(?:inbox|käufer|interessent|konversation|nachricht(?:en)?|antwort(?:en|vorschlag)?)/i.test(text)) {
+    return TURN_SCOPES.inbox;
+  }
+  if (
+    /(?:foto|bild).*(?:zurück|nochmal|erneut|senden|schicken)|(?:sende|schick).*(?:foto|bild)/i.test(text)
+  ) {
+    return TURN_SCOPES.photoReturn;
+  }
+  if (
+    source === "system"
+    || /(?:lifecycle|abgelaufen|pausiert|relist|neu veröffentlich|aufrufe|performance|inventar|entwurf|lösche|löschen|verkauft|aktive anzeigen|meine anzeigen|alte anzeige|bestehende anzeige)/i.test(text)
+  ) {
+    return TURN_SCOPES.management;
+  }
+  if (
+    /\[foto path:|kleinanzeigen|marktvergleich|preis(?:recherche|empfehlung)?|recherch|verkauf|anzeige.*(?:erstell|vorbereit|aufgeben|post|veröffentlich)/i.test(text)
+  ) {
+    return TURN_SCOPES.listing;
+  }
+  return TURN_SCOPES.all;
+}
+
 function compactToolTrace(toolName, args, result, error = null) {
   if (error) return { tool: toolName, args, error: error.message };
   if (["ka_search_ads", "vinted_search_items"].includes(toolName) && Array.isArray(result)) {
@@ -1129,11 +1295,16 @@ async function executeTool(toolName, args) {
   }
 }
 
-function loadContext({ excludeTools = [], includeTools = null } = {}) {
+function loadContext({
+  excludeTools = [],
+  includeTools = null,
+  includeSkills = null,
+} = {}) {
   const agentMd = fs.readFileSync(path.join(__dirname, "agent.md"), "utf8");
   const skillsDir = path.join(__dirname, "skills");
+  const selectedSkills = includeSkills ? new Set(includeSkills) : null;
   const skills = fs.readdirSync(skillsDir)
-    .filter(file => file.endsWith(".md"))
+    .filter(file => file.endsWith(".md") && (!selectedSkills || selectedSkills.has(file)))
     .sort()
     .map(file => fs.readFileSync(path.join(skillsDir, file), "utf8").slice(0, 30000))
     .join("\n\n---\n\n");
@@ -1143,10 +1314,16 @@ function loadContext({ excludeTools = [], includeTools = null } = {}) {
       .filter(file => /^[a-z0-9][a-z0-9_-]*\.md$/i.test(file))
       .map(file => file.slice(0, -3))
     : [];
+  const availableToolCount = toolDefinitions({
+    exclude: excludeTools,
+    include: includeTools,
+  }).length;
   return [
     agentMd,
     `## Laufzeit\n- Modus: ${getMode()}\n- Heutiges Datum: ${new Date().toISOString().slice(0, 10)}`,
-    `## Verfügbare Tools\n${toolManifest({ exclude: excludeTools, include: includeTools })}`,
+    `## Tool-Nutzung\nFür diesen Turn sind ${availableToolCount} native Tools freigeschaltet. ` +
+      "Ihre verbindlichen Namen, Beschreibungen und Schemas stehen direkt in der Tool-Schnittstelle; " +
+      "erfinde keine weiteren Tools oder Argumente.",
     `## Skill-Dokumentation\n${skills}`,
     `## Memory\nVerfügbare Keys: ${memoryKeys.join(", ") || "keine"}. Inhalte bei Bedarf mit memoryRead lesen.`,
   ].join("\n\n");
@@ -1161,6 +1338,30 @@ function getStoredHistory(chatId) {
 function compactHistoryEntry(value) {
   const entry = String(value || "");
   if (entry.length <= MAX_HISTORY_ENTRY_CHARS) return entry;
+  const photoTokens = [...entry.matchAll(/\[FOTO path:[^\]\r\n]+\]/g)].map(match => match[0]);
+  if (photoTokens.length) {
+    const text = entry
+      .replace(/\[FOTO path:[^\]\r\n]+\]/g, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+      .slice(0, 400);
+    const keptTokens = [];
+    for (const token of photoTokens) {
+      const candidate = [
+        text,
+        `[${photoTokens.length} Fotoverweise im früheren Turn]`,
+        ...keptTokens,
+        token,
+      ].filter(Boolean).join("\n");
+      if (candidate.length > MAX_HISTORY_ENTRY_CHARS) break;
+      keptTokens.push(token);
+    }
+    return [
+      text,
+      `[${photoTokens.length} Fotoverweise im früheren Turn; ${keptTokens.length} Pfade erhalten]`,
+      ...keptTokens,
+    ].filter(Boolean).join("\n");
+  }
   const suffixLength = 1200;
   const prefixLength = MAX_HISTORY_ENTRY_CHARS - suffixLength - 80;
   return [
@@ -1216,6 +1417,12 @@ function appendHistory(chatId, value, at = Date.now()) {
 function contextStats(chatId) {
   const history = getHistory(chatId);
   const pending = getPending(chatId);
+  const routineScope = TURN_SCOPES.listing;
+  const routineContext = loadContext({
+    includeTools: routineScope.tools,
+    includeSkills: routineScope.skills,
+  });
+  const routineToolSchemas = JSON.stringify(toolDefinitions({ include: routineScope.tools }));
   return {
     historyEntries: history.length,
     historyChars: history.join("\n").length,
@@ -1223,7 +1430,11 @@ function contextStats(chatId) {
     historyCharLimit: MAX_HISTORY_CHARS,
     perEntryCharLimit: MAX_HISTORY_ENTRY_CHARS,
     retentionHours: HISTORY_TTL_MS / 60 / 60 / 1000,
-    systemContextChars: loadContext().length,
+    systemContextChars: routineContext.length,
+    toolSchemaChars: routineToolSchemas.length,
+    approximateFixedInputTokens: Math.ceil(
+      (routineContext.length + routineToolSchemas.length) / 4
+    ),
     pendingAction: pending ? {
       id: pending.id,
       tool: pending.tool,
@@ -1262,6 +1473,13 @@ function stagePending(chatId, tool, args) {
     createdAt,
     expiresAt: createdAt + PENDING_TTL_MS,
   };
+  const uncertainMarker = `[UNCERTAIN_ACTION id=${action.id}]`;
+  if (getHistory(key).some(entry => entry.includes(uncertainMarker))) {
+    throw new Error(
+      `Die unveränderte Aktion ${action.id} wurde nach einem unklaren externen Ergebnis gesperrt. ` +
+      "Prüfe zuerst den aktuellen Marktplatzstand und bereite nur eine sachlich korrigierte Aktion neu vor."
+    );
+  }
   pendingActions[key] = action;
   persistPendingActions();
   return action;
@@ -1420,6 +1638,20 @@ function describeListingValidationFailure(action, error) {
   ].join("\n");
 }
 
+function describeAmbiguousActionFailure(action, error, marketplace) {
+  const status = Number(error?.status);
+  const problem = Number.isInteger(status) && status >= 500
+    ? `${marketplace} meldete einen internen Serverfehler (HTTP ${status}).`
+    : `${marketplace} hat keinen eindeutigen Abschluss bestätigt.`;
+  return [
+    `Aktion ${action.id} konnte nicht sicher als abgeschlossen bestätigt werden.`,
+    problem,
+    "Sie wird nicht automatisch wiederholt. Prüfe zuerst den aktuellen Stand auf dem Marktplatz.",
+    "Derselbe unveränderte Versuch bleibt gesperrt; für einen neuen Vorschlag müssen fehlerhafte " +
+      "Formularwerte korrigiert werden.",
+  ].join("\n");
+}
+
 async function deliverAgentMessage(chatId, message, gateway) {
   const rawMessage = String(message || "").trim();
   const referencedPaths = extractImagePaths(rawMessage, 20);
@@ -1526,6 +1758,7 @@ async function handleApproval(chatId, gateway) {
     saveSession(chatId);
     return;
   }
+  let externalWriteStarted = false;
   try {
     console.log(`[approved →] ${action.tool}#${action.id}`);
     const expectedId = actionFingerprint(action.tool, {
@@ -1542,20 +1775,23 @@ async function handleApproval(chatId, gateway) {
       throw new Error("Die vorgemerkten Argumente sind nicht mehr kanonisch und wurden verworfen.");
     }
     verifyActionMaterials(action);
+    externalWriteStarted = Boolean(tool.requiresLive);
     const result = await executeTool(action.tool, action.args);
     const message = describeResult(action.tool, result);
-    appendHistory(chatId, `Tool(${action.tool}): ${boundedJson(result, MAX_HISTORY_ENTRY_CHARS)}`);
     appendHistory(chatId, `Agent: ${message}`);
     await gateway.send(chatId, message);
   } catch (error) {
     const dryRunBlocked = getMode() !== "live" && error.message.includes("dry-run-Modus blockiert");
     const categoryValidation = error.code === "KA_LISTING_VALIDATION";
+    const ambiguousExternalFailure = externalWriteStarted && !dryRunBlocked && !categoryValidation;
     const marketplace = action.tool.startsWith("vinted_") ? "Vinted" : "Kleinanzeigen";
     const message = categoryValidation
       ? describeListingValidationFailure(action, error)
       : dryRunBlocked
       ? `Aktion ${action.id} wurde durch den dry-run-Modus blockiert und nicht ausgeführt.`
-      : `Aktion ${action.id} konnte nicht eindeutig als abgeschlossen bestätigt werden und wird nicht automatisch wiederholt: ${error.message}\nPrüfe vor einem neuen Versuch zuerst den aktuellen ${marketplace}-Stand.`;
+      : ambiguousExternalFailure
+      ? describeAmbiguousActionFailure(action, error, marketplace)
+      : `Aktion ${action.id} wurde vor der externen Ausführung blockiert und nicht ausgeführt: ${String(error.message).slice(0, 500)}`;
     appendHistory(
       chatId,
       categoryValidation
@@ -1564,7 +1800,9 @@ async function handleApproval(chatId, gateway) {
           "read-only mit ka_get_category_requirements und refresh=true prüfen. " +
           `Validierungsdaten: ${boundedJson(error.validationErrors || [], 3000)}. ` +
           "Keine Attributwerte oder Ortsdaten raten und keinen Schreibversuch automatisch wiederholen."
-        : `System: ${message}`
+        : !ambiguousExternalFailure
+        ? `System: ${message}`
+        : `System: [UNCERTAIN_ACTION id=${action.id}] ${message}`
     );
     appendHistory(chatId, `Agent: ${message}`);
     await gateway.send(chatId, message);
@@ -1630,7 +1868,9 @@ async function handleCommand(chatId, userMessage, gateway, llmClient) {
         `${stats.historyChars}/${stats.historyCharLimit} Zeichen`,
       `• Es werden nur Einträge der letzten ${stats.retentionHours} Stunden berücksichtigt.`,
       `• Einzelne lange Einträge werden bei ${stats.perEntryCharLimit} Zeichen kompakt gekürzt.`,
-      `• Systemregeln, Skills und Tool-Verträge: ${stats.systemContextChars} Zeichen; sie werden pro Turn frisch geladen.`,
+      `• Schlanker Standardkontext: ca. ${stats.approximateFixedInputTokens} feste Eingabe-Tokens ` +
+        `(${stats.systemContextChars} Zeichen Regeln/Skills plus ${stats.toolSchemaChars} Zeichen Tool-Schemas).`,
+      "• Inbox, Verwaltung und Vinted werden nur bei einer passenden Anfrage zusätzlich geladen.",
       "• Tool-Ergebnisse eines laufenden Turns bleiben bis zur Antwort im Modellkontext; danach nur als begrenzter Verlauf.",
       "• Fotos werden nur im aktuellen Turn visuell mitgegeben. Inventar, Entwürfe und Freigaben liegen getrennt dauerhaft in Datenbank/Statusdateien.",
       `• Aktuelle Freigabe: ${stats.pendingAction
@@ -1714,26 +1954,30 @@ async function runAgent(
       }, 16000),
     ].join("\n")
     : route.message;
-  appendHistory(
-    chatId,
-    source === "system"
-      ? `System-Trigger: ${String(effectiveMessage).slice(0, 18000)}`
-      : `Jannik: ${String(effectiveMessage).slice(0, 18000)}`
-  );
-  const history = getHistory(chatId);
+  const currentHistoryEntry = source === "system"
+    ? `System-Trigger: ${String(effectiveMessage).slice(0, 18000)}`
+    : `Jannik: ${String(effectiveMessage).slice(0, 18000)}`;
+  appendHistory(chatId, currentHistoryEntry);
+  const storedHistory = getHistory(chatId);
+  const history = [...storedHistory.slice(0, -1), currentHistoryEntry];
   const turnImagePaths = extractImagePaths(effectiveMessage, 20);
   const images = turnImagePaths.slice(0, MAX_MODEL_IMAGES);
   const visuallyPresentedImages = new Set(images);
-  const includedTurnTools = preloaded ? ["ka_send_message", "memoryRead"] : null;
+  const turnScope = selectTurnScope(effectiveMessage, {
+    source,
+    preloaded: Boolean(preloaded),
+  });
+  const includedTurnTools = turnScope.tools;
   const excludedTurnTools = new Set(
-    includedTurnTools
-      ? Object.keys(TOOLS).filter(name => !includedTurnTools.includes(name))
-      : []
+    Object.keys(TOOLS).filter(name => !includedTurnTools.includes(name))
   );
   const messages = [
     {
       role: "system",
-      content: loadContext({ includeTools: includedTurnTools }),
+      content: loadContext({
+        includeTools: includedTurnTools,
+        includeSkills: turnScope.skills,
+      }),
     },
     { role: "user", content: multimodalContent(userPrompt(chatId, history), images) },
   ];
@@ -1895,7 +2139,25 @@ async function runAgent(
             });
             continue;
           }
-          const action = stagePending(chatId, toolName, args);
+          let action;
+          try {
+            action = stagePending(chatId, toolName, args);
+          } catch (error) {
+            toolTrace.push({
+              tool: toolName,
+              args,
+              staged: false,
+              error: error.message,
+            });
+            messages.push(modelMessage);
+            messages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: JSON.stringify({ error: error.message }),
+            });
+            appendHistory(chatId, `System: Aktion konnte nicht vorgemerkt werden: ${error.message}`);
+            continue;
+          }
           toolTrace.push({ tool: toolName, args, staged: true, actionId: action.id });
           const buyerContext = toolName === "ka_send_message"
             ? conversationContext.get(String(args.conversationId))
@@ -1964,7 +2226,6 @@ async function runAgent(
           }
           toolTrace.push(compactToolTrace(toolName, args, result));
           const resultJson = boundedJson(result);
-          appendHistory(chatId, `Tool(${toolName}): ${boundedJson(result, MAX_HISTORY_ENTRY_CHARS)}`);
           messages.push({ role: "tool", tool_call_id: call.id, content: resultJson });
           if (toolName === "image_edit" && result?.outputPath) {
             if (typeof gateway.sendPhoto === "function") {
@@ -2051,6 +2312,7 @@ async function runAgent(
       tier: route.tier,
       reason: route.reason,
       model: routedClient.model,
+      scope: turnScope.name,
     },
   };
 }
@@ -2478,6 +2740,7 @@ module.exports = {
   requireAuthenticatedKa,
   requireAuthenticatedVinted,
   runAgent,
+  selectTurnScope,
   ensureAssetForListing,
   stagePending,
   trimHistory,

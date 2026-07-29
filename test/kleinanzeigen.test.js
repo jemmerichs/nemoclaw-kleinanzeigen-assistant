@@ -243,6 +243,32 @@ test("publishing exposes structured server validation so a new category can self
   );
 });
 
+test("publishing hides upstream internals when Kleinanzeigen returns a server error", async () => {
+  const client = new StubClient();
+  client.nextCsrf = {
+    status: 500,
+    body: {
+      type: "AstroActionError",
+      message: "Failed to submit to https://desktop.internal.invalid/ads",
+    },
+  };
+  await assert.rejects(
+    () => client.createAd({
+      title: "Regal",
+      description: "Gebrauchtes Regal.",
+      categoryId: 93,
+      price: 20,
+    }),
+    error => {
+      assert.equal(error.code, "KA_CREATE_SERVER_ERROR");
+      assert.equal(error.status, 500);
+      assert.match(error.message, /internen Serverfehler.*500/);
+      assert.doesNotMatch(error.message, /AstroAction|desktop\.internal|https:/);
+      return true;
+    }
+  );
+});
+
 test("publishing serializes the current web form contract", async () => {
   const client = new StubClient();
   client.nextCsrf = { status: 201, body: [{ success: 1, redirectUrl: 2 }, true, "/done?adId=987"] };

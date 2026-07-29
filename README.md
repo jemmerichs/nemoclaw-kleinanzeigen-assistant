@@ -20,7 +20,7 @@ A German-language selling assistant for Kleinanzeigen and Vinted. It analyzes an
 - Telegram accepts only configured owner chat IDs.
 - Telegram replies use compact plain text; Markdown headings, separator rules, code fences, and backticks are removed before delivery.
 - OpenRouter spend is capped locally per day (`$1` by default) and cumulatively for this app (`$3` by default). Before each call, its maximum configured output is reserved against those caps; concurrent calls share the same ledger lock, and ambiguous post-send failures reserve their projected cost.
-- Model history is limited to the latest 13 entries from the last 24 hours, with a 12,000-character total cap, independently from durable inventory and pending approvals. Legacy history entries without timestamps expire during migration. An output-limit response is discarded and retried exactly once with minimal reasoning and a compact response contract; provider JSON is never dumped into chat.
+- Model history is limited to the latest 7 entries from the last 24 hours, with a 4,000-character total cap and 1,500 characters per entry, independently from durable inventory and pending approvals. Raw tool results stay only in the current turn instead of displacing conversation messages. Routine turns load only the skills and tools needed for Kleinanzeigen research and posting; inbox, management, and Vinted context is added only when the request needs it, while ambiguous requests retain the full tool set. Normal output is capped at 1,536 tokens with minimal reasoning so a complete listing payload still fits. Legacy history entries without timestamps expire during migration. An output-limit response is discarded and retried exactly once with minimal reasoning and a compact response contract; provider JSON is never dumped into chat.
 - Secrets, browser state, sessions, pending actions, images, usage records, and the SQLite database are ignored by Git.
 
 ## Requirements
@@ -44,7 +44,8 @@ Edit `.env`:
 ```dotenv
 OPENROUTER_API_KEY=sk-or-v1-...
 OPENROUTER_MODEL=google/gemini-3.6-flash
-OPENROUTER_REASONING_EFFORT=medium
+OPENROUTER_REASONING_EFFORT=minimal
+OPENROUTER_MAX_TOKENS=1536
 OPENROUTER_DAILY_BUDGET_USD=1.00
 OPENROUTER_TOTAL_BUDGET_USD=3.00
 
@@ -109,6 +110,8 @@ Telegram is optional: `npm run chat` works without a bot token or chat ID. Set t
 Codex and its in-app browser are development aids only. They are not runtime dependencies. The production Mac needs Node.js, this repository, Chrome, the OpenRouter key, and its own successful dedicated-profile login for each enabled marketplace.
 
 Before unattended Telegram operation, also set a real `KA_DEFAULT_ZIP_CODE`, `KA_DEFAULT_LOCATION_ID`, and `KA_CONTACT_NAME`, then run `npm run doctor:telegram`. `npm run launch` runs that strict startup check itself and refuses to start when Telegram configuration is incomplete.
+
+`KA_DEFAULT_ZIP_CODE` and `KA_DEFAULT_LOCATION_ID` are one verified pair. The bridge rejects a publication if the values differ from that configured pair or if the postal code was copied into `locationId`.
 
 ## Target Mac cutover
 

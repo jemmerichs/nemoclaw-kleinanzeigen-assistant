@@ -6,7 +6,7 @@ Marktpreise für einen Artikel auf dem gewünschten Zielmarktplatz recherchieren
 
 **Ablauf:**
 1. Artikel aus Foto/Caption bestimmen; nur bei entscheidender Unklarheit nachfragen
-2. Für Kleinanzeigen `ka_search_ads`, für Vinted `vinted_search_items` mit passendem Suchbegriff aufrufen
+2. Für Kleinanzeigen `ka_search_ads`, für Vinted `vinted_search_items` mit passendem Suchbegriff und normalerweise höchstens 10 Treffern aufrufen
 3. Vergleichbare Treffer zählen, numerische Preise extrahieren und offensichtlich defekte, gesuchte, verschenkte oder unpassende Artikel ausschließen
 4. Bereinigte Spanne, Stichprobengröße und Median nennen
 5. Immer genau einen konkreten Angebotspreis ausgeben, zum Beispiel `Empfohlener Angebotspreis: 299 € VB`. Eine Spanne allein ist keine Empfehlung.
