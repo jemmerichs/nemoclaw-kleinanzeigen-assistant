@@ -171,6 +171,29 @@ function getCategoryRequirements(categoryId) {
   };
 }
 
+function applyCategoryPreferences(categoryId, attributes = {}) {
+  const normalizedId = normalizeCategoryId(categoryId);
+  const preferred = attributes && typeof attributes === "object" && !Array.isArray(attributes)
+    ? { ...attributes }
+    : {};
+  if (!normalizedId) return preferred;
+  const contract = contractFor(normalizedId);
+  if (!contract) return preferred;
+
+  for (const field of contract.requiredAttributes) {
+    if (preferred[field.key] !== undefined && preferred[field.key] !== null && preferred[field.key] !== "") {
+      continue;
+    }
+    if (!/versand/i.test(String(field.label || field.key))) continue;
+    const pickup = field.values.find(option => (
+      /^(?:nur\s+)?abholung$/i.test(option.label.trim())
+      || String(option.value).trim().toLowerCase() === "nein"
+    ));
+    if (pickup) preferred[field.key] = pickup.value;
+  }
+  return preferred;
+}
+
 function validateCategoryAttributes(
   categoryId,
   attributes = {},
@@ -215,6 +238,7 @@ function validateCategoryAttributes(
 }
 
 module.exports = {
+  applyCategoryPreferences,
   getCategoryRequirements,
   rememberCategoryRequirements,
   validateCategoryAttributes,

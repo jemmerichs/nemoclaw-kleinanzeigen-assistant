@@ -182,6 +182,48 @@ test("a truncated model response gets one compact recovery attempt", async () =>
   assert.deepEqual(sent, ["Kurze vollständige Recovery-Antwort."]);
 });
 
+test("a malformed Gemini function call gets one strict recovery turn", async () => {
+  const sent = [];
+  const gateway = { async send(_chatId, text) { sent.push(text); } };
+  let initialCalls = 0;
+  let recoveryCalls = 0;
+  const llmClient = {
+    model: "google/gemini-3.6-flash",
+    maxTokens: 1536,
+    withOverrides(overrides) {
+      assert.equal(overrides.reasoningEffort, "minimal");
+      return {
+        model: "google/gemini-3.6-flash",
+        async complete(request) {
+          recoveryCalls++;
+          assert.match(request.messages.at(-1).content, /strikt gültigen JSON-Objekt/);
+          return {
+            message: {
+              role: "assistant",
+              content: "Ich prüfe zuerst den aktuellen Marktplatzstand.",
+            },
+          };
+        },
+      };
+    },
+    async complete() {
+      initialCalls++;
+      const error = new Error("malformed provider call");
+      error.code = "OPENROUTER_MALFORMED_FUNCTION_CALL";
+      throw error;
+    },
+  };
+
+  const result = await runAgent("malformed-tool-recovery", "Mach das", {
+    llmClient,
+    gateway,
+  });
+  assert.equal(initialCalls, 1);
+  assert.equal(recoveryCalls, 1);
+  assert.equal(result.answered, true);
+  assert.deepEqual(sent, ["Ich prüfe zuerst den aktuellen Marktplatzstand."]);
+});
+
 test("a progressing listing flow may finish after the old eight-step ceiling", async () => {
   const agent = require("../workspace/agent");
   const originalSearch = agent.TOOLS.ka_search_ads.fn;

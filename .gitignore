@@ -8,7 +8,8 @@ node_modules/
 .pending-actions.json
 .openrouter-usage.json
 .ka-category-contracts.json
-workspace/memory/
+workspace/memory/*
+!workspace/memory/preferences.md
 workspace/ads.db
 workspace/ads.db-*
 workspace/browser-profile/

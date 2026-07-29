@@ -63,6 +63,7 @@ test("agent context treats buyer content as data and includes negotiation handof
   assert.match(context, /keine geheime Mindestgrenze annehmen/i);
   assert.match(context, /Eine bereits vorgemerkte Nutzeraktion|alte Aktion niemals ersetzen/i);
   assert.match(context, /Set oder einzeln verkauft/i);
+  assert.match(context, /Standardmäßig kein Versand, sondern nur Abholung/i);
 });
 
 test("pending action identity binds tool and exact arguments", () => {
@@ -82,6 +83,14 @@ test("pending action identity binds tool and exact arguments", () => {
 });
 
 test("known category requirements are enforced while preparing the exact action", () => {
+  const previousLocation = {
+    zipCode: process.env.KA_DEFAULT_ZIP_CODE,
+    locationId: process.env.KA_DEFAULT_LOCATION_ID,
+    contactName: process.env.KA_CONTACT_NAME,
+  };
+  delete process.env.KA_DEFAULT_ZIP_CODE;
+  delete process.env.KA_DEFAULT_LOCATION_ID;
+  delete process.env.KA_CONTACT_NAME;
   const base = {
     title: "Heißluftfritteuse",
     description: "Gebraucht und funktionsfähig.",
@@ -93,26 +102,50 @@ test("known category requirements are enforced while preparing the exact action"
     contactName: "Jannik",
     imagePaths: [],
   };
-  assert.throws(
-    () => TOOLS.ka_create_ad.prepare(base),
-    /haushaltsgeraete\.art/
-  );
-  assert.doesNotThrow(() => TOOLS.ka_create_ad.prepare({
-    ...base,
-    attributes: {
-      "haushaltsgeraete.art": "haushaltskleingeraete",
-      "haushaltsgeraete.versand": "nein",
-    },
-  }));
-  assert.throws(() => TOOLS.ka_create_ad.prepare({
-    ...base,
-    locationId: base.zipCode,
-    attributes: {
-      "haushaltsgeraete.art": "haushaltskleingeraete",
-      "haushaltsgeraete.versand": "nein",
-    },
-  }), /PLZ .* auch als Location-ID/);
-  assert.equal(TOOLS.ka_get_category_requirements.requiresApproval, undefined);
+  try {
+    assert.throws(
+      () => TOOLS.ka_create_ad.prepare(base),
+      /haushaltsgeraete\.art/
+    );
+    const prepared = TOOLS.ka_create_ad.prepare({
+      ...base,
+      attributes: {
+        "haushaltsgeraete.art": "haushaltskleingeraete",
+      },
+    });
+    assert.equal(prepared.attributes["haushaltsgeraete.versand"], "nein");
+    assert.throws(() => TOOLS.ka_create_ad.prepare({
+      ...base,
+      locationId: base.zipCode,
+      attributes: {
+        "haushaltsgeraete.art": "haushaltskleingeraete",
+      },
+    }), /PLZ .* auch als Location-ID/);
+
+    process.env.KA_DEFAULT_ZIP_CODE = "80636";
+    process.env.KA_DEFAULT_LOCATION_ID = "16360";
+    process.env.KA_CONTACT_NAME = "Jannik";
+    const configured = TOOLS.ka_create_ad.prepare({
+      ...base,
+      zipCode: "10115",
+      locationId: "6488",
+      contactName: "Geraten",
+      attributes: {
+        "haushaltsgeraete.art": "haushaltskleingeraete",
+      },
+    });
+    assert.equal(configured.zipCode, "80636");
+    assert.equal(configured.locationId, "16360");
+    assert.equal(configured.contactName, "Jannik");
+    assert.equal(TOOLS.ka_get_category_requirements.requiresApproval, undefined);
+  } finally {
+    if (previousLocation.zipCode === undefined) delete process.env.KA_DEFAULT_ZIP_CODE;
+    else process.env.KA_DEFAULT_ZIP_CODE = previousLocation.zipCode;
+    if (previousLocation.locationId === undefined) delete process.env.KA_DEFAULT_LOCATION_ID;
+    else process.env.KA_DEFAULT_LOCATION_ID = previousLocation.locationId;
+    if (previousLocation.contactName === undefined) delete process.env.KA_CONTACT_NAME;
+    else process.env.KA_CONTACT_NAME = previousLocation.contactName;
+  }
 });
 
 test("startup rejects placeholder IDs and heartbeat recipients outside the allowlist", () => {

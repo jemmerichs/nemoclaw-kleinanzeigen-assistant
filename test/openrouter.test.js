@@ -149,6 +149,39 @@ test("a transient provider abort without detail is retried instead of reported a
   }
 });
 
+test("a malformed Gemini function call is handed to the agent recovery instead of blindly retried", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-openrouter-malformed-tool-"));
+  try {
+    const client = new StubOpenRouter({
+      usageFile: path.join(directory, "usage.json"),
+      maxRetries: 2,
+    });
+    client.response = {
+      model: "google/gemini-3.6-flash",
+      provider: "Google",
+      choices: [{
+        finish_reason: "error",
+        native_finish_reason: "MALFORMED_FUNCTION_CALL",
+        message: { role: "assistant", content: "" },
+      }],
+      usage: { prompt_tokens: 100, completion_tokens: 10, cost: 0.001 },
+    };
+    await assert.rejects(
+      () => client.complete({ messages: [{ role: "user", content: "Mach das" }] }),
+      error => {
+        assert.equal(error.code, "OPENROUTER_MALFORMED_FUNCTION_CALL");
+        assert.equal(error.retryable, false);
+        assert.doesNotMatch(error.message, /Provider returned|MALFORMED_FUNCTION_CALL/);
+        return true;
+      }
+    );
+    assert.equal(client.requests.length, 1);
+    assert.equal(client.usageSummary().requests, 1);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("a repeated provider abort exposes useful metadata instead of an unknown error", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-openrouter-provider-detail-"));
   try {

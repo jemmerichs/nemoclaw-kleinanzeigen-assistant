@@ -111,7 +111,9 @@ Codex and its in-app browser are development aids only. They are not runtime dep
 
 Before unattended Telegram operation, also set a real `KA_DEFAULT_ZIP_CODE`, `KA_DEFAULT_LOCATION_ID`, and `KA_CONTACT_NAME`, then run `npm run doctor:telegram`. `npm run launch` runs that strict startup check itself and refuses to start when Telegram configuration is incomplete.
 
-`KA_DEFAULT_ZIP_CODE` and `KA_DEFAULT_LOCATION_ID` are one verified pair. The bridge rejects a publication if the values differ from that configured pair or if the postal code was copied into `locationId`.
+`KA_DEFAULT_ZIP_CODE` and `KA_DEFAULT_LOCATION_ID` are one verified pair. The bridge always injects that configured pair into drafts and publications and ignores model-supplied alternatives, so the location is not re-decided for every listing. If Kleinanzeigen rejects the location, re-verify and update the pair itself instead of changing one listing payload.
+
+The tracked `workspace/memory/preferences.md` is loaded automatically. It currently defaults Kleinanzeigen listings to the exact verified “Nur Abholung” option when a category exposes it; an explicit shipping request for the current listing still takes precedence.
 
 ## Target Mac cutover
 

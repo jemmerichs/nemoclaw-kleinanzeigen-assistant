@@ -8,6 +8,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const {
+  applyCategoryPreferences,
   getCategoryRequirements,
   validateCategoryAttributes,
 } = require("../tools/kleinanzeigen-category-contracts");
@@ -59,6 +60,18 @@ test("lamps require the exact visible shipping field and values from the current
   assert.doesNotThrow(() => validateCategoryAttributes(82, {
     "lampen_licht.versand": "nein",
   }));
+});
+
+test("the pickup preference fills only an unambiguous verified shipping field", () => {
+  assert.deepEqual(applyCategoryPreferences(82, {}), {
+    "lampen_licht.versand": "nein",
+  });
+  assert.deepEqual(applyCategoryPreferences(82, {
+    "lampen_licht.versand": "ja",
+  }), {
+    "lampen_licht.versand": "ja",
+  });
+  assert.deepEqual(applyCategoryPreferences(999, {}), {});
 });
 
 test("known category contracts fail before upload when required attributes are missing or guessed", () => {

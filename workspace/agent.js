@@ -11,6 +11,7 @@ require("dotenv").config({ path: ENV_FILE });
 const TelegramGateway = require("../tools/telegram");
 const KleinanzeigenClient = require("../tools/kleinanzeigen");
 const {
+  applyCategoryPreferences,
   getCategoryRequirements,
   validateCategoryAttributes,
 } = require("../tools/kleinanzeigen-category-contracts");
@@ -440,9 +441,9 @@ function recordRemovedListing(adId, marketplace = "kleinanzeigen") {
 function defaultsForListing(args) {
   return {
     ...args,
-    zipCode: args.zipCode || process.env.KA_DEFAULT_ZIP_CODE || "",
-    locationId: args.locationId || process.env.KA_DEFAULT_LOCATION_ID || "",
-    contactName: args.contactName || process.env.KA_CONTACT_NAME || "",
+    zipCode: process.env.KA_DEFAULT_ZIP_CODE || args.zipCode || "",
+    locationId: process.env.KA_DEFAULT_LOCATION_ID || args.locationId || "",
+    contactName: process.env.KA_CONTACT_NAME || args.contactName || "",
   };
 }
 
@@ -533,6 +534,7 @@ function prepareCreateArgs(rawArgs) {
     );
   }
   assertConfiguredListingLocation(args);
+  args.attributes = applyCategoryPreferences(args.categoryId, args.attributes);
   validateCategoryAttributes(args.categoryId, args.attributes, {
     requireRequired: true,
     requireVerified: true,
@@ -734,8 +736,8 @@ const TOOLS = {
       categoryId: integer("Kategorie-ID", { minimum: 1 }),
       priceAmount: integer("Preis in ganzen EUR", { minimum: 0 }),
       priceType: string("FIXED, NEGOTIABLE oder GIVE_AWAY", { enum: ["FIXED", "NEGOTIABLE", "GIVE_AWAY"] }),
-      zipCode: string("Fünfstellige PLZ", { pattern: "^\\d{5}$" }),
-      locationId: string("Kleinanzeigen-Orts-ID", { maxLength: 50 }),
+      zipCode: string("Optional; die Bridge ersetzt dies durch die konfigurierte feste PLZ", { pattern: "^\\d{5}$" }),
+      locationId: string("Optional; die Bridge ersetzt dies durch die konfigurierte feste Orts-ID", { maxLength: 50 }),
       imagePaths: stringArray("Lokale Bildpfade aus FOTO-Tokens"),
       attributes: attributesSchema,
     }),
@@ -783,9 +785,9 @@ const TOOLS = {
       categoryId: integer("Exakte Kleinanzeigen-Kategorie-ID", { minimum: 1 }),
       price: integer("Preis in ganzen EUR", { minimum: 0 }),
       priceType: string("FIXED, NEGOTIABLE oder GIVE_AWAY", { enum: ["FIXED", "NEGOTIABLE", "GIVE_AWAY"] }),
-      zipCode: string("Fünfstellige PLZ", { pattern: "^\\d{5}$" }),
-      locationId: string("Kleinanzeigen-Orts-ID", { maxLength: 50 }),
-      contactName: string("Anzeigename", { maxLength: 30 }),
+      zipCode: string("Optional; die Bridge ersetzt dies durch die konfigurierte feste PLZ", { pattern: "^\\d{5}$" }),
+      locationId: string("Optional; die Bridge ersetzt dies durch die konfigurierte feste Orts-ID", { maxLength: 50 }),
+      contactName: string("Optional; die Bridge ersetzt dies durch den konfigurierten Anzeigenamen", { maxLength: 30 }),
       imagePaths: stringArray("Lokale Bildpfade aus FOTO-Tokens"),
       attributes: attributesSchema,
     }, ["title", "description", "categoryId", "price", "imagePaths"]),
@@ -1230,6 +1232,41 @@ async function completeModelTurn(client, request) {
   try {
     return await client.complete(request);
   } catch (error) {
+    if (error.code === "OPENROUTER_MALFORMED_FUNCTION_CALL") {
+      console.warn("[llm] Ungültiger Tool-Aufruf; ein kompakter Reparaturversuch folgt.");
+      const recoveryClient = typeof client.withOverrides === "function"
+        ? client.withOverrides({
+          reasoningEffort: "minimal",
+          maxTokens: client.maxTokens || 1536,
+        })
+        : client;
+      const recoveryRequest = {
+        ...request,
+        messages: [
+          ...request.messages,
+          {
+            role: "user",
+            content:
+              "Der vorige, ungültig formatierte Tool-Aufruf wurde verworfen. Setze denselben aktuellen Auftrag " +
+              "jetzt einmal sauber fort: entweder genau ein verfügbares Tool mit einem strikt gültigen JSON-Objekt " +
+              "als Argumente oder eine kurze vollständige deutsche Antwort. Keine Markdown-Codeblöcke, keine " +
+              "mehreren Tools und keinen früheren Erfolg behaupten.",
+          },
+        ],
+      };
+      try {
+        const response = await recoveryClient.complete(recoveryRequest);
+        return { ...response, recoveredFromMalformedFunctionCall: true };
+      } catch (recoveryError) {
+        if (recoveryError.code !== "OPENROUTER_MALFORMED_FUNCTION_CALL") throw recoveryError;
+        const finalError = new Error(
+          "Das Modell konnte auch im einmaligen Korrekturversuch keinen gültigen Tool-Aufruf bilden. " +
+          "Es wurde keine Aktion ausgeführt."
+        );
+        finalError.code = "OPENROUTER_MALFORMED_FUNCTION_CALL_REPEATED";
+        throw finalError;
+      }
+    }
     if (error.code !== "OPENROUTER_OUTPUT_TRUNCATED") throw error;
     console.warn("[llm] Ausgabelimit erreicht; ein knapper Recovery-Versuch mit minimalem Reasoning folgt.");
     const recoveryClient = typeof client.withOverrides === "function"
@@ -1314,6 +1351,9 @@ function loadContext({
       .filter(file => /^[a-z0-9][a-z0-9_-]*\.md$/i.test(file))
       .map(file => file.slice(0, -3))
     : [];
+  const preferences = memoryKeys.includes("preferences")
+    ? fs.readFileSync(path.join(memoryDir, "preferences.md"), "utf8").slice(0, 4000)
+    : "";
   const availableToolCount = toolDefinitions({
     exclude: excludeTools,
     include: includeTools,
@@ -1325,7 +1365,10 @@ function loadContext({
       "Ihre verbindlichen Namen, Beschreibungen und Schemas stehen direkt in der Tool-Schnittstelle; " +
       "erfinde keine weiteren Tools oder Argumente.",
     `## Skill-Dokumentation\n${skills}`,
-    `## Memory\nVerfügbare Keys: ${memoryKeys.join(", ") || "keine"}. Inhalte bei Bedarf mit memoryRead lesen.`,
+    `## Memory\n${preferences
+      ? `Automatisch geladene dauerhafte Präferenzen:\n${preferences}\n\n`
+      : ""}` +
+      `Verfügbare Keys: ${memoryKeys.join(", ") || "keine"}. Weitere Inhalte bei Bedarf mit memoryRead lesen.`,
   ].join("\n\n");
 }
 

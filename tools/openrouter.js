@@ -92,6 +92,17 @@ function responseError(parsed) {
     return error;
   }
 
+  if (nativeFinishReason === "MALFORMED_FUNCTION_CALL") {
+    const error = new Error(
+      "OpenRouter hat einen ungültig formatierten Modell-Toolaufruf verworfen."
+    );
+    error.code = "OPENROUTER_MALFORMED_FUNCTION_CALL";
+    error.finishReason = choice?.finish_reason || null;
+    error.nativeFinishReason = choice?.native_finish_reason || parsed?.native_finish_reason || null;
+    error.retryable = false;
+    return error;
+  }
+
   if (finishReason !== "error" && !choice?.error && !parsed?.error) return null;
 
   const providerError = choice?.error || parsed?.error || {};
