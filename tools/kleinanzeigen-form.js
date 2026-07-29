@@ -4,6 +4,7 @@ const {
   assertNetworkAccess,
   closeNativeProfile,
   openNativeProfile,
+  validatedCookieHeader,
   validatedSessionCookieString,
 } = require("./auth");
 const {
@@ -33,6 +34,49 @@ function categoryIdValue(value) {
     throw new Error("categoryId ist ungültig.");
   }
   return categoryId;
+}
+
+function browserCookiesFromHeader(rawHeader) {
+  const normalized = validatedCookieHeader(rawHeader);
+  return normalized.split(";").map(part => {
+    const pair = part.trim();
+    const separator = pair.indexOf("=");
+    return {
+      name: pair.slice(0, separator),
+      value: pair.slice(separator + 1),
+      url: "https://www.kleinanzeigen.de",
+    };
+  });
+}
+
+async function ensureCategoryBrowserSession(context, rawHeader = process.env.KA_COOKIES) {
+  try {
+    validatedSessionCookieString(
+      await context.cookies("https://www.kleinanzeigen.de")
+    );
+    return { source: "profile" };
+  } catch {}
+
+  let cookies;
+  try {
+    cookies = browserCookiesFromHeader(rawHeader);
+  } catch {
+    throw new Error(
+      "Die Kleinanzeigen-Sitzung fehlt oder ist unvollständig. " +
+      "Bitte einmal 'npm run login' ausführen."
+    );
+  }
+  await context.addCookies(cookies);
+  try {
+    validatedSessionCookieString(
+      await context.cookies("https://www.kleinanzeigen.de")
+    );
+  } catch {
+    throw new Error(
+      "Die gespeicherte Kleinanzeigen-Sitzung konnte nicht in das isolierte Kategorie-Browserfenster übernommen werden."
+    );
+  }
+  return { source: "environment" };
 }
 
 async function readCategoryChoices(page, selectedTokens = []) {
@@ -251,24 +295,20 @@ async function inspectCategoryFormNow({ categoryId, categoryPath } = {}) {
   const normalizedPath = normalizeCategoryPath(categoryPath);
   let nativeProfile;
   try {
-    nativeProfile = await openNativeProfile({ headless: true, url: FORM_URL });
-    const { page } = nativeProfile;
+    nativeProfile = await openNativeProfile({ headless: true });
+    const { context, page } = nativeProfile;
+    const browserSession = await ensureCategoryBrowserSession(context);
     const response = await page.goto(FORM_URL, {
       waitUntil: "domcontentloaded",
       timeout: 60_000,
     });
     await assertNetworkAccess(page, response);
     if (/login\.kleinanzeigen\.de|m-einloggen/.test(page.url())) {
-      throw new Error("Kleinanzeigen-Sitzung fehlt. Bitte zuerst 'npm run login' ausführen.");
-    }
-    try {
-      validatedSessionCookieString(
-        await nativeProfile.context.cookies("https://www.kleinanzeigen.de")
-      );
-    } catch {
       throw new Error(
-        "Das dedizierte Kleinanzeigen-Browserprofil ist nicht mehr vollständig angemeldet. " +
-        "Bitte einmal 'npm run login' ausführen; es wurde nichts gespeichert oder veröffentlicht."
+        browserSession.source === "environment"
+          ? "Die gespeicherte Kleinanzeigen-Sitzung wurde vom aktuellen Formular abgelehnt. " +
+            "Bitte einmal 'npm run login' ausführen."
+          : "Kleinanzeigen-Sitzung fehlt. Bitte zuerst 'npm run login' ausführen."
       );
     }
     await openCategoryPicker(page);
@@ -332,6 +372,8 @@ function inspectCategoryForm(args) {
 }
 
 module.exports = {
+  browserCookiesFromHeader,
+  ensureCategoryBrowserSession,
   inspectCategoryForm,
   inspectCategoryFormNow,
   normalizeCategoryPath,

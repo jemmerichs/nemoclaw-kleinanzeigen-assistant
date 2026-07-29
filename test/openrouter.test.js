@@ -105,6 +105,83 @@ test("MAX_TOKENS is reported cleanly and still counted in the spend ledger", asy
   }
 });
 
+test("a transient provider abort without detail is retried instead of reported as unknown", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-openrouter-provider-abort-"));
+  try {
+    class ProviderAbortClient extends StubOpenRouter {
+      async _requestJson(body) {
+        this.requests.push(body);
+        if (this.requests.length === 1) {
+          return {
+            model: "google/gemini-3.6-flash",
+            provider: "Google AI Studio",
+            choices: [{
+              finish_reason: "error",
+              native_finish_reason: "OTHER",
+              message: { role: "assistant", content: "" },
+            }],
+            usage: { prompt_tokens: 100, completion_tokens: 0, cost: 0 },
+          };
+        }
+        return this.response;
+      }
+    }
+    const client = new ProviderAbortClient({
+      usageFile: path.join(directory, "usage.json"),
+      maxRetries: 1,
+    });
+    const result = await client.complete({
+      messages: [{ role: "user", content: "ping" }],
+      tools: [{
+        type: "function",
+        function: {
+          name: "ping",
+          description: "test",
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+        },
+      }],
+    });
+    assert.equal(client.requests.length, 2);
+    assert.equal(result.message.tool_calls[0].function.name, "ping");
+    assert.equal(client.usageSummary().requests, 2);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a repeated provider abort exposes useful metadata instead of an unknown error", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-openrouter-provider-detail-"));
+  try {
+    const client = new StubOpenRouter({
+      usageFile: path.join(directory, "usage.json"),
+      maxRetries: 0,
+    });
+    client.response = {
+      model: "google/gemini-3.6-flash",
+      provider: "Google AI Studio",
+      choices: [{
+        finish_reason: "error",
+        native_finish_reason: "OTHER",
+        message: { role: "assistant", content: "" },
+      }],
+      usage: { prompt_tokens: 100, completion_tokens: 0, cost: 0 },
+    };
+    await assert.rejects(
+      () => client.complete({ messages: [{ role: "user", content: "ping" }] }),
+      error => {
+        assert.equal(error.code, "OPENROUTER_MODEL_ERROR");
+        assert.match(error.message, /ohne Fehlertext/);
+        assert.match(error.message, /Google AI Studio/);
+        assert.match(error.message, /OTHER/);
+        assert.doesNotMatch(error.message, /unbekannt/);
+        return true;
+      }
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("an optional per-model budget blocks only the configured expensive tier", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-openrouter-model-budget-"));
   try {

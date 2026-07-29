@@ -69,6 +69,81 @@ function estimatePromptTokens(messages, tools) {
   return Math.ceil(String(serialized || "").length / 4) + imageCount * 2048;
 }
 
+function responseError(parsed) {
+  const choice = parsed?.choices?.[0];
+  const message = choice?.message;
+  const finishReason = String(choice?.finish_reason || "").toLowerCase();
+  const nativeFinishReason = String(
+    choice?.native_finish_reason || parsed?.native_finish_reason || ""
+  ).toUpperCase();
+
+  if (
+    finishReason === "length"
+    || finishReason === "max_tokens"
+    || nativeFinishReason === "MAX_TOKENS"
+  ) {
+    const error = new Error(
+      "OpenRouter hat das Ausgabelimit erreicht, bevor eine vollständige Antwort vorlag."
+    );
+    error.code = "OPENROUTER_OUTPUT_TRUNCATED";
+    error.finishReason = choice?.finish_reason || null;
+    error.nativeFinishReason = choice?.native_finish_reason || parsed?.native_finish_reason || null;
+    error.partialContent = typeof message?.content === "string" ? message.content : "";
+    return error;
+  }
+
+  if (finishReason !== "error" && !choice?.error && !parsed?.error) return null;
+
+  const providerError = choice?.error || parsed?.error || {};
+  const detail = typeof providerError === "string"
+    ? providerError.trim()
+    : String(providerError?.message || "").trim();
+  const errorType = String(
+    providerError?.metadata?.error_type
+    || providerError?.error_type
+    || providerError?.type
+    || ""
+  ).trim();
+  const providerCode = String(
+    providerError?.metadata?.provider_code
+    || providerError?.code
+    || ""
+  ).trim();
+  const context = [
+    parsed?.model || null,
+    parsed?.provider ? `Provider ${parsed.provider}` : null,
+    errorType ? `Typ ${errorType}` : null,
+    providerCode ? `Code ${providerCode}` : null,
+    nativeFinishReason ? `Abschlussgrund ${nativeFinishReason}` : null,
+  ].filter(Boolean).join(", ");
+  const error = new Error(
+    detail
+      ? `OpenRouter-Modellfehler: ${detail}${context ? ` (${context})` : ""}`
+      : "OpenRouter-Modellfehler: Der Modellanbieter hat die Generierung ohne Fehlertext abgebrochen" +
+        `${context ? ` (${context})` : ""}.`
+  );
+  error.code = "OPENROUTER_MODEL_ERROR";
+  error.errorType = errorType || null;
+  error.providerCode = providerCode || null;
+  error.finishReason = choice?.finish_reason || null;
+  error.nativeFinishReason = choice?.native_finish_reason || parsed?.native_finish_reason || null;
+  const nonRetryableType = new Set([
+    "authentication",
+    "bad_request",
+    "content_policy_violation",
+    "context_length_exceeded",
+    "invalid_request",
+    "permission",
+  ]).has(errorType.toLowerCase());
+  const numericProviderCode = Number(providerCode);
+  const nonRetryableCode = Number.isFinite(numericProviderCode)
+    && numericProviderCode >= 400
+    && numericProviderCode < 500
+    && ![408, 429].includes(numericProviderCode);
+  error.retryable = !nonRetryableType && !nonRetryableCode;
+  return error;
+}
+
 function enqueueLedger(usageFile, task) {
   const key = path.resolve(usageFile);
   const previous = ledgerQueues.get(key) || Promise.resolve();
@@ -257,6 +332,15 @@ class OpenRouterClient {
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
         parsed = await this._requestJson(body);
+        const completionError = responseError(parsed);
+        if (completionError) {
+          const failedUsage = normalizeUsage(parsed?.usage, {
+            inputPricePerMillion: this.inputPricePerMillion,
+            outputPricePerMillion: this.outputPricePerMillion,
+          });
+          this._recordUsage(failedUsage);
+          throw completionError;
+        }
         break;
       } catch (error) {
         if (error.ambiguousCost === true) {
@@ -285,28 +369,6 @@ class OpenRouterClient {
     });
     this._recordUsage(usage);
 
-    const finishReason = String(choice?.finish_reason || "").toLowerCase();
-    const nativeFinishReason = String(
-      choice?.native_finish_reason || parsed?.native_finish_reason || ""
-    ).toUpperCase();
-    if (
-      finishReason === "length"
-      || finishReason === "max_tokens"
-      || nativeFinishReason === "MAX_TOKENS"
-    ) {
-      const error = new Error(
-        "OpenRouter hat das Ausgabelimit erreicht, bevor eine vollständige Antwort vorlag."
-      );
-      error.code = "OPENROUTER_OUTPUT_TRUNCATED";
-      error.finishReason = choice?.finish_reason || null;
-      error.nativeFinishReason = choice?.native_finish_reason || parsed?.native_finish_reason || null;
-      error.partialContent = typeof message?.content === "string" ? message.content : "";
-      throw error;
-    }
-    if (choice?.finish_reason === "error" || choice?.error || parsed?.error) {
-      const detail = choice?.error?.message || parsed?.error?.message || "unbekannter Modellfehler";
-      throw new Error(`OpenRouter-Modellfehler: ${detail}`);
-    }
     if (!message || (typeof message.content !== "string" && !Array.isArray(message.tool_calls))) {
       const error = new Error(
         `OpenRouter lieferte keine Text- oder Tool-Antwort ` +
@@ -390,4 +452,5 @@ module.exports = {
   VALID_REASONING_EFFORTS,
   estimatePromptTokens,
   normalizeUsage,
+  responseError,
 };
