@@ -612,6 +612,7 @@ async function refreshCookies() {
 module.exports = {
   assertNetworkAccess,
   classifyAccessProblem,
+  closeNativeProfile,
   cookieNamesFromCurl,
   extractKaCookieString,
   extractCookieHeaderFromCurl,
@@ -622,6 +623,7 @@ module.exports = {
   inspectProfileSession,
   login,
   loginWithSystemChrome,
+  openNativeProfile,
   requestMetadataFromCurl,
   refreshCookies,
   saveToEnv,

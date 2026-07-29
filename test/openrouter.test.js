@@ -70,6 +70,41 @@ test("OpenRouter request uses configured model, reasoning, and single-tool mode"
   }
 });
 
+test("MAX_TOKENS is reported cleanly and still counted in the spend ledger", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-openrouter-truncated-"));
+  try {
+    const client = new StubOpenRouter({
+      usageFile: path.join(directory, "usage.json"),
+      maxTokens: 1024,
+    });
+    client.response = {
+      id: "provider-response-that-must-not-leak",
+      model: "google/gemini-3.6-flash",
+      choices: [{
+        finish_reason: "length",
+        native_finish_reason: "MAX_TOKENS",
+        message: { role: "assistant", content: null },
+      }],
+      usage: { prompt_tokens: 100, completion_tokens: 1024, cost: 0.003 },
+    };
+    await assert.rejects(
+      () => client.complete({ messages: [{ role: "user", content: "ping" }] }),
+      error => {
+        assert.equal(error.code, "OPENROUTER_OUTPUT_TRUNCATED");
+        assert.match(error.message, /Ausgabelimit/);
+        assert.doesNotMatch(error.message, /provider-response-that-must-not-leak/);
+        return true;
+      }
+    );
+    const usage = client.usageSummary();
+    assert.equal(usage.requests, 1);
+    assert.equal(usage.completionTokens, 1024);
+    assert.equal(usage.costUsd, 0.003);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("an optional per-model budget blocks only the configured expensive tier", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-openrouter-model-budget-"));
   try {

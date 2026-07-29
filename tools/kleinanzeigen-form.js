@@ -1,0 +1,339 @@
+"use strict";
+
+const {
+  assertNetworkAccess,
+  closeNativeProfile,
+  openNativeProfile,
+  validatedSessionCookieString,
+} = require("./auth");
+const {
+  rememberCategoryRequirements,
+} = require("./kleinanzeigen-category-contracts");
+
+const FORM_URL = "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html";
+let inspectionQueue = Promise.resolve();
+
+function normalizeCategoryPath(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error("categoryPath muss eine Liste sichtbarer Kategorienamen sein.");
+  if (value.length > 6) throw new Error("categoryPath darf höchstens 6 Ebenen enthalten.");
+  return value.map((entry, index) => {
+    const label = String(entry || "").trim();
+    if (!label || label.length > 160) {
+      throw new Error(`categoryPath[${index}] fehlt oder ist länger als 160 Zeichen.`);
+    }
+    return label;
+  });
+}
+
+function categoryIdValue(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const categoryId = Number(value);
+  if (!Number.isInteger(categoryId) || categoryId < 1 || categoryId > 9999) {
+    throw new Error("categoryId ist ungültig.");
+  }
+  return categoryId;
+}
+
+async function readCategoryChoices(page, selectedTokens = []) {
+  const choices = await page.locator('main a[href^="#?path="]').evaluateAll(links => (
+    links.slice(0, 200).map(link => {
+      const href = link.getAttribute("href") || "";
+      const query = href.includes("?") ? href.slice(href.indexOf("?") + 1) : "";
+      const params = new URLSearchParams(query);
+      const tokens = String(params.get("path") || "").split("/").filter(Boolean);
+      return {
+        label: String(link.textContent || "").trim().replace(/\s+/g, " ").slice(0, 160),
+        href,
+        tokens,
+        isParent: params.get("isParent") === "true",
+        active: link.getAttribute("aria-current") === "page"
+          || String(link.className || "").split(/\s+/).includes("active"),
+      };
+    })
+  ));
+  const nextDepth = selectedTokens.length + 1;
+  return choices
+    .filter(choice => (
+      choice.label
+      && choice.tokens.length === nextDepth
+      && selectedTokens.every((token, index) => choice.tokens[index] === token)
+    ))
+    .map(choice => ({
+      label: choice.label,
+      token: choice.tokens.at(-1),
+      tokens: choice.tokens,
+      isParent: choice.isParent,
+      href: choice.href,
+    }));
+}
+
+function publicChoices(choices) {
+  return choices.map(({ href, tokens, ...choice }) => choice);
+}
+
+async function openCategoryPicker(page) {
+  for (const name of ["Kategorie ändern", "Wähle deine Kategorie"]) {
+    const link = page.getByRole("link", { name, exact: true });
+    if (await link.count() === 1) {
+      await link.click();
+      await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
+      await assertNetworkAccess(page);
+      if (/login\.kleinanzeigen\.de|m-einloggen/.test(page.url())) {
+        throw new Error("Kleinanzeigen-Sitzung fehlt. Bitte zuerst 'npm run login' ausführen.");
+      }
+      const categoryLinks = page.locator('main a[href^="#?path="]');
+      if (!await categoryLinks.count()) {
+        throw new Error(
+          "Die aktuelle Kategorieauswahl enthält keine lesbaren Kategoriepfade. " +
+          "Bitte die Kleinanzeigen-Sitzung mit 'npm run login' erneuern."
+        );
+      }
+      return;
+    }
+  }
+  throw new Error("Das aktuelle Kleinanzeigen-Formular bietet keine erkennbare Kategorieauswahl.");
+}
+
+async function selectCategoryPath(page, categoryPath) {
+  const selectedTokens = [];
+  const selectedLabels = [];
+  for (const label of categoryPath) {
+    const choices = await readCategoryChoices(page, selectedTokens);
+    const matches = choices.filter(choice => choice.label === label);
+    if (matches.length !== 1) {
+      return {
+        complete: false,
+        selectedPath: selectedLabels,
+        choices: publicChoices(choices),
+        issue: matches.length
+          ? `Kategorie "${label}" ist in dieser Ebene nicht eindeutig.`
+          : `Kategorie "${label}" ist in dieser Ebene nicht vorhanden.`,
+      };
+    }
+    const target = page.locator(`main a[href=${JSON.stringify(matches[0].href)}]`);
+    if (await target.count() !== 1) {
+      throw new Error(`Kategorie-Link "${label}" ist im aktuellen Formular nicht eindeutig.`);
+    }
+    await target.click();
+    selectedTokens.splice(0, selectedTokens.length, ...matches[0].tokens);
+    selectedLabels.push(label);
+
+    const categoryInput = page.locator('input[name="categoryId"]');
+    if (await categoryInput.count() === 1 && await categoryInput.inputValue()) {
+      return { complete: true, selectedPath: selectedLabels };
+    }
+  }
+
+  const continueButton = page.getByRole("button", { name: "Weiter", exact: true });
+  if (categoryPath.length && await continueButton.count() === 1) {
+    await continueButton.click();
+    await page.locator('input[name="categoryId"]').waitFor({ state: "attached", timeout: 10_000 });
+    return { complete: true, selectedPath: selectedLabels };
+  }
+
+  const choices = await readCategoryChoices(page, selectedTokens);
+  return {
+    complete: false,
+    selectedPath: selectedLabels,
+    choices: publicChoices(choices),
+    issue: categoryPath.length
+      ? "Die Kategorie benötigt noch eine weitere sichtbare Auswahl."
+      : "Wähle den sichtbaren Kategoriepfad schrittweise aus.",
+  };
+}
+
+async function inspectBaseAttributes(page) {
+  return page.evaluate(() => {
+    const prefix = "attributeMap[";
+    const controls = Array.from(document.querySelectorAll(
+      'input[name^="attributeMap["],select[name^="attributeMap["],textarea[name^="attributeMap["]'
+    ));
+    const groups = new Map();
+    for (const input of controls) {
+      const name = String(input.getAttribute("name") || "");
+      if (!name.startsWith(prefix) || !name.endsWith("]")) continue;
+      const key = name.slice(prefix.length, -1);
+      if (!/^[A-Za-z0-9_.-]{1,100}$/.test(key)) continue;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(input);
+    }
+
+    return [...groups.entries()].slice(0, 40).map(([key, inputs]) => {
+      const first = inputs[0];
+      let context = "";
+      let current = first;
+      for (let depth = 0; depth < 7 && current; depth++, current = current.parentElement) {
+        const text = String(current.innerText || "").trim().replace(/\s+/g, " ");
+        if (text && text.length <= 1200) context = text;
+        if (current.querySelectorAll?.('input[name^="attributeMap["]').length > inputs.length) break;
+      }
+      const explicitLabel = document.querySelector(`label[for="${key.replace(/"/g, '\\"')}"]`);
+      const choiceOptions = inputs
+        .filter(input => ["radio", "checkbox"].includes(input.getAttribute("type")))
+        .map(input => ({
+          value: String(input.value || ""),
+          label: String(input.closest("label")?.innerText || input.value || "")
+            .trim().replace(/\s+/g, " ").slice(0, 200),
+        }))
+        .filter(option => option.value);
+      const selectOptions = first.tagName === "SELECT"
+        ? Array.from(first.options || []).map(option => ({
+          value: String(option.value || ""),
+          label: String(option.textContent || option.value || "")
+            .trim().replace(/\s+/g, " ").slice(0, 200),
+        })).filter(option => option.value)
+        : [];
+      const selected = inputs.find(input => input.checked) || first;
+      return {
+        key,
+        label: String(explicitLabel?.textContent || key).trim().replace(/\s+/g, " ").slice(0, 200),
+        required: !/\boptional\b|\boptional\)/i.test(context),
+        currentValue: String(selected?.value || ""),
+        context: context.slice(0, 600),
+        control: choiceOptions.length
+          ? "choice"
+          : selectOptions.length
+            ? "select"
+            : String(first.getAttribute("type") || first.tagName).toLocaleLowerCase(),
+        values: choiceOptions.length ? choiceOptions : selectOptions,
+      };
+    });
+  });
+}
+
+async function inspectComboboxValues(page, field) {
+  if (field.control !== "hidden") return field;
+  const inputName = `attributeMap[${field.key}]`;
+  const hidden = page.locator(`input[name=${JSON.stringify(inputName)}]`);
+  const button = page.locator(`button[id=${JSON.stringify(field.key)}]`);
+  if (await hidden.count() !== 1 || await button.count() !== 1) return field;
+
+  const originalValue = await hidden.inputValue();
+  await button.click();
+  let options = page.getByRole("option");
+  const count = await options.count();
+  if (!count || count > 60) {
+    await page.keyboard.press("Escape");
+    return field;
+  }
+
+  const values = [];
+  for (let index = 0; index < count; index++) {
+    options = page.getByRole("option");
+    const option = options.nth(index);
+    const label = String(await option.innerText()).trim().replace(/\s+/g, " ").slice(0, 200);
+    await option.click();
+    const value = String(await hidden.inputValue());
+    if (value && !values.some(candidate => candidate.value === value)) {
+      values.push({ value, label });
+    }
+    if (index < count - 1) await button.click();
+  }
+
+  const original = values.find(option => option.value === originalValue);
+  if (original) {
+    await button.click();
+    const originalOption = page.getByRole("option", { name: original.label, exact: true });
+    if (await originalOption.count() === 1) await originalOption.click();
+  } else {
+    await page.keyboard.press("Escape");
+  }
+  return {
+    ...field,
+    control: "combobox",
+    values,
+  };
+}
+
+async function inspectCategoryFormNow({ categoryId, categoryPath } = {}) {
+  const expectedCategoryId = categoryIdValue(categoryId);
+  const normalizedPath = normalizeCategoryPath(categoryPath);
+  let nativeProfile;
+  try {
+    nativeProfile = await openNativeProfile({ headless: true, url: FORM_URL });
+    const { page } = nativeProfile;
+    const response = await page.goto(FORM_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: 60_000,
+    });
+    await assertNetworkAccess(page, response);
+    if (/login\.kleinanzeigen\.de|m-einloggen/.test(page.url())) {
+      throw new Error("Kleinanzeigen-Sitzung fehlt. Bitte zuerst 'npm run login' ausführen.");
+    }
+    try {
+      validatedSessionCookieString(
+        await nativeProfile.context.cookies("https://www.kleinanzeigen.de")
+      );
+    } catch {
+      throw new Error(
+        "Das dedizierte Kleinanzeigen-Browserprofil ist nicht mehr vollständig angemeldet. " +
+        "Bitte einmal 'npm run login' ausführen; es wurde nichts gespeichert oder veröffentlicht."
+      );
+    }
+    await openCategoryPicker(page);
+    const selection = await selectCategoryPath(page, normalizedPath);
+    if (!selection.complete) {
+      return {
+        status: "selection_required",
+        expectedCategoryId,
+        ...selection,
+        instruction:
+          "Rufe das Tool erneut mit dem vollständigen exakten categoryPath aus den sichtbaren choices auf.",
+      };
+    }
+
+    const actualCategoryId = Number(await page.locator('input[name="categoryId"]').inputValue());
+    if (!Number.isInteger(actualCategoryId) || actualCategoryId < 1) {
+      throw new Error("Das aktuelle Formular lieferte keine gültige categoryId.");
+    }
+    if (expectedCategoryId && actualCategoryId !== expectedCategoryId) {
+      throw new Error(
+        `Der sichtbare Kategoriepfad gehört zu categoryId ${actualCategoryId}, erwartet war ${expectedCategoryId}.`
+      );
+    }
+
+    const baseAttributes = await inspectBaseAttributes(page);
+    const attributes = [];
+    for (const field of baseAttributes) {
+      attributes.push(await inspectComboboxValues(page, field));
+    }
+    const requiredAttributes = attributes
+      .filter(field => field.required)
+      .map(field => ({
+        key: field.key,
+        label: field.label,
+        values: field.values,
+      }));
+    const contract = rememberCategoryRequirements({
+      categoryId: actualCategoryId,
+      category: normalizedPath.join(" > "),
+      requiredAttributes,
+    });
+    return {
+      status: "ready",
+      verified: true,
+      ...contract,
+      attributes,
+      instruction:
+        "Verwende nur die gelieferten Werte. Fehlt eine nötige Nutzerentscheidung, frage sie vor dem Posting gezielt ab.",
+    };
+  } finally {
+    await closeNativeProfile(nativeProfile);
+  }
+}
+
+function inspectCategoryForm(args) {
+  const current = inspectionQueue
+    .catch(() => {})
+    .then(() => inspectCategoryFormNow(args));
+  inspectionQueue = current;
+  return current;
+}
+
+module.exports = {
+  inspectCategoryForm,
+  inspectCategoryFormNow,
+  normalizeCategoryPath,
+  readCategoryChoices,
+};

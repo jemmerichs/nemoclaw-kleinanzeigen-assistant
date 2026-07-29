@@ -68,6 +68,32 @@ test("pending action identity binds tool and exact arguments", () => {
   assert.equal(toolRequiresApproval(TOOLS.ka_send_message, {}), true);
 });
 
+test("known category requirements are enforced while preparing the exact action", () => {
+  const base = {
+    title: "Heißluftfritteuse",
+    description: "Gebraucht und funktionsfähig.",
+    categoryId: 176,
+    price: 25,
+    priceType: "FIXED",
+    zipCode: "80636",
+    locationId: "16360",
+    contactName: "Jannik",
+    imagePaths: [],
+  };
+  assert.throws(
+    () => TOOLS.ka_create_ad.prepare(base),
+    /haushaltsgeraete\.art/
+  );
+  assert.doesNotThrow(() => TOOLS.ka_create_ad.prepare({
+    ...base,
+    attributes: {
+      "haushaltsgeraete.art": "haushaltskleingeraete",
+      "haushaltsgeraete.versand": "nein",
+    },
+  }));
+  assert.equal(TOOLS.ka_get_category_requirements.requiresApproval, undefined);
+});
+
 test("startup rejects placeholder IDs and heartbeat recipients outside the allowlist", () => {
   const previous = {
     token: process.env.TELEGRAM_BOT_TOKEN,

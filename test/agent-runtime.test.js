@@ -17,7 +17,13 @@ process.env.NEMOCLAW_IMAGE_DIR = path.join(directory, "images");
 process.env.NEMOCLAW_MODE = "dry-run";
 
 const store = require("../tools/adstore");
-const { clearPending, getPending, runAgent, stagePending } = require("../workspace/agent");
+const {
+  clearPending,
+  contextStats,
+  getPending,
+  runAgent,
+  stagePending,
+} = require("../workspace/agent");
 
 test.after(() => {
   store.close();
@@ -67,6 +73,7 @@ test("protected model action is staged exactly and Go is consumed once", async (
   assert.equal(pending.args.title, "Testartikel");
   assert.match(sent[0], /Aktion [a-f0-9]{12}/);
   assert.match(sent[0], /Dry-run ist aktiv/);
+  assert.doesNotMatch(sent[0], /Ich habe einen vollständigen Vorschlag vorbereitet/);
   assert.equal(stagedResult.route.tier, "fast");
   assert.deepEqual(stagedResult.toolCalls, ["ka_create_ad"]);
   assert.equal(stagedResult.toolTrace[0].staged, true);
@@ -78,6 +85,114 @@ test("protected model action is staged exactly and Go is consumed once", async (
 
   await runAgent("42", "Go", { llmClient, gateway });
   assert.match(sent[2], /keine aktuelle/);
+});
+
+test("dry-run still allows an explicitly approved local inventory cleanup", async () => {
+  const inserted = store.query({
+    sql: "INSERT INTO assets (name,image_paths) VALUES (?,?)",
+    params: ["Lokaler Testeintrag", "[]"],
+  });
+  const assetId = Number(inserted.lastInsertRowid);
+  const sent = [];
+  const gateway = { async send(_chatId, text) { sent.push(text); } };
+  const llmClient = {
+    model: "stub",
+    async complete() {
+      return {
+        message: {
+          role: "assistant",
+          content: "Live: bereits endgültig gelöscht.",
+          tool_calls: [{
+            id: "delete-local-asset",
+            type: "function",
+            function: {
+              name: "inventory_delete_asset",
+              arguments: JSON.stringify({ assetId }),
+            },
+          }],
+        },
+      };
+    },
+  };
+
+  await runAgent("local-cleanup", "Lösche den lokalen Testeintrag.", { llmClient, gateway });
+  assert.match(sent[0], /betrifft nur das lokale Inventar/);
+  assert.match(sent[0], /nicht vom Dry-run blockiert/);
+  assert.doesNotMatch(sent[0], /bereits endgültig gelöscht/);
+  assert.equal(getPending("local-cleanup").tool, "inventory_delete_asset");
+
+  await runAgent("local-cleanup", "Go", { llmClient: null, gateway });
+  assert.match(sent[1], /wurde gelöscht/);
+  assert.equal(
+    store.query({ sql: "SELECT COUNT(*) AS count FROM assets WHERE id=?", params: [assetId] })[0].count,
+    0
+  );
+});
+
+test("a truncated model response gets one compact recovery attempt", async () => {
+  const sent = [];
+  const gateway = { async send(_chatId, text) { sent.push(text); } };
+  let initialCalls = 0;
+  let recoveryCalls = 0;
+  const llmClient = {
+    model: "stub",
+    maxTokens: 2048,
+    withOverrides(overrides) {
+      assert.equal(overrides.reasoningEffort, "minimal");
+      return {
+        model: "stub",
+        async complete(request) {
+          recoveryCalls++;
+          assert.match(request.messages.at(-1).content, /unter 1200 Zeichen/);
+          return {
+            message: {
+              role: "assistant",
+              content: "Kurze vollständige Recovery-Antwort.",
+            },
+          };
+        },
+      };
+    },
+    async complete() {
+      initialCalls++;
+      const error = new Error("provider payload omitted");
+      error.code = "OPENROUTER_OUTPUT_TRUNCATED";
+      throw error;
+    },
+  };
+
+  const result = await runAgent("truncation-recovery", "Wie läuft das Context-Management?", {
+    llmClient,
+    gateway,
+  });
+  assert.equal(initialCalls, 1);
+  assert.equal(recoveryCalls, 1);
+  assert.equal(result.answered, true);
+  assert.deepEqual(sent, ["Kurze vollständige Recovery-Antwort."]);
+});
+
+test("/context reports bounded transient history and separate durable state without a model call", async () => {
+  const sent = [];
+  const gateway = { async send(_chatId, text) { sent.push(text); } };
+  const llmClient = {
+    model: "stub",
+    async complete() {
+      return {
+        message: {
+          role: "assistant",
+          content: "Gespeicherte Antwort " + "x".repeat(7000),
+        },
+      };
+    },
+  };
+  await runAgent("context-report", "Merke dir diese Testfrage.", { llmClient, gateway });
+  await runAgent("context-report", "/context", { llmClient: null, gateway });
+  const stats = contextStats("context-report");
+  assert.ok(stats.historyChars <= stats.historyCharLimit);
+  assert.ok(stats.historyEntries <= stats.historyEntryLimit);
+  assert.match(sent.at(-1), /Context-Management/);
+  assert.match(sent.at(-1), /Fotos werden nur im aktuellen Turn/);
+  assert.match(sent.at(-1), /Output-Limit/);
 });
 
 test("a Vinted draft is normalized and staged without an external call", async () => {

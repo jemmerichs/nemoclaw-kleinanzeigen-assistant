@@ -279,19 +279,42 @@ class OpenRouterClient {
 
     const choice = parsed?.choices?.[0];
     const message = choice?.message;
-    if (!message || (typeof message.content !== "string" && !Array.isArray(message.tool_calls))) {
-      throw new Error(`OpenRouter lieferte kein nutzbares Ergebnis: ${JSON.stringify(parsed).slice(0, 300)}`);
-    }
-    if (choice.finish_reason === "error" || choice.error || parsed.error) {
-      const detail = choice.error?.message || parsed.error?.message || "unbekannter Modellfehler";
-      throw new Error(`OpenRouter-Modellfehler: ${detail}`);
-    }
-
-    const usage = normalizeUsage(parsed.usage, {
+    const usage = normalizeUsage(parsed?.usage, {
       inputPricePerMillion: this.inputPricePerMillion,
       outputPricePerMillion: this.outputPricePerMillion,
     });
     this._recordUsage(usage);
+
+    const finishReason = String(choice?.finish_reason || "").toLowerCase();
+    const nativeFinishReason = String(
+      choice?.native_finish_reason || parsed?.native_finish_reason || ""
+    ).toUpperCase();
+    if (
+      finishReason === "length"
+      || finishReason === "max_tokens"
+      || nativeFinishReason === "MAX_TOKENS"
+    ) {
+      const error = new Error(
+        "OpenRouter hat das Ausgabelimit erreicht, bevor eine vollständige Antwort vorlag."
+      );
+      error.code = "OPENROUTER_OUTPUT_TRUNCATED";
+      error.finishReason = choice?.finish_reason || null;
+      error.nativeFinishReason = choice?.native_finish_reason || parsed?.native_finish_reason || null;
+      error.partialContent = typeof message?.content === "string" ? message.content : "";
+      throw error;
+    }
+    if (choice?.finish_reason === "error" || choice?.error || parsed?.error) {
+      const detail = choice?.error?.message || parsed?.error?.message || "unbekannter Modellfehler";
+      throw new Error(`OpenRouter-Modellfehler: ${detail}`);
+    }
+    if (!message || (typeof message.content !== "string" && !Array.isArray(message.tool_calls))) {
+      const error = new Error(
+        `OpenRouter lieferte keine Text- oder Tool-Antwort ` +
+        `(finish_reason: ${choice?.finish_reason || "unbekannt"}).`
+      );
+      error.code = "OPENROUTER_EMPTY_RESPONSE";
+      throw error;
+    }
     return {
       message: {
         role: "assistant",

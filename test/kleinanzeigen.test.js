@@ -171,6 +171,78 @@ test("publishing validates input and parses the returned ad link", async () => {
   );
 });
 
+test("publishing checks known category requirements before any upload or submit request", async () => {
+  const client = new StubClient();
+  await assert.rejects(
+    () => client.createAd({
+      title: "Heißluftfritteuse",
+      description: "Gebraucht und funktionsfähig.",
+      categoryId: 176,
+      price: 25,
+    }),
+    /haushaltsgeraete\.art/
+  );
+  assert.equal(client.calls.length, 0);
+
+  client.nextCsrf = {
+    status: 201,
+    body: [{ success: 1, redirectUrl: 2 }, true, "/done?adId=17625"],
+  };
+  await client.createAd({
+    title: "Heißluftfritteuse",
+    description: "Gebraucht und funktionsfähig.",
+    categoryId: 176,
+    price: 25,
+    attributes: {
+      "haushaltsgeraete.art": "haushaltskleingeraete",
+      "haushaltsgeraete.versand": "nein",
+    },
+  });
+  const multipart = client.calls[0].body.toString("utf8");
+  assert.match(multipart, /name="attributeMap\[haushaltsgeraete\.art\]"\r\n\r\nhaushaltskleingeraete/);
+  assert.match(multipart, /name="attributeMap\[haushaltsgeraete\.versand\]"\r\n\r\nnein/);
+});
+
+test("publishing exposes structured server validation so a new category can self-heal", async () => {
+  const client = new StubClient();
+  client.nextCsrf = {
+    status: 422,
+    body: [
+      { errors: 1 },
+      [2, 5, 8],
+      { field: 3, message: 4 },
+      "attributeMap[moebel.art]",
+      "Bitte wähle eine Art aus.",
+      { field: 6, message: 7 },
+      "attributeMap[moebel.versand]",
+      "Bitte wähle eine Versandart aus.",
+      { field: 9, message: 10 },
+      "locationId",
+      "Der Ort passt nicht zur Postleitzahl.",
+    ],
+  };
+
+  await assert.rejects(
+    () => client.createAd({
+      title: "Regal",
+      description: "Gebrauchtes Regal.",
+      categoryId: 93,
+      price: 20,
+    }),
+    error => {
+      assert.equal(error.code, "KA_LISTING_VALIDATION");
+      assert.equal(error.categoryId, 93);
+      assert.deepEqual(error.validationErrors, [
+        { field: "attributeMap[moebel.art]", message: "Bitte wähle eine Art aus." },
+        { field: "attributeMap[moebel.versand]", message: "Bitte wähle eine Versandart aus." },
+        { field: "locationId", message: "Der Ort passt nicht zur Postleitzahl." },
+      ]);
+      assert.deepEqual(error.recoveryAreas, ["category", "location"]);
+      return true;
+    }
+  );
+});
+
 test("publishing serializes the current web form contract", async () => {
   const client = new StubClient();
   client.nextCsrf = { status: 201, body: [{ success: 1, redirectUrl: 2 }, true, "/done?adId=987"] };

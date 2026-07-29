@@ -7,6 +7,7 @@ node_modules/
 .state.json
 .pending-actions.json
 .openrouter-usage.json
+.ka-category-contracts.json
 workspace/memory/
 workspace/ads.db
 workspace/ads.db-*

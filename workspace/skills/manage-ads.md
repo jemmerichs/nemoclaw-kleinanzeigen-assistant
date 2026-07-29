@@ -8,6 +8,8 @@
 
 `inventory_delete_asset` entfernt nach exakter Bestätigung ausschließlich einen unverknüpften lokalen Fehl- oder Testeintrag. Sobald eine Entwurfs-ID oder irgendeine Anzeigenhistorie existiert, blockiert die Bridge die Löschung.
 
+Reine lokale Inventaränderungen benötigen weiterhin ein exaktes `Go`, werden aber nicht durch `NEMOCLAW_MODE=dry-run` blockiert. Der Dry-run-Schalter schützt externe Marktplatzkonten.
+
 Veröffentlichte Anzeigen und Entwürfe werden durch die `ka_*`- beziehungsweise `vinted_*`-Schreibtools automatisch lokal erfasst. Dasselbe Asset darf einmal je Marktplatz aktiv sein; eine zweite aktive Anzeige auf demselben Marktplatz wird blockiert. Keine freien SQL-Schreibzugriffe anfordern.
 
 Der Anzeigen-Lifecycle-Check toleriert einen einzelnen fehlenden Abruf. Nach zwei erfolgreichen Abrufen ohne eine zuvor aktive Anzeige informiert er proaktiv, prüft nach Möglichkeit den Bundle-Status und schlägt ein Relist aus dem gespeicherten kanonischen Posting vor. Niemals selbst veröffentlichen. Verkaufte Assets und Dubletten mit bereits aktiver Anzeige werden von der Bridge blockiert.

@@ -3,6 +3,7 @@
 
 const https  = require("https");
 const crypto = require("crypto");
+const { validateCategoryAttributes } = require("./kleinanzeigen-category-contracts");
 
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
@@ -97,6 +98,48 @@ function clientError(code, message, status = null) {
   const error = new Error(message);
   error.code = code;
   if (status !== null) error.status = status;
+  return error;
+}
+
+function parseListingValidationErrors(parsed) {
+  if (!Array.isArray(parsed) || !parsed[0] || typeof parsed[0] !== "object") return [];
+  const errorIndex = parsed[0].errors;
+  const references = Number.isInteger(errorIndex) && Array.isArray(parsed[errorIndex])
+    ? parsed[errorIndex]
+    : [];
+  return references.flatMap(reference => {
+    const entry = Number.isInteger(reference) ? parsed[reference] : reference;
+    if (!entry || typeof entry !== "object") return [];
+    const rawField = Number.isInteger(entry.field) ? parsed[entry.field] : entry.field;
+    const rawMessage = Number.isInteger(entry.message) ? parsed[entry.message] : entry.message;
+    const field = String(rawField || "").trim().slice(0, 300);
+    const message = String(rawMessage || "").trim().slice(0, 500);
+    if (!field && !message) return [];
+    return [{ field, message }];
+  });
+}
+
+function listingValidationError(parsed, categoryId, status = null) {
+  const validationErrors = parseListingValidationErrors(parsed);
+  if (!validationErrors.length) return null;
+  const fieldNames = validationErrors.map(error => error.field);
+  const recoveryAreas = [
+    fieldNames.some(field => /(?:attributeMap|categoryId)/i.test(field)) ? "category" : null,
+    fieldNames.some(field => /(?:zipCode|locationId|street|address)/i.test(field)) ? "location" : null,
+    fieldNames.some(field => /contactName/i.test(field)) ? "profile" : null,
+  ].filter(Boolean);
+  if (!recoveryAreas.length) recoveryAreas.push("listing");
+  const details = validationErrors
+    .map(error => [error.field, error.message].filter(Boolean).join(": "))
+    .join("; ");
+  const error = clientError(
+    "KA_LISTING_VALIDATION",
+    `Kleinanzeigen-Formularvalidierung fehlgeschlagen: ${details}`,
+    status
+  );
+  error.categoryId = Number(categoryId);
+  error.validationErrors = validationErrors;
+  error.recoveryAreas = recoveryAreas;
   return error;
 }
 
@@ -590,6 +633,7 @@ class KleinanzeigenClient {
     const normalizedPriceType = validatePriceType(priceType);
     const normalizedImageUrls = validateImageUrls(imageUrls);
     const normalizedAttributes = validateAttributes(attributes);
+    validateCategoryAttributes(categoryId, normalizedAttributes, { requireRequired: true });
     const csrfToken = this._extractCsrfToken();
     if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies. Bitte 'node scripts/login.js' ausführen.");
 
@@ -610,20 +654,16 @@ class KleinanzeigenClient {
       "Referer":      "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
     });
 
-    if (status !== 200 && status !== 201)
+    const validationError = listingValidationError(parsed, categoryId, status);
+    if (validationError) throw validationError;
+    if (status !== 200 && status !== 201) {
       throw new Error(`createAd fehlgeschlagen (${status}): ${JSON.stringify(parsed).slice(0, 300)}`);
+    }
 
     // Response is an indexed array — [{"success":1,"redirectUrl":2}, true, "/...?adId=123"]
     // or on error: [{"errors":1}, [...], ...]
     if (Array.isArray(parsed)) {
       const meta = parsed[0];
-      if (meta?.errors !== undefined) {
-        const msgs = (parsed[meta.errors] || []).map(idx => {
-          const e = parsed[idx];
-          return (e?.field !== undefined && e?.message !== undefined) ? `${parsed[e.field]}: ${parsed[e.message]}` : null;
-        }).filter(Boolean);
-        throw new Error(`createAd Validierungsfehler: ${msgs.join("; ") || JSON.stringify(parsed).slice(0, 200)}`);
-      }
       if (meta?.redirectUrl !== undefined) {
         const redirectUrl = String(parsed[meta.redirectUrl] || "");
         const adId = (redirectUrl.match(/[?&]adId=(\d+)/) || [])[1] || "";
@@ -660,6 +700,7 @@ class KleinanzeigenClient {
     if (zipCode && !/^\d{5}$/.test(String(zipCode))) throw new Error("saveDraft: PLZ muss aus 5 Ziffern bestehen.");
     const normalizedImageUrls = validateImageUrls(imageUrls);
     const normalizedAttributes = validateAttributes(attributes);
+    validateCategoryAttributes(categoryId, normalizedAttributes, { requireRequired: false });
     const normalizedPriceType = validatePriceType(priceType);
     if (categoryId !== null && (!Number.isInteger(Number(categoryId)) || Number(categoryId) <= 0)) {
       throw new Error("saveDraft: categoryId ist ungültig.");
@@ -724,3 +765,4 @@ class KleinanzeigenClient {
 module.exports = KleinanzeigenClient;
 module.exports.accessResponseError = accessResponseError;
 module.exports.mergeCookieHeader = mergeCookieHeader;
+module.exports.parseListingValidationErrors = parseListingValidationErrors;

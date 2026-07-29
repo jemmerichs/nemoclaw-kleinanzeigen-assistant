@@ -9,6 +9,7 @@ A German-language selling assistant for Kleinanzeigen and Vinted. It analyzes an
 - A standalone `Go` can execute only the currently staged payload, once, within 30 minutes.
 - Any intervening user message invalidates the old approval.
 - Images are not uploaded while preparing a proposal. Upload and publication happen together only after approval.
+- Kleinanzeigen category contracts are discovered generically from the current signed-in posting form and cached for 14 days. Unknown categories are navigated read-only via their visible category path; exact required fields and permitted values are then validated before approval and upload. A new server-side form validation error is surfaced as repairable schema feedback, never as a claimed publication.
 - Original photos are immutable. Edited derivatives store source/output hashes and exact operations; no generative retouching is available.
 - Every saved draft or published listing stores a canonical relist payload plus ordered image provenance.
 - Automatic inbox and listing checks cannot delete or replace an action already waiting for `Go`.
@@ -18,6 +19,7 @@ A German-language selling assistant for Kleinanzeigen and Vinted. It analyzes an
 - Marketplace messages and search results are treated as untrusted data, not agent instructions.
 - Telegram accepts only configured owner chat IDs.
 - OpenRouter spend is capped locally per day (`$1` by default) and cumulatively for this app (`$3` by default). Before each call, its maximum configured output is reserved against those caps; concurrent calls share the same ledger lock, and ambiguous post-send failures reserve their projected cost.
+- Model history is bounded independently from durable inventory and pending approvals. An output-limit response is discarded and retried exactly once with minimal reasoning and a compact response contract; provider JSON is never dumped into chat.
 - Secrets, browser state, sessions, pending actions, images, usage records, and the SQLite database are ignored by Git.
 
 ## Requirements
@@ -213,6 +215,7 @@ The bot supports:
 
 - `/status` — mode, model, both marketplace sessions, pending action, spend
 - `/budget` — today’s OpenRouter usage
+- `/context` — current context limits and the separation between transient model history and durable state
 - `/cancel` — invalidate the pending action
 - `/help` — short usage guide
 

@@ -14,7 +14,9 @@ Aus Fotos und kurzem Kontext einen ehrlichen, marktgerechten Anzeigenvorschlag e
 4. Fehlt genau eine entscheidende Angabe (zum Beispiel Funktionstest oder Größe), höchstens eine gebündelte Rückfrage stellen.
 5. Den Zielmarktplatz klären. Mit `ka_search_ads` oder `vinted_search_items` vergleichbare Angebote dort recherchieren. Bezahlte Top-/Bumped-Anzeigen nicht als normalen Marktpreis behandeln.
 6. Eine konkrete Preisempfehlung und die belastbarste Kategorie wählen. Kleinanzeigen-Kategorie-ID, Vinted-Kategoriepfad, Attribute, Zustand und Paketgröße nie aus alten Beispielen raten.
-7. Direkt einen vollständigen plattformspezifischen Vorschlag mit Titel, Beschreibung, Preis, Kategorie und ausgewählter Bildreihenfolge vorbereiten.
+   - Für Kleinanzeigen nach der Kategorie-ID immer `ka_get_category_requirements` aufrufen. Ist die Kategorie noch nicht im kurzlebigen Cache, den sichtbaren Kategoriepfad mit den gelieferten `choices` schrittweise vervollständigen; keine internen Schlüssel oder Werte raten. Verifizierte Pflichtfelder exakt übernehmen. Erfordert ein Feld eine echte Nutzerentscheidung (insbesondere Versand oder nur Abholung), diese eine Angabe vor dem Posting erfragen.
+   - Kommt trotz Vorprüfung ein Kategorie-Formularvalidierungsfehler zurück, wurde nichts erfolgreich bestätigt. `ka_get_category_requirements` mit `refresh: true` verwenden, das Kategorieformular erneut inspizieren, neue Pflichtfelder übernehmen und eine neue Aktion mit neuem Go vorbereiten. Bei Ortsfehlern PLZ und Location-ID als Paar neu auflösen. Niemals denselben Schreibversuch automatisch wiederholen.
+7. Direkt einen vollständigen plattformspezifischen Vorschlag mit Titel, Beschreibung, Preis, Kategorie, verifizierten Pflichtattributen und ausgewählter Bildreihenfolge vorbereiten.
 8. Wenn Jannik veröffentlichen möchte, `ka_create_ad` oder `vinted_create_item` mit genau den ausgewählten Original- und/oder bearbeiteten `imagePaths` in der gewünschten Reihenfolge aufrufen. Die Bridge führt den Aufruf noch nicht aus, sondern merkt exakt diese Aktion vor.
    - Soll derselbe Artikel auf beiden Marktplätzen erscheinen, zuerst nur eine Plattform vormerken und ausführen. Danach die zweite Aktion separat vollständig zeigen und ein neues `Go` verlangen.
 9. Nach dem technischen Ergebnis Link und lokalen Asset-Verweis nennen.
@@ -31,7 +33,7 @@ Aus Fotos und kurzem Kontext einen ehrlichen, marktgerechten Anzeigenvorschlag e
 - `imagePaths`: exakt die lokalen Pfade aus den `[FOTO path:...]`-Tokens
 - optional `assetName`, `assetId`, `attributes`, `zipCode`, `locationId`, `contactName`
 
-Die Bridge lädt Bilder erst nach `Go` hoch, veröffentlicht die Anzeige und erfasst sie danach automatisch in der lokalen Datenbank. Keine separaten Upload- oder SQL-Aufrufe nötig.
+Die Bridge validiert bekannte aktuelle Kategoriepflichtfelder bereits vor der Freigabe. Erst nach `Go` lädt sie Bilder hoch, veröffentlicht die Anzeige und erfasst sie danach automatisch in der lokalen Datenbank. Keine separaten Upload- oder SQL-Aufrufe nötig.
 
 ## Entwurf statt Veröffentlichung
 
