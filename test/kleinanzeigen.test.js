@@ -217,7 +217,7 @@ test("publishing exposes structured server validation so a new category can self
       "attributeMap[moebel.versand]",
       "Bitte wähle eine Versandart aus.",
       { field: 9, message: 10 },
-      "locationId",
+      "location",
       "Der Ort passt nicht zur Postleitzahl.",
     ],
   };
@@ -235,7 +235,7 @@ test("publishing exposes structured server validation so a new category can self
       assert.deepEqual(error.validationErrors, [
         { field: "attributeMap[moebel.art]", message: "Bitte wähle eine Art aus." },
         { field: "attributeMap[moebel.versand]", message: "Bitte wähle eine Versandart aus." },
-        { field: "locationId", message: "Der Ort passt nicht zur Postleitzahl." },
+        { field: "location", message: "Der Ort passt nicht zur Postleitzahl." },
       ]);
       assert.deepEqual(error.recoveryAreas, ["category", "location"]);
       return true;
@@ -272,6 +272,9 @@ test("publishing serializes the current web form contract", async () => {
     ["zipCode", "80636"],
     ["locationId", "16360"],
     ["contactName", "Jannik"],
+    ["adDraftUuid", ""],
+    ["adId", ""],
+    ["posterType", "PRIVATE"],
     ["attributeMap[sport.condition]", "used"],
     ["adImages[0].url", "https://img.kleinanzeigen.de/example.jpg"],
   ]) {

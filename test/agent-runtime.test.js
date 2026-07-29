@@ -14,13 +14,23 @@ process.env.NEMOCLAW_PENDING_FILE = path.join(directory, "pending.json");
 process.env.NEMOCLAW_STATE_FILE = path.join(directory, "state.json");
 process.env.NEMOCLAW_DB_PATH = path.join(directory, "ads.db");
 process.env.NEMOCLAW_IMAGE_DIR = path.join(directory, "images");
+process.env.NEMOCLAW_KA_CATEGORY_CACHE_FILE = path.join(directory, "category-contracts.json");
 process.env.NEMOCLAW_MODE = "dry-run";
 
+require("../tools/kleinanzeigen-category-contracts").rememberCategoryRequirements({
+  categoryId: 278,
+  category: "Testkategorie",
+  requiredAttributes: [],
+});
 const store = require("../tools/adstore");
 const {
+  appendHistory,
   clearPending,
   contextStats,
+  describeListingValidationFailure,
+  getHistory,
   getPending,
+  normalizeHistoryEntry,
   runAgent,
   stagePending,
 } = require("../workspace/agent");
@@ -190,9 +200,111 @@ test("/context reports bounded transient history and separate durable state with
   const stats = contextStats("context-report");
   assert.ok(stats.historyChars <= stats.historyCharLimit);
   assert.ok(stats.historyEntries <= stats.historyEntryLimit);
+  assert.equal(stats.historyEntryLimit, 13);
+  assert.equal(stats.historyCharLimit, 12000);
+  assert.equal(stats.perEntryCharLimit, 4000);
+  assert.equal(stats.retentionHours, 24);
   assert.match(sent.at(-1), /Context-Management/);
+  assert.match(sent.at(-1), /letzten 24 Stunden/);
   assert.match(sent.at(-1), /Fotos werden nur im aktuellen Turn/);
   assert.match(sent.at(-1), /Output-Limit/);
+});
+
+test("conversation history keeps at most 13 entries from the last 24 hours", () => {
+  const chatId = "history-retention";
+  const now = Date.now();
+  assert.equal(normalizeHistoryEntry("legacy entry without timestamp"), null);
+  appendHistory(chatId, "expired", now - 24 * 60 * 60 * 1000 - 1);
+  for (let index = 0; index < 15; index++) {
+    appendHistory(chatId, `message-${index}`, now - 1000 + index);
+  }
+  assert.deepEqual(
+    getHistory(chatId, now),
+    Array.from({ length: 13 }, (_value, index) => `message-${index + 2}`)
+  );
+});
+
+test("listing validation errors are translated for Telegram without leaking backend field names", () => {
+  const message = describeListingValidationFailure(
+    { id: "91cc1158e865" },
+    {
+      validationErrors: [
+        {
+          field: "location",
+          message: "In diesem Ort kann keine Anzeige aufgegeben werden.",
+        },
+        {
+          field: "attributeMap[lampen_licht.versand_s]",
+          message: "Kein gültiger Wert.",
+        },
+      ],
+    }
+  );
+  assert.match(message, /Aktion 91cc1158e865 wurde nicht ausgeführt/);
+  assert.match(message, /Standort: In diesem Ort/);
+  assert.match(message, /Versand: Kein gültiger Wert/);
+  assert.match(message, /Es wurde nichts veröffentlicht oder gespeichert/);
+  assert.doesNotMatch(message, /attributeMap|versand_s|ka_get_category_requirements/);
+});
+
+test("photo tokens in a final answer are delivered as Telegram photos instead of path text", async () => {
+  const { saveTemp } = require("../tools/image");
+  const imagePath = saveTemp(await sharp({
+    create: {
+      width: 24,
+      height: 24,
+      channels: 3,
+      background: { r: 10, g: 20, b: 30 },
+    },
+  }).jpeg().toBuffer());
+  const sent = [];
+  const photos = [];
+  const gateway = {
+    async send(_chatId, text) { sent.push(text); },
+    async sendPhoto(_chatId, filePath) { photos.push(filePath); },
+  };
+  const llmClient = {
+    model: "stub",
+    async complete() {
+      return {
+        message: {
+          role: "assistant",
+          content: `Hier ist das verwendete Bild:\n\n[FOTO path:${imagePath}]`,
+        },
+      };
+    },
+  };
+
+  await runAgent("return-photo", "Schick mir das Bild zurück.", { llmClient, gateway });
+
+  assert.deepEqual(sent, ["Hier ist das verwendete Bild:"]);
+  assert.deepEqual(photos, [imagePath]);
+  assert.doesNotMatch(sent.join("\n"), /FOTO path|workspace\/images/);
+});
+
+test("invalid photo tokens are blocked without exposing the local path", async () => {
+  const sent = [];
+  const gateway = {
+    async send(_chatId, text) { sent.push(text); },
+    async sendPhoto() { assert.fail("an invalid path must not be sent"); },
+  };
+  const llmClient = {
+    model: "stub",
+    async complete() {
+      return {
+        message: {
+          role: "assistant",
+          content: "Hier ist das Bild:\n[FOTO path:/private/etc/passwd]",
+        },
+      };
+    },
+  };
+
+  await runAgent("invalid-return-photo", "Schick mir das Bild zurück.", { llmClient, gateway });
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /konnte nicht gesendet werden/);
+  assert.doesNotMatch(sent[0], /private|passwd|FOTO path/);
 });
 
 test("a Vinted draft is normalized and staged without an external call", async () => {

@@ -125,7 +125,7 @@ function listingValidationError(parsed, categoryId, status = null) {
   const fieldNames = validationErrors.map(error => error.field);
   const recoveryAreas = [
     fieldNames.some(field => /(?:attributeMap|categoryId)/i.test(field)) ? "category" : null,
-    fieldNames.some(field => /(?:zipCode|locationId|street|address)/i.test(field)) ? "location" : null,
+    fieldNames.some(field => /(?:zipCode|location(?:Id)?|postal|street|address)/i.test(field)) ? "location" : null,
     fieldNames.some(field => /contactName/i.test(field)) ? "profile" : null,
   ].filter(Boolean);
   if (!recoveryAreas.length) recoveryAreas.push("listing");
@@ -642,7 +642,8 @@ class KleinanzeigenClient {
       categoryId: String(categoryId), priceAmount: String(Math.round(price)),
       priceType: normalizedPriceType, buyNowEligible: "false",
       zipCode: zipCode || "", locationId: locationId || "", contactName: contactName || "",
-      adId: "", trackingId: crypto.randomUUID(), postAdWenkseSessionId: crypto.randomUUID(),
+      adDraftUuid: "", adId: "", posterType: "PRIVATE",
+      trackingId: crypto.randomUUID(), postAdWenkseSessionId: crypto.randomUUID(),
       _csrf: csrfToken,
     };
     for (const [key, value] of Object.entries(normalizedAttributes)) fields[`attributeMap[${key}]`] = value;

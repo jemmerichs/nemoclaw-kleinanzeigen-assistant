@@ -8,6 +8,21 @@ const path = require("path");
 const MAX_MESSAGE_LENGTH = 4000;
 const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
 
+function telegramPlainText(text) {
+  return String(text || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/^```[^\n]*$/gm, "")
+    .replace(/^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$/gm, (_match, title) => (
+      /[:.!?]$/.test(title) ? title : `${title}:`
+    ))
+    .replace(/^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*(?:\n|$)/gm, "")
+    .replace(/`([^`\n]+)`/g, "$1")
+    .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+    .replace(/__([^_\n]+)__/g, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function splitMessage(text, maxLength = MAX_MESSAGE_LENGTH) {
   const input = String(text || "");
   if (!input) return [];
@@ -81,7 +96,7 @@ class TelegramGateway {
 
   async send(chatId, text) {
     const results = [];
-    for (const chunk of splitMessage(text)) {
+    for (const chunk of splitMessage(telegramPlainText(text))) {
       results.push(await this._request("sendMessage", { chat_id: chatId, text: chunk }));
     }
     return results;
@@ -186,3 +201,4 @@ class TelegramGateway {
 module.exports = TelegramGateway;
 module.exports.splitMessage = splitMessage;
 module.exports.mimeTypeFor = mimeTypeFor;
+module.exports.telegramPlainText = telegramPlainText;

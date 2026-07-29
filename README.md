@@ -18,8 +18,9 @@ A German-language selling assistant for Kleinanzeigen and Vinted. It analyzes an
 - A failed external write is never retried automatically after an ambiguous network failure.
 - Marketplace messages and search results are treated as untrusted data, not agent instructions.
 - Telegram accepts only configured owner chat IDs.
+- Telegram replies use compact plain text; Markdown headings, separator rules, code fences, and backticks are removed before delivery.
 - OpenRouter spend is capped locally per day (`$1` by default) and cumulatively for this app (`$3` by default). Before each call, its maximum configured output is reserved against those caps; concurrent calls share the same ledger lock, and ambiguous post-send failures reserve their projected cost.
-- Model history is bounded independently from durable inventory and pending approvals. An output-limit response is discarded and retried exactly once with minimal reasoning and a compact response contract; provider JSON is never dumped into chat.
+- Model history is limited to the latest 13 entries from the last 24 hours, with a 12,000-character total cap, independently from durable inventory and pending approvals. Legacy history entries without timestamps expire during migration. An output-limit response is discarded and retried exactly once with minimal reasoning and a compact response contract; provider JSON is never dumped into chat.
 - Secrets, browser state, sessions, pending actions, images, usage records, and the SQLite database are ignored by Git.
 
 ## Requirements

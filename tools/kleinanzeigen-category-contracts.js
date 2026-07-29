@@ -9,6 +9,22 @@ const CACHE_FILE = process.env.NEMOCLAW_KA_CATEGORY_CACHE_FILE
 const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 const CATEGORY_CONTRACTS = new Map([
+  [82, {
+    categoryId: 82,
+    category: "Haus & Garten > Lampen & Licht",
+    verifiedAt: "2026-07-29",
+    source: "Aktuelles eingeloggtes Kleinanzeigen-Webformular, read-only geprüft",
+    requiredAttributes: [
+      {
+        key: "lampen_licht.versand",
+        label: "Versand",
+        values: [
+          { value: "ja", label: "Versand möglich" },
+          { value: "nein", label: "Nur Abholung" },
+        ],
+      },
+    ],
+  }],
   [176, {
     categoryId: 176,
     category: "Elektronik > Haushaltsgeräte",
@@ -155,11 +171,23 @@ function getCategoryRequirements(categoryId) {
   };
 }
 
-function validateCategoryAttributes(categoryId, attributes = {}, { requireRequired = true } = {}) {
+function validateCategoryAttributes(
+  categoryId,
+  attributes = {},
+  { requireRequired = true, requireVerified = false } = {}
+) {
   const normalizedId = normalizeCategoryId(categoryId);
   if (!normalizedId) return attributes;
   const contract = contractFor(normalizedId);
-  if (!contract) return attributes;
+  if (!contract) {
+    if (requireVerified) {
+      throw new Error(
+        `Kategorie ${normalizedId} wurde noch nicht anhand des aktuellen Formulars verifiziert. ` +
+        "Prüfe zuerst den sichtbaren Kategoriepfad und die erlaubten Pflichtwerte; keine Werte raten."
+      );
+    }
+    return attributes;
+  }
 
   for (const field of contract.requiredAttributes) {
     const value = attributes[field.key];

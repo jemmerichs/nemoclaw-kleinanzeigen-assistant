@@ -69,9 +69,10 @@ const IMAGE_ROOT = process.env.NEMOCLAW_IMAGE_DIR
   ? path.resolve(process.env.NEMOCLAW_IMAGE_DIR)
   : path.resolve(__dirname, "images");
 const MAX_AGENT_STEPS = 8;
-const MAX_HISTORY_ENTRIES = 18;
-const MAX_HISTORY_CHARS = 18000;
-const MAX_HISTORY_ENTRY_CHARS = 6000;
+const MAX_HISTORY_ENTRIES = 13;
+const MAX_HISTORY_CHARS = 12000;
+const MAX_HISTORY_ENTRY_CHARS = 4000;
+const HISTORY_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_MODEL_IMAGES = 12;
 const MAX_MODEL_IMAGE_BYTES = 12 * 1024 * 1024;
 const PENDING_TTL_MS = 30 * 60 * 1000;
@@ -506,7 +507,10 @@ function prepareCreateArgs(rawArgs) {
       "müssen für die Veröffentlichung gesetzt sein; diese Formularfelder dürfen nicht entfernt werden."
     );
   }
-  validateCategoryAttributes(args.categoryId, args.attributes, { requireRequired: true });
+  validateCategoryAttributes(args.categoryId, args.attributes, {
+    requireRequired: true,
+    requireVerified: true,
+  });
   const assetId = normalizeAssetId(args.assetId);
   assertMarketplacePublishable(assetId, "kleinanzeigen");
   return args;
@@ -1148,7 +1152,7 @@ function loadContext({ excludeTools = [], includeTools = null } = {}) {
   ].join("\n\n");
 }
 
-function getHistory(chatId) {
+function getStoredHistory(chatId) {
   const key = String(chatId);
   if (!Array.isArray(sessions[key])) sessions[key] = [];
   return sessions[key];
@@ -1166,13 +1170,28 @@ function compactHistoryEntry(value) {
   ].join("");
 }
 
-function trimHistory(chatId) {
+function normalizeHistoryEntry(value) {
+  if (!value || Array.isArray(value) || typeof value !== "object") return null;
+  const timestamp = Date.parse(String(value.at || ""));
+  if (!Number.isFinite(timestamp)) return null;
+  return {
+    at: new Date(timestamp).toISOString(),
+    text: compactHistoryEntry(value.text),
+  };
+}
+
+function trimHistory(chatId, now = Date.now()) {
   const key = String(chatId);
-  const current = getHistory(key);
+  const current = getStoredHistory(key);
+  const cutoff = Number(now) - HISTORY_TTL_MS;
   const history = current
-    .map(compactHistoryEntry)
+    .map(normalizeHistoryEntry)
+    .filter(entry => entry && Date.parse(entry.at) >= cutoff)
     .slice(-MAX_HISTORY_ENTRIES);
-  while (history.length > 1 && history.join("\n").length > MAX_HISTORY_CHARS) {
+  while (
+    history.length > 1
+    && history.map(entry => entry.text).join("\n").length > MAX_HISTORY_CHARS
+  ) {
     history.shift();
   }
   current.splice(0, current.length, ...history);
@@ -1180,8 +1199,22 @@ function trimHistory(chatId) {
   return current;
 }
 
+function getHistory(chatId, now = Date.now()) {
+  return trimHistory(chatId, now).map(entry => entry.text);
+}
+
+function appendHistory(chatId, value, at = Date.now()) {
+  const timestamp = Number(at);
+  if (!Number.isFinite(timestamp)) throw new Error("History-Zeitstempel ist ungültig.");
+  getStoredHistory(chatId).push({
+    at: new Date(timestamp).toISOString(),
+    text: compactHistoryEntry(value),
+  });
+  trimHistory(chatId);
+}
+
 function contextStats(chatId) {
-  const history = trimHistory(chatId);
+  const history = getHistory(chatId);
   const pending = getPending(chatId);
   return {
     historyEntries: history.length,
@@ -1189,6 +1222,7 @@ function contextStats(chatId) {
     historyEntryLimit: MAX_HISTORY_ENTRIES,
     historyCharLimit: MAX_HISTORY_CHARS,
     perEntryCharLimit: MAX_HISTORY_ENTRY_CHARS,
+    retentionHours: HISTORY_TTL_MS / 60 / 60 / 1000,
     systemContextChars: loadContext().length,
     pendingAction: pending ? {
       id: pending.id,
@@ -1358,6 +1392,90 @@ function describeResult(toolName, result) {
   }
 }
 
+function validationFieldLabel(field) {
+  const value = String(field || "");
+  if (/(?:zipCode|location(?:Id)?|postal|street|address)/i.test(value)) return "Standort";
+  if (/attributeMap\[.*versand/i.test(value)) return "Versand";
+  if (/(?:attributeMap|categoryId)/i.test(value)) return "Kategorieangabe";
+  if (/contactName/i.test(value)) return "Profilname";
+  return "Formularangabe";
+}
+
+function describeListingValidationFailure(action, error) {
+  const validationErrors = Array.isArray(error?.validationErrors)
+    ? error.validationErrors.slice(0, 10)
+    : [];
+  const details = validationErrors.length
+    ? validationErrors.map(entry => (
+      `- ${validationFieldLabel(entry.field)}: ${String(entry.message || "Wert wurde abgelehnt.").trim()}`
+    ))
+    : ["- Kleinanzeigen hat mindestens eine Formularangabe abgelehnt."];
+  return [
+    `Aktion ${action.id} wurde nicht ausgeführt.`,
+    "Kleinanzeigen hat folgende Angaben abgelehnt:",
+    ...details,
+    "",
+    "Es wurde nichts veröffentlicht oder gespeichert. Der Vorschlag muss mit aktuell verifizierten " +
+      "Kategorie- und Standortfeldern neu vorbereitet und erneut mit Go bestätigt werden.",
+  ].join("\n");
+}
+
+async function deliverAgentMessage(chatId, message, gateway) {
+  const rawMessage = String(message || "").trim();
+  const referencedPaths = extractImagePaths(rawMessage, 20);
+  if (!referencedPaths.length) {
+    await gateway.send(chatId, rawMessage);
+    return { historyText: rawMessage, sentImages: 0, failedImages: 0 };
+  }
+
+  const text = rawMessage
+    .replace(/\[FOTO path:[^\]]+\]/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const validPaths = [];
+  let failedImages = 0;
+  for (const filePath of referencedPaths) {
+    try {
+      validPaths.push(assertImagePath(filePath));
+    } catch {
+      failedImages++;
+    }
+  }
+
+  if (text && validPaths.length) await gateway.send(chatId, text);
+  let sentImages = 0;
+  if (typeof gateway.sendPhoto === "function") {
+    for (const filePath of validPaths) {
+      try {
+        await gateway.sendPhoto(chatId, filePath);
+        sentImages++;
+      } catch {
+        failedImages++;
+      }
+    }
+  } else {
+    failedImages += validPaths.length;
+  }
+
+  if (failedImages) {
+    const failureMessage = failedImages === 1
+      ? "Das angeforderte Foto konnte nicht gesendet werden, weil die lokale Bilddatei nicht verfügbar oder nicht zulässig ist."
+      : `${failedImages} angeforderte Fotos konnten nicht gesendet werden, weil die lokalen Bilddateien nicht verfügbar oder nicht zulässig sind.`;
+    await gateway.send(chatId, failureMessage);
+  }
+
+  return {
+    historyText: [
+      ...(text && sentImages ? [text] : []),
+      ...(sentImages ? [`[${sentImages} Foto${sentImages === 1 ? "" : "s"} gesendet.]`] : []),
+      ...(failedImages ? [`[${failedImages} Foto${failedImages === 1 ? "" : "s"} nicht gesendet.]`] : []),
+    ].join("\n"),
+    sentImages,
+    failedImages,
+  };
+}
+
 function userPrompt(chatId, history) {
   const pending = getPending(chatId);
   return [
@@ -1390,13 +1508,12 @@ function multimodalContent(prompt, imagePaths) {
 }
 
 async function handleApproval(chatId, gateway) {
-  const history = getHistory(chatId);
-  history.push("Jannik: Go");
+  appendHistory(chatId, "Jannik: Go");
   const action = getPending(chatId);
   if (!action) {
     const message = "Es gibt keine aktuelle, noch gültige Aktion zum Bestätigen. Bitte lass dir die konkrete Aktion zuerst erneut zeigen.";
     await gateway.send(chatId, message);
-    history.push(`Agent: ${message}`);
+    appendHistory(chatId, `Agent: ${message}`);
     saveSession(chatId);
     return;
   }
@@ -1405,7 +1522,7 @@ async function handleApproval(chatId, gateway) {
   if (!tool || !toolRequiresApproval(tool, action.args)) {
     const message = "Die vorgemerkte Aktion ist nicht mehr gültig und wurde nicht ausgeführt.";
     await gateway.send(chatId, message);
-    history.push(`Agent: ${message}`);
+    appendHistory(chatId, `Agent: ${message}`);
     saveSession(chatId);
     return;
   }
@@ -1427,42 +1544,29 @@ async function handleApproval(chatId, gateway) {
     verifyActionMaterials(action);
     const result = await executeTool(action.tool, action.args);
     const message = describeResult(action.tool, result);
-    history.push(`Tool(${action.tool}): ${boundedJson(result, MAX_HISTORY_ENTRY_CHARS)}`);
-    history.push(`Agent: ${message}`);
+    appendHistory(chatId, `Tool(${action.tool}): ${boundedJson(result, MAX_HISTORY_ENTRY_CHARS)}`);
+    appendHistory(chatId, `Agent: ${message}`);
     await gateway.send(chatId, message);
   } catch (error) {
     const dryRunBlocked = getMode() !== "live" && error.message.includes("dry-run-Modus blockiert");
     const categoryValidation = error.code === "KA_LISTING_VALIDATION";
     const marketplace = action.tool.startsWith("vinted_") ? "Vinted" : "Kleinanzeigen";
-    const recoveryAreas = new Set(error.recoveryAreas || []);
-    const validationRecovery = [
-      recoveryAreas.has("category")
-        ? `Kategorie ${error.categoryId || action.args?.categoryId || "unbekannt"} mit ` +
-          "`ka_get_category_requirements` und `refresh: true` erneut im aktuellen Formular prüfen."
-        : null,
-      recoveryAreas.has("location")
-        ? "PLZ und Location-ID als zusammengehöriges Paar aus dem aktuellen Kleinanzeigen-Formular bzw. Profil neu auflösen; keines der beiden Felder einzeln entfernen."
-        : null,
-      recoveryAreas.has("profile")
-        ? "Den aktuellen Profilnamen erneut übernehmen; keinen Namen erfinden."
-        : null,
-      recoveryAreas.has("listing")
-        ? "Die genannten Formularfelder anhand des aktuellen Formulars korrigieren; keine Werte raten."
-        : null,
-      "Danach fehlende Nutzerentscheidungen erfragen und eine neue, separat zu bestätigende Aktion vorbereiten.",
-    ].filter(Boolean);
     const message = categoryValidation
-      ? [
-        `Aktion ${action.id} wurde von der aktuellen Kleinanzeigen-Formularvalidierung abgelehnt; ` +
-          "eine veröffentlichte Anzeige oder ein gespeicherter Entwurf wurde nicht bestätigt.",
-        error.message,
-        ...validationRecovery,
-      ].join("\n")
+      ? describeListingValidationFailure(action, error)
       : dryRunBlocked
       ? `Aktion ${action.id} wurde durch den dry-run-Modus blockiert und nicht ausgeführt.`
       : `Aktion ${action.id} konnte nicht eindeutig als abgeschlossen bestätigt werden und wird nicht automatisch wiederholt: ${error.message}\nPrüfe vor einem neuen Versuch zuerst den aktuellen ${marketplace}-Stand.`;
-    history.push(`System: ${message}`);
-    history.push(`Agent: ${message}`);
+    appendHistory(
+      chatId,
+      categoryValidation
+        ? "System: Kleinanzeigen-Formularvertrag veraltet oder unvollständig. " +
+          `Kategorie ${error.categoryId || action.args?.categoryId || "unbekannt"} vor einem neuen Vorschlag ` +
+          "read-only mit ka_get_category_requirements und refresh=true prüfen. " +
+          `Validierungsdaten: ${boundedJson(error.validationErrors || [], 3000)}. ` +
+          "Keine Attributwerte oder Ortsdaten raten und keinen Schreibversuch automatisch wiederholen."
+        : `System: ${message}`
+    );
+    appendHistory(chatId, `Agent: ${message}`);
     await gateway.send(chatId, message);
   } finally {
     saveSession(chatId);
@@ -1524,6 +1628,7 @@ async function handleCommand(chatId, userMessage, gateway, llmClient) {
       "Context-Management:",
       `• Gesprächsverlauf: ${stats.historyEntries}/${stats.historyEntryLimit} Einträge, ` +
         `${stats.historyChars}/${stats.historyCharLimit} Zeichen`,
+      `• Es werden nur Einträge der letzten ${stats.retentionHours} Stunden berücksichtigt.`,
       `• Einzelne lange Einträge werden bei ${stats.perEntryCharLimit} Zeichen kompakt gekürzt.`,
       `• Systemregeln, Skills und Tool-Verträge: ${stats.systemContextChars} Zeichen; sie werden pro Turn frisch geladen.`,
       "• Tool-Ergebnisse eines laufenden Turns bleiben bis zur Antwort im Modellkontext; danach nur als begrenzter Verlauf.",
@@ -1609,13 +1714,13 @@ async function runAgent(
       }, 16000),
     ].join("\n")
     : route.message;
-  const history = getHistory(chatId);
-  history.push(
+  appendHistory(
+    chatId,
     source === "system"
       ? `System-Trigger: ${String(effectiveMessage).slice(0, 18000)}`
       : `Jannik: ${String(effectiveMessage).slice(0, 18000)}`
   );
-  trimHistory(chatId);
+  const history = getHistory(chatId);
   const turnImagePaths = extractImagePaths(effectiveMessage, 20);
   const images = turnImagePaths.slice(0, MAX_MODEL_IMAGES);
   const visuallyPresentedImages = new Set(images);
@@ -1820,7 +1925,7 @@ async function runAgent(
             confirmationInstruction,
           ].join("\n");
           await gateway.send(chatId, message);
-          history.push(`Agent: ${message}`);
+          appendHistory(chatId, `Agent: ${message}`);
           answered = true;
           break;
         }
@@ -1859,7 +1964,7 @@ async function runAgent(
           }
           toolTrace.push(compactToolTrace(toolName, args, result));
           const resultJson = boundedJson(result);
-          history.push(`Tool(${toolName}): ${boundedJson(result, MAX_HISTORY_ENTRY_CHARS)}`);
+          appendHistory(chatId, `Tool(${toolName}): ${boundedJson(result, MAX_HISTORY_ENTRY_CHARS)}`);
           messages.push({ role: "tool", tool_call_id: call.id, content: resultJson });
           if (toolName === "image_edit" && result?.outputPath) {
             if (typeof gateway.sendPhoto === "function") {
@@ -1870,7 +1975,10 @@ async function runAgent(
                   `Bearbeitete Vorschau: ${result.reason}\nOriginal bleibt unverändert.`
                 );
               } catch (previewError) {
-                history.push(`System: Bildbearbeitung war erfolgreich, aber die Telegram-Vorschau ist fehlgeschlagen: ${previewError.message}`);
+                appendHistory(
+                  chatId,
+                  `System: Bildbearbeitung war erfolgreich, aber die Telegram-Vorschau ist fehlgeschlagen: ${previewError.message}`
+                );
                 messages.push({
                   role: "user",
                   content: `Die lokale Bildbearbeitung war erfolgreich. Nur die Telegram-Vorschau konnte nicht gesendet werden: ${previewError.message}`,
@@ -1888,7 +1996,7 @@ async function runAgent(
         } catch (error) {
           toolTrace.push(compactToolTrace(toolName, args, null, error));
           const resultJson = JSON.stringify({ error: error.message });
-          history.push(`System: Tool "${toolName}" fehlgeschlagen: ${error.message}`);
+          appendHistory(chatId, `System: Tool "${toolName}" fehlgeschlagen: ${error.message}`);
           messages.push({ role: "tool", tool_call_id: call.id, content: resultJson });
         }
         continue;
@@ -1920,8 +2028,8 @@ async function runAgent(
           message,
         ].join("\n").slice(0, 12000);
       }
-      await gateway.send(chatId, message);
-      history.push(`Agent: ${message}`);
+      const delivery = await deliverAgentMessage(chatId, message, gateway);
+      appendHistory(chatId, `Agent: ${delivery.historyText}`);
       answered = true;
       break;
     }
@@ -1929,7 +2037,7 @@ async function runAgent(
     if (!answered) {
       const fallback = "Ich konnte die Aufgabe nicht zuverlässig abschließen. Es wurde keine bestätigungspflichtige Aktion ausgeführt.";
       await gateway.send(chatId, fallback);
-      history.push(`Agent: ${fallback}`);
+      appendHistory(chatId, `Agent: ${fallback}`);
     }
   } finally {
     saveSession(chatId);
@@ -2342,6 +2450,7 @@ if (require.main === module) {
 
 module.exports = {
   TOOLS,
+  appendHistory,
   assertImagePath,
   clearPending,
   completeModelTurn,
@@ -2350,7 +2459,10 @@ module.exports = {
   clientForRoute,
   checkListingLifecycle,
   describeAction,
+  describeListingValidationFailure,
+  deliverAgentMessage,
   executeTool,
+  getHistory,
   getPending,
   getRoutingMode,
   loadContext,
@@ -2359,6 +2471,7 @@ module.exports = {
   listingLifecyclePrompt,
   main,
   notifyUnreadConversations,
+  normalizeHistoryEntry,
   processTelegramUpdates,
   recordPublishedListing,
   recordRemovedListing,
@@ -2367,6 +2480,7 @@ module.exports = {
   runAgent,
   ensureAssetForListing,
   stagePending,
+  trimHistory,
   toolDefinitions,
   toolRequiresApproval,
   validateConfig,

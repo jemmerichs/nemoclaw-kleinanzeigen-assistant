@@ -31,6 +31,36 @@ test("household appliance requirements expose the current verified form values",
   );
 });
 
+test("lamps require the exact visible shipping field and values from the current form", () => {
+  const requirements = getCategoryRequirements(82);
+  assert.equal(requirements.verified, true);
+  assert.equal(requirements.category, "Haus & Garten > Lampen & Licht");
+  assert.deepEqual(requirements.requiredAttributes, [{
+    key: "lampen_licht.versand",
+    label: "Versand",
+    values: [
+      { value: "ja", label: "Versand möglich" },
+      { value: "nein", label: "Nur Abholung" },
+    ],
+  }]);
+
+  assert.throws(
+    () => validateCategoryAttributes(82, {
+      "lampen_licht.versand_s": "nein",
+    }, { requireRequired: true }),
+    /lampen_licht\.versand/
+  );
+  assert.throws(
+    () => validateCategoryAttributes(82, {
+      "lampen_licht.versand": "abholung",
+    }),
+    /Erlaubt: ja, nein/
+  );
+  assert.doesNotThrow(() => validateCategoryAttributes(82, {
+    "lampen_licht.versand": "nein",
+  }));
+});
+
 test("known category contracts fail before upload when required attributes are missing or guessed", () => {
   assert.throws(
     () => validateCategoryAttributes(176, {}, { requireRequired: true }),
@@ -72,6 +102,13 @@ test("unknown categories are reported without inventing a contract", () => {
   });
   assert.doesNotThrow(
     () => validateCategoryAttributes(999, {}, { requireRequired: true })
+  );
+  assert.throws(
+    () => validateCategoryAttributes(999, {}, {
+      requireRequired: true,
+      requireVerified: true,
+    }),
+    /noch nicht anhand des aktuellen Formulars verifiziert/
   );
 });
 

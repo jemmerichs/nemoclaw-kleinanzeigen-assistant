@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const TelegramGateway = require("../tools/telegram");
-const { mimeTypeFor, splitMessage } = require("../tools/telegram");
+const { mimeTypeFor, splitMessage, telegramPlainText } = require("../tools/telegram");
 
 test("long Telegram messages are split without losing content", () => {
   const original = `${"a".repeat(2500)}\n${"b".repeat(2500)}`;
@@ -20,6 +20,28 @@ test("photo MIME type follows the file extension", () => {
   assert.equal(mimeTypeFor("photo.jpg"), "image/jpeg");
 });
 
+test("Telegram output uses compact plain-text sections", () => {
+  const formatted = telegramPlainText([
+    "### Marktübersicht",
+    "---",
+    "- Standard-Sets: 6 € bis 10 €",
+    "",
+    "### Preisempfehlung",
+    "- 8 € VB",
+    "",
+    "Antworte mit `Go`.",
+  ].join("\n"));
+  assert.equal(formatted, [
+    "Marktübersicht:",
+    "- Standard-Sets: 6 € bis 10 €",
+    "",
+    "Preisempfehlung:",
+    "- 8 € VB",
+    "",
+    "Antworte mit Go.",
+  ].join("\n"));
+});
+
 test("send chunks messages and returns Telegram results", async () => {
   const gateway = new TelegramGateway("test-token");
   const calls = [];
@@ -31,6 +53,17 @@ test("send chunks messages and returns Telegram results", async () => {
   assert.equal(calls.length, 3);
   assert.equal(calls.every(call => call.method === "sendMessage" && call.body.chat_id === "42"), true);
   assert.equal(results.length, 3);
+});
+
+test("send normalizes model Markdown before calling Telegram", async () => {
+  const gateway = new TelegramGateway("test-token");
+  const calls = [];
+  gateway._request = async (_method, body) => {
+    calls.push(body.text);
+    return { message_id: 1 };
+  };
+  await gateway.send("42", "### Ergebnis\n---\nBitte mit `Go` bestätigen.");
+  assert.deepEqual(calls, ["Ergebnis:\nBitte mit Go bestätigen."]);
 });
 
 test("getUpdates advances the offset monotonically", async () => {
