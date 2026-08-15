@@ -70,11 +70,6 @@ function buildPlist(options = {}) {
   </dict>
   <key>RunAtLoad</key>
   <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
   <key>ProcessType</key>
   <string>Background</string>
   <key>ThrottleInterval</key>

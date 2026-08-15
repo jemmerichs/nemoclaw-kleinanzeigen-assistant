@@ -18,19 +18,18 @@ if command -v openshell >/dev/null 2>&1; then
 fi
 
 if [ "${NEMOCLAW_SERVICE:-}" = "launchd" ]; then
-  exec osascript \
-    -e "tell application \"Terminal\"" \
-    -e "  activate" \
-    -e "  set t to do script \"cd '$PROJECT_DIR' && exec caffeinate -i -s node workspace/agent.js\"" \
-    -e "  repeat" \
-    -e "    delay 3" \
-    -e "    try" \
-    -e "      get t" \
-    -e "    on error" \
-    -e "      exit repeat" \
-    -e "    end try" \
-    -e "  end repeat" \
-    -e "end tell"
+  # Sichtbares Terminal-Fenster mit dem Bot öffnen. Fenster schließen = Bot
+  # stoppt. Zum Neustart: npm run service:install oder service:restart.
+  osascript -e "tell application \"Terminal\" to do script \"cd '$PROJECT_DIR' && exec caffeinate -i -s node workspace/agent.js\"" >/dev/null 2>&1 || true
+  # Warten, bis der Bot erscheint, dann auf sein Ende warten.
+  for _ in $(seq 1 30); do
+    pgrep -f "workspace/agent.js" >/dev/null 2>&1 && break
+    sleep 1
+  done
+  while pgrep -f "workspace/agent.js" >/dev/null 2>&1; do
+    sleep 3
+  done
+  exit 0
 fi
 
 echo "[start] Starte nemoclaw Agent..."

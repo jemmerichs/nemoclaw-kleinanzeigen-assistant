@@ -151,7 +151,7 @@ The installer reruns the strict Telegram/runtime doctor, writes no secrets into 
 
 `scripts/start.sh` wraps the agent in `caffeinate -i -s`, so while the bot runs the Mac will not idle-sleep or system-sleep on AC power. This keeps the bot alive instead of stopping after a short idle timeout. The `caffeinate` process ends together with the agent, so it does not keep the Mac awake when the bot is stopped. Note that closing the lid or a manual sleep still suspends the Mac; for unattended 24/7 operation set Energy Saver to prevent sleep on AC power.
 
-When running as a launchd service, a visible Terminal window opens directly showing the bot. Closing that window kills the bot, but launchd's `KeepAlive` automatically restarts it (opening a fresh window).
+When running as a launchd service, a visible Terminal window opens directly showing the bot. Closing that window stops the bot. Run `npm run service:install` or `npm run service:restart` to start it again.
 
 To stop automatic operation:
 
