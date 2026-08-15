@@ -168,6 +168,22 @@ function status() {
   process.stdout.write(result.stdout);
 }
 
+function restart() {
+  assertMac();
+  const paths = servicePaths();
+  const domain = `gui/${process.getuid()}`;
+  const loaded = launchctl(["print", `${domain}/${LABEL}`], { tolerateFailure: true, inherit: false });
+  if (loaded.status !== 0) {
+    console.log(`○ ${LABEL} ist nicht geladen — installiere zuerst mit 'npm run service:install'.`);
+    process.exitCode = 1;
+    return;
+  }
+  launchctl(["kickstart", "-k", `${domain}/${LABEL}`]);
+  console.log(`✓ ${LABEL} wurde neu gestartet.`);
+  console.log(`Status: npm run service:status`);
+  console.log(`Logs: ${paths.stdoutPath} / ${paths.stderrPath}`);
+}
+
 function main(argv = process.argv.slice(2)) {
   const command = argv[0];
   if (command === "print") {
@@ -177,7 +193,8 @@ function main(argv = process.argv.slice(2)) {
   if (command === "install") return install();
   if (command === "uninstall") return uninstall();
   if (command === "status") return status();
-  throw new Error("Verwendung: launch-agent.js print|install|status|uninstall");
+  if (command === "restart") return restart();
+  throw new Error("Verwendung: launch-agent.js print|install|status|uninstall|restart");
 }
 
 if (require.main === module) {

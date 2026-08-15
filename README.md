@@ -144,9 +144,14 @@ After that foreground session is stable, install the included standard macOS use
 ```bash
 npm run service:install
 npm run service:status
+npm run service:restart
 ```
 
-The installer reruns the strict Telegram/runtime doctor, writes no secrets into the plist, embeds the current Node/project paths, starts the existing `scripts/start.sh`, restarts it after crashes, and stores private logs under `workspace/logs`. It runs only in the signed-in macOS user session; the Mac must remain awake and online. To stop automatic operation:
+The installer reruns the strict Telegram/runtime doctor, writes no secrets into the plist, embeds the current Node/project paths, starts the existing `scripts/start.sh`, restarts it after crashes, and stores private logs under `workspace/logs`. It runs only in the signed-in macOS user session; the Mac must remain awake and online.
+
+`scripts/start.sh` wraps the agent in `caffeinate -i -s`, so while the bot runs the Mac will not idle-sleep or system-sleep on AC power. This keeps the bot alive instead of stopping after a short idle timeout. The `caffeinate` process ends together with the agent, so it does not keep the Mac awake when the bot is stopped. Note that closing the lid or a manual sleep still suspends the Mac; for unattended 24/7 operation set Energy Saver to prevent sleep on AC power.
+
+To stop automatic operation:
 
 ```bash
 npm run service:uninstall
@@ -266,6 +271,7 @@ For an active but weak listing, ask the bot to analyze the asset. It reads the r
 | `npm run launch` / `npm start` | Strict preflight, optional OpenShell policy, then Telegram bot |
 | `npm run service:install` | Install/start the bot as a standard macOS user LaunchAgent |
 | `npm run service:status` | Inspect the loaded LaunchAgent |
+| `npm run service:restart` | Restart the running LaunchAgent (applies `start.sh`/config changes) |
 | `npm run service:uninstall` | Stop/remove only the LaunchAgent; retain bot data |
 | `npm test` | Offline regression suite |
 | `npm run check` | Syntax checks |

@@ -17,5 +17,16 @@ if command -v openshell >/dev/null 2>&1; then
   openshell policy set "$PROJECT_DIR/policies/kleinanzeigen-network.yaml"
 fi
 
+# Als launchd-Dienst ein sichtbares Terminal-Fenster öffnen, das die Logs
+# live anzeigt. Der Agent selbst läuft weiter als Hintergrundprozess, sodass
+# das Schließen des Fensters den Bot nicht stoppt.
+if [ "${NEMOCLAW_SERVICE:-}" = "launchd" ]; then
+  LOG_DIR="$PROJECT_DIR/workspace/logs"
+  osascript -e "tell application \"Terminal\" to do script \"tail -f '$LOG_DIR/launchd.stdout.log' '$LOG_DIR/launchd.stderr.log'\"" >/dev/null 2>&1 || true
+fi
+
 echo "[start] Starte nemoclaw Agent..."
-exec node workspace/agent.js
+# caffeinate hält den Mac wach, solange der Agent läuft, damit der Bot nicht
+# durch Idle-Sleep nach kurzer Zeit stoppt. -i verhindert Idle-Sleep, -s
+# verhindert System-Sleep am Netzteil. Der Prozess endet mit dem Agent.
+exec caffeinate -i -s node workspace/agent.js

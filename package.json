@@ -25,6 +25,7 @@
     "service:print": "node scripts/launch-agent.js print",
     "service:install": "node scripts/launch-agent.js install",
     "service:status": "node scripts/launch-agent.js status",
+    "service:restart": "node scripts/launch-agent.js restart",
     "service:uninstall": "node scripts/launch-agent.js uninstall",
     "smoke:auth-refresh": "node scripts/smoke-auth-refresh.js",
     "smoke:openrouter": "node scripts/test-openrouter.js",
