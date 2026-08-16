@@ -33,4 +33,5 @@ if [ "$(uname -s)" = "Darwin" ]; then
   fi
 fi
 
-echo "[setup] Fertig. Reihenfolge: npm run doctor | npm run login | npm run verify:account | npm run chat"
+echo "[setup] Fertig. Ziel-Mac-Reihenfolge: docs/TARGET_MAC_RUNBOOK.md"
+echo "[setup] Jetzt .env im Dry-run konfigurieren; danach Ziel-Mac-Sitzung importieren und die dokumentierten Smoke-Gates ausführen."

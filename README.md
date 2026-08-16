@@ -121,19 +121,23 @@ The tracked `workspace/memory/preferences.md` is loaded automatically. It curren
 
 ## Target Mac cutover
 
-Use this order on the Mac that will actually run the bot:
+The canonical, agent-readable deployment and migration procedure is [docs/TARGET_MAC_RUNBOOK.md](docs/TARGET_MAC_RUNBOOK.md). It includes the required manual browser handoff, forbidden session/profile transfers, dry-run acceptance gate, and service lifecycle.
+
+The minimum Kleinanzeigen sequence on the Mac that will actually run the bot is:
 
 ```bash
 git clone <repository-url>
 cd nemoclaw-kleinanzeigen
 npm run setup
 # Fill .env: OpenRouter, Telegram owner/token, listing defaults; keep dry-run.
-npm run login
-npm run login:vinted
-npm run verify
-npm run verify:account
+# In ordinary Chrome on this Mac, copy an authenticated "Meine Anzeigen" request as cURL.
+npm run login:clipboard
+npm run smoke:auth-refresh
+npm run smoke:ka
 npm run doctor:telegram
 ```
+
+`npm run setup` includes `npm ci`. Do not continue after a failed command, and do not copy marketplace cookies, tokens, or browser profiles from another Mac. If Vinted is enabled, also run `npm run login:vinted` and `npm run smoke:vinted` before the dry-run acceptance test.
 
 Then exercise one Telegram photo album in `NEMOCLAW_MODE=dry-run`; the full proposal should appear and `Go` must remain blocked. Only after that succeeds, set `NEMOCLAW_MODE=live` and start:
 
