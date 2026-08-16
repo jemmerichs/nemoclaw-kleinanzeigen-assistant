@@ -38,6 +38,7 @@ const {
   runAgent,
   selectTurnScope,
   stagePending,
+  verifiedCategoryInspectionFailureMessage,
   verifiedKaAccessFailureMessage,
 } = require("../workspace/agent");
 
@@ -143,6 +144,66 @@ test("agent does not ask the model to reinterpret a Kleinanzeigen access failure
     assert.equal(sent.length, 1);
     assert.match(sent[0], /keine verifizierte öffentliche IP/);
     assert.doesNotMatch(sent[0], /Telekom|München|Wohnanschluss|Stunden|Tag/);
+  } finally {
+    TOOLS.ka_get_category_requirements.fn = original;
+  }
+});
+
+test("incomplete category inspection cannot become an invented fallback category", async () => {
+  const original = TOOLS.ka_get_category_requirements.fn;
+  const sent = [];
+  let modelCalls = 0;
+  TOOLS.ka_get_category_requirements.fn = async () => {
+    const error = new Error("Versandfeld nicht vollständig erkannt");
+    error.code = "KA_CATEGORY_INSPECTION_INCOMPLETE";
+    error.categoryId = 87;
+    throw error;
+  };
+  const llmClient = {
+    model: "stub",
+    async complete() {
+      modelCalls++;
+      if (modelCalls > 1) throw new Error("Das Modell darf keine Ausweichkategorie erfinden.");
+      return {
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "incomplete-category-inspection",
+            type: "function",
+            function: {
+              name: "ka_get_category_requirements",
+              arguments: JSON.stringify({
+                categoryId: 87,
+                categoryPath: ["Haus & Garten", "Weiteres Haus & Garten"],
+                refresh: true,
+              }),
+            },
+          }],
+        },
+      };
+    },
+  };
+
+  try {
+    const result = await runAgent(
+      "category-inspection-failure",
+      "Prüfe Kategorie 87 erneut; kein Versand.",
+      { llmClient, gateway: { async send(_chatId, text) { sent.push(text); } } }
+    );
+    assert.equal(result.answered, true);
+    assert.equal(modelCalls, 1);
+    assert.equal(getPending("category-inspection-failure"), null);
+    assert.match(sent[0], /Kategorie 87.*unvollständig/s);
+    assert.match(sent[0], /nicht automatisch auf eine andere Kategorie/);
+    assert.doesNotMatch(sent[0], /Schlafzimmer|Wohnzimmer|Ausweichkategorie/);
+    assert.match(
+      verifiedCategoryInspectionFailureMessage(
+        "ka_get_category_requirements",
+        { code: "KA_CATEGORY_INSPECTION_INCOMPLETE", categoryId: 87 }
+      ),
+      /nichts veröffentlicht/
+    );
   } finally {
     TOOLS.ka_get_category_requirements.fn = original;
   }

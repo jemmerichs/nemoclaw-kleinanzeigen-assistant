@@ -1342,6 +1342,20 @@ function verifiedKaAccessFailureMessage(toolName, error) {
   ].join("\n\n");
 }
 
+function verifiedCategoryInspectionFailureMessage(toolName, error) {
+  if (
+    toolName !== "ka_get_category_requirements"
+    || error?.code !== "KA_CATEGORY_INSPECTION_INCOMPLETE"
+  ) return null;
+  const categoryId = Number(error?.categoryId);
+  return [
+    `Die aktuelle sichtbare Formularprüfung${Number.isInteger(categoryId) ? ` für Kategorie ${categoryId}` : ""} war unvollständig.`,
+    "Der von Kleinanzeigen verlangte Kategorievertrag bleibt gesperrt; es wird keine unverifizierte Anzeige vorgemerkt.",
+    "Ich weiche wegen dieses technischen Prüfproblems nicht automatisch auf eine andere Kategorie aus. " +
+      "Es wurde nichts veröffentlicht oder gespeichert.",
+  ].join("\n\n");
+}
+
 function getMode() {
   return normalizeMode(process.env.NEMOCLAW_MODE);
 }
@@ -2482,6 +2496,13 @@ async function runAgent(
           const resultJson = JSON.stringify({ error: error.message });
           appendHistory(chatId, `System: Tool "${toolName}" fehlgeschlagen: ${error.message}`);
           messages.push({ role: "tool", tool_call_id: call.id, content: resultJson });
+          const verifiedInspectionFailure = verifiedCategoryInspectionFailureMessage(toolName, error);
+          if (verifiedInspectionFailure) {
+            const delivery = await deliverAgentMessage(chatId, verifiedInspectionFailure, gateway);
+            appendHistory(chatId, `Agent: ${delivery.historyText}`);
+            answered = true;
+            break;
+          }
           const verifiedAccessFailure = verifiedKaAccessFailureMessage(toolName, error);
           if (verifiedAccessFailure) {
             const delivery = await deliverAgentMessage(chatId, verifiedAccessFailure, gateway);
@@ -3005,5 +3026,6 @@ module.exports = {
   toolDefinitions,
   toolRequiresApproval,
   validateConfig,
+  verifiedCategoryInspectionFailureMessage,
   verifiedKaAccessFailureMessage,
 };

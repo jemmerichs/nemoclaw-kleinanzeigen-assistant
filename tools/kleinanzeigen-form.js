@@ -147,6 +147,7 @@ async function openCategoryPicker(page) {
 async function selectCategoryPath(page, categoryPath, progress = {}) {
   const selectedTokens = [...(progress.selectedTokens || [])];
   const selectedLabels = [...(progress.selectedLabels || [])];
+  let categoryChosen = false;
   for (const label of categoryPath.slice(selectedLabels.length)) {
     const choices = await readCategoryChoices(page, selectedTokens);
     const matches = choices.filter(choice => choice.label === label);
@@ -171,14 +172,28 @@ async function selectCategoryPath(page, categoryPath, progress = {}) {
 
     const categoryInput = page.locator('input[name="categoryId"]');
     if (await categoryInput.count() === 1 && await categoryInput.inputValue()) {
-      return { complete: true, selectedPath: selectedLabels, selectedTokens };
+      if (selectedLabels.length !== categoryPath.length) {
+        throw new Error(
+          `Kategorie "${label}" ist bereits eine Endkategorie; der angegebene categoryPath enthält weitere Ebenen.`
+        );
+      }
+      categoryChosen = true;
+      break;
     }
   }
 
-  const continueButton = page.getByRole("button", { name: "Weiter", exact: true });
-  if (categoryPath.length && await continueButton.count() === 1) {
-    await continueButton.click();
-    await page.locator('input[name="categoryId"]').waitFor({ state: "attached", timeout: 10_000 });
+  if (categoryChosen) {
+    const formMarker = page.locator('input[name="title"]');
+    if (await formMarker.count() !== 1) {
+      const continueButton = page.getByRole("button", { name: "Weiter", exact: true });
+      if (await continueButton.count() !== 1) {
+        throw new Error(
+          "Die gewählte Endkategorie konnte im aktuellen Formular nicht übernommen werden."
+        );
+      }
+      await continueButton.click();
+      await formMarker.waitFor({ state: "attached", timeout: 10_000 });
+    }
     return { complete: true, selectedPath: selectedLabels, selectedTokens };
   }
 
@@ -459,4 +474,5 @@ module.exports = {
   inspectCategoryFormNow,
   normalizeCategoryPath,
   readCategoryChoices,
+  selectCategoryPath,
 };
