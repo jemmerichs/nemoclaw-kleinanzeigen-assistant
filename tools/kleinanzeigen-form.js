@@ -468,11 +468,13 @@ function inspectCategoryForm(args) {
 }
 
 module.exports = {
+  FORM_URL,
   browserCookiesFromHeader,
   ensureCategoryBrowserSession,
   inspectCategoryForm,
   inspectCategoryFormNow,
   normalizeCategoryPath,
+  openCategoryPicker,
   readCategoryChoices,
   selectCategoryPath,
 };

@@ -17,6 +17,7 @@ process.env.KA_COOKIES = "csrf-token=journey-test; registered_user=true";
 
 const agent = require("../workspace/agent");
 const store = require("../tools/adstore");
+const kleinanzeigenPublishForm = require("../tools/kleinanzeigen-publish-form");
 const { createSerialExecutor } = require("../workspace/runtime");
 
 test.after(() => {
@@ -29,8 +30,7 @@ test("album, publish, relist, and buyer reply form one exact-approval journey", 
   process.env.NEMOCLAW_MODE = "live";
   const ka = agent.requireAuthenticatedKa();
   const original = {
-    uploadImage: ka.uploadImage,
-    createAd: ka.createAd,
+    publishListingViaForm: kleinanzeigenPublishForm.publishListingViaForm,
     sendMessage: ka.sendMessage,
     search: agent.TOOLS.ka_search_ads.fn,
     bundles: agent.TOOLS.ka_get_ad_bundles.fn,
@@ -38,10 +38,8 @@ test("album, publish, relist, and buyer reply form one exact-approval journey", 
   const created = [];
   const outbound = [];
   let uploadCount = 0;
-  ka.uploadImage = async () => ({
-    imageUrl: `https://images.invalid/journey-${++uploadCount}.jpg`,
-  });
-  ka.createAd = async args => {
+  kleinanzeigenPublishForm.publishListingViaForm = async args => {
+    uploadCount += args.imagePaths.length;
     const id = `910000000${created.length + 1}`;
     created.push({ id, args });
     return { id, link: `https://www.kleinanzeigen.de/s-anzeige/${id}` };
@@ -309,8 +307,7 @@ test("album, publish, relist, and buyer reply form one exact-approval journey", 
     agent.clearPending("77");
     agent.clearPending("lifecycle-77");
     agent.clearPending("inbox-77");
-    ka.uploadImage = original.uploadImage;
-    ka.createAd = original.createAd;
+    kleinanzeigenPublishForm.publishListingViaForm = original.publishListingViaForm;
     ka.sendMessage = original.sendMessage;
     agent.TOOLS.ka_search_ads.fn = original.search;
     agent.TOOLS.ka_get_ad_bundles.fn = original.bundles;

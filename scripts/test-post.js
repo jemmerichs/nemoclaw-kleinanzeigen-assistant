@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * End-to-end post test for asset id=1 (Klettersteigset).
- * Uploads 2 images → creates ad → prints link → deletes ad.
+ * Publishes through the current visible form → prints link → deletes ad.
  * Dangerous manual diagnostic: briefly publishes a real ad.
  */
 
@@ -9,10 +9,9 @@
 
 require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") });
 
-const fs   = require("fs");
-const path = require("path");
-
 const KleinanzeigenClient = require("../tools/kleinanzeigen");
+const { applyCategoryPreferences } = require("../tools/kleinanzeigen-category-contracts");
+const { publishListingViaForm } = require("../tools/kleinanzeigen-publish-form");
 const { query: dbQuery }  = require("../tools/adstore");
 
 function requireExplicitMutationOptIn() {
@@ -42,21 +41,11 @@ async function run() {
   if (!cookies) throw new Error("KA_COOKIES fehlt. Bitte 'npm run login' ausführen.");
   const ka = new KleinanzeigenClient(cookies);
 
-  // ── 3. Upload images ───────────────────────────────────────────────────────
-  const imageUrls = [];
-  for (const filePath of imagePaths) {
-    console.log(`[test] Lade Bild hoch: ${path.basename(filePath)}`);
-    const buffer = fs.readFileSync(filePath);
-    const { imageId, imageUrl } = await ka.uploadImage(buffer, path.basename(filePath));
-    console.log(`[test] ✓ imageId=${imageId}  url=${imageUrl}`);
-    imageUrls.push(imageUrl);
-  }
-
   let kaId = null;
   try {
-    // ── 4. Create ad ─────────────────────────────────────────────────────────
+    // ── 3. Create ad through the browser form ────────────────────────────────
     console.log("[test] Erstelle Anzeige...");
-    const created = await ka.createAd({
+    const created = await publishListingViaForm({
       title:       asset.listing_name,
       description: asset.description,
       categoryId:  asset.category_id,
@@ -65,13 +54,13 @@ async function run() {
       zipCode:     process.env.KA_DEFAULT_ZIP_CODE,
       locationId:  process.env.KA_DEFAULT_LOCATION_ID,
       contactName: process.env.KA_CONTACT_NAME,
-      imageUrls,
-      attributes: {},
-    });
+      imagePaths,
+      attributes: applyCategoryPreferences(asset.category_id, {}),
+    }, { cookieHeader: ka.cookies });
     kaId = created.id;
     console.log(`[test] ✓ Anzeige erstellt: id=${kaId}  link=${created.link}`);
 
-    // ── 5. Write to DB ───────────────────────────────────────────────────────
+    // ── 4. Write to DB ───────────────────────────────────────────────────────
     dbQuery({
       sql: `INSERT INTO ka_listings (asset_id, ka_id, ka_link, price_cents, status, posted_at)
             VALUES (?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now'))`,

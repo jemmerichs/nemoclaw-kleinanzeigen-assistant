@@ -17,6 +17,7 @@ const {
   validateCategoryAttributes,
 } = require("../tools/kleinanzeigen-category-contracts");
 const { inspectCategoryForm } = require("../tools/kleinanzeigen-form");
+const kleinanzeigenPublishForm = require("../tools/kleinanzeigen-publish-form");
 const VintedClient = require("../tools/vinted");
 const { PROFILE_DIR: VINTED_PROFILE_DIR } = require("../tools/vinted-auth");
 const { OpenRouterClient } = require("../tools/openrouter");
@@ -879,13 +880,16 @@ const TOOLS = {
     prepare: prepareCreateArgs,
     fn: async rawArgs => {
       const args = prepareCreateArgs(rawArgs);
-      const imageUrls = await uploadImages(args.imagePaths || []);
-      const result = await requireAuthenticatedKa().createAd({ ...args, imageUrls });
+      const client = requireAuthenticatedKa();
+      const result = await kleinanzeigenPublishForm.publishListingViaForm(
+        args,
+        { cookieHeader: client.cookies }
+      );
       try {
         const assetId = recordPublishedListing(args, result);
-        return { ...result, assetId, imageCount: imageUrls.length };
+        return { ...result, assetId, imageCount: args.imagePaths.length };
       } catch (error) {
-        return { ...result, imageCount: imageUrls.length, localTrackingError: error.message };
+        return { ...result, imageCount: args.imagePaths.length, localTrackingError: error.message };
       }
     },
   },
@@ -1997,7 +2001,10 @@ async function handleApproval(chatId, gateway) {
         console.error(`[agent] Kategorievertrag konnte nicht gesperrt werden: ${invalidationError.message}`);
       }
     }
-    const ambiguousExternalFailure = externalWriteStarted && !dryRunBlocked && !categoryValidation;
+    const ambiguousExternalFailure = externalWriteStarted
+      && error.definitiveNoWrite !== true
+      && !dryRunBlocked
+      && !categoryValidation;
     const marketplace = action.tool.startsWith("vinted_") ? "Vinted" : "Kleinanzeigen";
     const message = categoryValidation
       ? describeListingValidationFailure(action, error, {

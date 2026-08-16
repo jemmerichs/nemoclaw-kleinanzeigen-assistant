@@ -19,8 +19,8 @@ Do not scrape credentials from an ordinary browser profile. Prefer `npm run logi
 | Search public ads | Kleinanzeigen search HTML | none |
 | Read own ads | `/m-meine-anzeigen-verwalten.json?sort=DEFAULT` | cookie |
 | Read/save/delete drafts | `/users/{uid}/ad-drafts...` | cookie + CSRF for writes |
-| Upload images | `/p-bild-hochladen.html` | cookie + CSRF |
-| Publish a listing | `/_actions/postListingWeb.submitListing/` | cookie + CSRF |
+| Upload images for drafts | `/p-bild-hochladen.html` | cookie + CSRF |
+| Publish a listing | Current visible `PostListingForm` in the dedicated native Chrome profile | browser session |
 | Delete a listing | `/m-anzeigen-loeschen.json` | cookie + CSRF |
 | Read/send conversations | gateway messagebox API | bearer |
 | Read ad bundles | gateway private bundles API | bearer |
@@ -29,5 +29,5 @@ Do not scrape credentials from an ordinary browser profile. Prefer `npm run logi
 
 - Public search has a live read-only smoke test: `npm run smoke:ka`.
 - The current browser form exposes a 65-character title, 4,000-character description, five-digit German postcode, 30-character contact name, and up to 20 images of at most 12 MB each; the client enforces those bounds.
-- Authenticated read paths and every write format must be rechecked after `npm run login`.
+- Authenticated read paths and every direct write format must be rechecked after `npm run login`. Listing publication deliberately uses the current browser form so its category, shipping, image, and hidden fields stay one coherent contract.
 - Never migrate an operation to a guessed gateway endpoint. Capture and verify current behavior first.

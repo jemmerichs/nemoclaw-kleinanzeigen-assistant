@@ -8,7 +8,7 @@ const CACHE_FILE = process.env.NEMOCLAW_KA_CATEGORY_CACHE_FILE
   ? path.resolve(process.env.NEMOCLAW_KA_CATEGORY_CACHE_FILE)
   : path.resolve(__dirname, "../.ka-category-contracts.json");
 const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
-const CONTRACT_INSPECTION_VERSION = 2;
+const CONTRACT_INSPECTION_VERSION = 3;
 
 const CATEGORY_CONTRACTS = new Map([
   [82, {
@@ -78,6 +78,7 @@ function contractFingerprint(contract) {
   if (!contract) return "";
   const value = {
     categoryId: normalizeCategoryId(contract.categoryId),
+    inspectionVersion: Number(contract.inspectionVersion) || 0,
     requiredAttributes: Array.isArray(contract.requiredAttributes)
       ? contract.requiredAttributes
       : [],

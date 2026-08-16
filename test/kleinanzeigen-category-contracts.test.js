@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -165,7 +166,7 @@ test("a newly inspected category is sanitized, cached, and enforced without sour
     const { result, rejected } = JSON.parse(output);
     assert.equal(result.verified, true);
     assert.equal(result.categoryId, 321);
-    assert.equal(result.inspectionVersion, 2);
+    assert.equal(result.inspectionVersion, 3);
     assert.deepEqual(result.requiredAttributes[0].values, [
       { value: "regal", label: "Regal" },
     ]);
@@ -248,9 +249,63 @@ test("server-rejected category contracts stay quarantined until a materially rep
     assert.match(result.before.instruction, /Versandfeld/);
     assert.equal(result.unchangedRejected, true);
     assert.equal(result.repaired.verified, undefined);
-    assert.equal(result.repaired.inspectionVersion, 2);
+    assert.equal(result.repaired.inspectionVersion, 3);
     assert.deepEqual(result.preferred, { "haus_garten.versand": "nein" });
     assert.equal(result.locationOnly.verified, true);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("the browser-form transport upgrade releases a legacy writer quarantine after a fresh inspection", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-category-transport-upgrade-"));
+  const cacheFile = path.join(directory, "contracts.json");
+  const requiredAttributes = [{
+    key: "sonstiges.versand",
+    label: "Versand",
+    values: [
+      { value: "ja", label: "Versand möglich" },
+      { value: "nein", label: "Nur Abholung" },
+    ],
+  }];
+  const legacyFingerprint = crypto.createHash("sha256").update(JSON.stringify({
+    categoryId: 87,
+    requiredAttributes,
+  })).digest("hex");
+  fs.writeFileSync(cacheFile, JSON.stringify({
+    87: {
+      categoryId: 87,
+      category: "Haus & Garten > Weiteres Haus & Garten",
+      inspectionVersion: 2,
+      verifiedAt: new Date().toISOString(),
+      requiredAttributes,
+      invalidatedAt: new Date().toISOString(),
+      rejectedContractFingerprint: legacyFingerprint,
+      attributeRejected: true,
+      requiredCapabilities: ["shipping"],
+    },
+  }), { mode: 0o600 });
+  const modulePath = require.resolve("../tools/kleinanzeigen-category-contracts");
+  const script = `
+    const contracts = require(${JSON.stringify(modulePath)});
+    const refreshed = contracts.rememberCategoryRequirements({
+      categoryId: 87,
+      category: "Haus & Garten > Weiteres Haus & Garten",
+      requiredAttributes: ${JSON.stringify(requiredAttributes)}
+    });
+    process.stdout.write(JSON.stringify({
+      refreshed,
+      current: contracts.getCategoryRequirements(87)
+    }));
+  `;
+  try {
+    const result = JSON.parse(execFileSync(process.execPath, ["-e", script], {
+      encoding: "utf8",
+      env: { ...process.env, NEMOCLAW_KA_CATEGORY_CACHE_FILE: cacheFile },
+    }));
+    assert.equal(result.refreshed.inspectionVersion, 3);
+    assert.equal(result.current.verified, true);
+    assert.deepEqual(result.current.requiredAttributes, requiredAttributes);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

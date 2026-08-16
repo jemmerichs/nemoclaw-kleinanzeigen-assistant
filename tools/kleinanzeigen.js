@@ -2,7 +2,6 @@
 "use strict";
 
 const https  = require("https");
-const crypto = require("crypto");
 const { validateCategoryAttributes } = require("./kleinanzeigen-category-contracts");
 
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -122,21 +121,62 @@ function clientError(code, message, status = null) {
 }
 
 function parseListingValidationErrors(parsed) {
-  if (!Array.isArray(parsed) || !parsed[0] || typeof parsed[0] !== "object") return [];
-  const errorIndex = parsed[0].errors;
-  const references = Number.isInteger(errorIndex) && Array.isArray(parsed[errorIndex])
-    ? parsed[errorIndex]
-    : [];
-  return references.flatMap(reference => {
-    const entry = Number.isInteger(reference) ? parsed[reference] : reference;
-    if (!entry || typeof entry !== "object") return [];
-    const rawField = Number.isInteger(entry.field) ? parsed[entry.field] : entry.field;
-    const rawMessage = Number.isInteger(entry.message) ? parsed[entry.message] : entry.message;
+  const errors = [];
+  const add = (rawField, rawMessage) => {
     const field = String(rawField || "").trim().slice(0, 300);
     const message = String(rawMessage || "").trim().slice(0, 500);
-    if (!field && !message) return [];
-    return [{ field, message }];
-  });
+    if (!field && !message) return;
+    if (!errors.some(entry => entry.field === field && entry.message === message)) {
+      errors.push({ field, message });
+    }
+  };
+
+  if (Array.isArray(parsed) && parsed[0] && typeof parsed[0] === "object") {
+    const errorIndex = parsed[0].errors;
+    const references = Number.isInteger(errorIndex) && Array.isArray(parsed[errorIndex])
+      ? parsed[errorIndex]
+      : [];
+    for (const reference of references) {
+      const entry = Number.isInteger(reference) ? parsed[reference] : reference;
+      if (!entry || typeof entry !== "object") continue;
+      const rawField = Number.isInteger(entry.field) ? parsed[entry.field] : entry.field;
+      const rawMessage = Number.isInteger(entry.message) ? parsed[entry.message] : entry.message;
+      add(rawField, rawMessage);
+    }
+  }
+
+  let visited = 0;
+  const visit = (value, depth = 0) => {
+    if (depth > 8 || visited++ > 300 || value === null || value === undefined) return;
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry, depth + 1);
+      return;
+    }
+    if (typeof value !== "object") return;
+    const field = value.field ?? value.propertyPath ?? value.path ?? value.fieldName;
+    const message = value.message ?? value.defaultMessage ?? value.errorMessage;
+    if (
+      field !== undefined
+      && message !== undefined
+      && !Number.isInteger(field)
+      && !Number.isInteger(message)
+    ) add(field, message);
+    for (const key of ["errors", "validationErrors", "violations", "fieldErrors"]) {
+      const nested = value[key];
+      if (!nested || Array.isArray(nested) || typeof nested !== "object") continue;
+      for (const [nestedField, nestedMessage] of Object.entries(nested)) {
+        if (typeof nestedMessage === "string") add(nestedField, nestedMessage);
+        else if (Array.isArray(nestedMessage)) {
+          for (const entry of nestedMessage) {
+            if (typeof entry === "string") add(nestedField, entry);
+          }
+        }
+      }
+    }
+    for (const entry of Object.values(value)) visit(entry, depth + 1);
+  };
+  visit(parsed);
+  return errors.slice(0, 20);
 }
 
 function listingValidationError(parsed, categoryId, status = null) {
@@ -680,20 +720,6 @@ class KleinanzeigenClient {
     return csrf;
   }
 
-  _buildMultipartTextBody(fields) {
-    const boundary = "----KABoundary" + Math.random().toString(36).slice(2);
-    const parts = [];
-    for (const [name, value] of Object.entries(fields)) {
-      if (value === null || value === undefined) continue;
-      const fieldName = String(name).replace(/["\r\n]/g, "_");
-      parts.push(Buffer.from(
-        `--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"\r\n\r\n${value}\r\n`
-      ));
-    }
-    const body = Buffer.concat([...parts, Buffer.from(`--${boundary}--\r\n`)]);
-    return { boundary, body };
-  }
-
   async uploadImage(fileBuffer, filename = "photo.jpg", mimeType = "image/jpeg", { forDraft = false } = {}) {
     if (!Buffer.isBuffer(fileBuffer) || fileBuffer.length === 0) throw new Error("uploadImage: Bilddatei ist leer.");
     if (fileBuffer.length > 12 * 1024 * 1024) throw new Error("uploadImage: Bild ist größer als 12 MB.");
@@ -724,75 +750,6 @@ class KleinanzeigenClient {
     const imageUrl = String(img.largeUrl || img.largeTeaserUrl || parsed.url || parsed.imageUrl || parsed.link || "");
     if (!imageId && !imageUrl) throw new Error(`uploadImage: kein imageId/url in Antwort (${status}): ${JSON.stringify(parsed).slice(0, 200)}`);
     return { imageId, imageUrl, status };
-  }
-
-  /** Only after explicit "Go" from Jannik. price in EUR. imageUrls from uploadImage. */
-  async createAd({ title, description, categoryId, price, priceType = "NEGOTIABLE", zipCode, locationId, contactName, imageUrls = [], attributes = {} }) {
-    this._requireCookieSession();
-    const normalizedTitle = String(title || "").trim();
-    const normalizedDescription = String(description || "").trim();
-    if (!normalizedTitle) throw new Error("createAd: Titel fehlt.");
-    if (normalizedTitle.length > 65) throw new Error("createAd: Titel darf maximal 65 Zeichen lang sein.");
-    if (!normalizedDescription) throw new Error("createAd: Beschreibung fehlt.");
-    if (normalizedDescription.length > 4000) throw new Error("createAd: Beschreibung darf maximal 4000 Zeichen lang sein.");
-    if (!Number.isInteger(Number(categoryId)) || Number(categoryId) <= 0) throw new Error("createAd: categoryId ist ungültig.");
-    if (!Number.isInteger(Number(price)) || Number(price) < 0) throw new Error("createAd: Preis muss eine ganze EUR-Zahl sein.");
-    if (zipCode && !/^\d{5}$/.test(String(zipCode))) throw new Error("createAd: PLZ muss aus 5 Ziffern bestehen.");
-    if (String(contactName || "").length > 30) throw new Error("createAd: Kontaktname darf maximal 30 Zeichen lang sein.");
-    const normalizedPriceType = validatePriceType(priceType);
-    const normalizedImageUrls = validateImageUrls(imageUrls);
-    const normalizedAttributes = validateAttributes(attributes);
-    validateCategoryAttributes(categoryId, normalizedAttributes, { requireRequired: true });
-    const csrfToken = this._extractCsrfToken();
-    if (!csrfToken) throw new Error("CSRF-TOKEN nicht in Cookies. Bitte 'node scripts/login.js' ausführen.");
-
-    const fields = {
-      adType: "OFFER", title: normalizedTitle, description: normalizedDescription,
-      categoryId: String(categoryId), priceAmount: String(Math.round(price)),
-      priceType: normalizedPriceType, buyNowEligible: "false",
-      zipCode: zipCode || "", locationId: locationId || "", contactName: contactName || "",
-      adDraftUuid: "", adId: "", posterType: "PRIVATE",
-      trackingId: crypto.randomUUID(), postAdWenkseSessionId: crypto.randomUUID(),
-      _csrf: csrfToken,
-    };
-    for (const [key, value] of Object.entries(normalizedAttributes)) fields[`attributeMap[${key}]`] = value;
-    normalizedImageUrls.forEach((url, i) => { fields[`adImages[${i}].url`] = url; });
-
-    const { boundary, body } = this._buildMultipartTextBody(fields);
-    const { status, body: parsed } = await this._csrfWwwRequest("POST", "/_actions/postListingWeb.submitListing/", body, {
-      "Content-Type": `multipart/form-data; boundary=${boundary}`,
-      "Referer":      "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
-    });
-
-    const validationError = listingValidationError(parsed, categoryId, status);
-    if (validationError) throw validationError;
-    if (status !== 200 && status !== 201) {
-      const error = new Error(
-        status >= 500
-          ? `createAd: Kleinanzeigen meldete einen internen Serverfehler (HTTP ${status}).`
-          : `createAd: Kleinanzeigen hat die Anfrage abgelehnt (HTTP ${status}).`
-      );
-      error.code = status >= 500 ? "KA_CREATE_SERVER_ERROR" : "KA_CREATE_REJECTED";
-      error.status = status;
-      throw error;
-    }
-
-    // Response is an indexed array — [{"success":1,"redirectUrl":2}, true, "/...?adId=123"]
-    // or on error: [{"errors":1}, [...], ...]
-    if (Array.isArray(parsed)) {
-      const meta = parsed[0];
-      if (meta?.redirectUrl !== undefined) {
-        const redirectUrl = String(parsed[meta.redirectUrl] || "");
-        const adId = (redirectUrl.match(/[?&]adId=(\d+)/) || [])[1] || "";
-        if (!adId) throw new Error(`createAd: keine Anzeigen-ID in Antwort: ${redirectUrl.slice(0, 200)}`);
-        return { id: adId, link: `https://www.kleinanzeigen.de/s-anzeige/${adId}` };
-      }
-    }
-    // fallback: plain JSON
-    const adUrl = parsed.url || parsed.adLink || parsed.link || "";
-    const adId  = String(parsed.id || parsed.adId || (adUrl.match(/\/(\d+)(?:[/?]|$)/) || [])[1] || "");
-    if (!adId && !adUrl) throw new Error(`createAd: unerwartetes Antwortformat: ${JSON.stringify(parsed).slice(0, 300)}`);
-    return { id: adId, link: adUrl || `https://www.kleinanzeigen.de/s-anzeige/${adId}` };
   }
 
   async deleteAd(adId) {
@@ -881,5 +838,6 @@ class KleinanzeigenClient {
 
 module.exports = KleinanzeigenClient;
 module.exports.accessResponseError = accessResponseError;
+module.exports.listingValidationError = listingValidationError;
 module.exports.mergeCookieHeader = mergeCookieHeader;
 module.exports.parseListingValidationErrors = parseListingValidationErrors;

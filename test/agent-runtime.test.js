@@ -452,6 +452,79 @@ test("server-rejected category contract blocks a repeated empty-attribute propos
   }
 });
 
+test("a browser pre-submit gate failure is definitive and never reported as an uncertain write", async () => {
+  const previous = {
+    mode: process.env.NEMOCLAW_MODE,
+    zipCode: process.env.KA_DEFAULT_ZIP_CODE,
+    locationId: process.env.KA_DEFAULT_LOCATION_ID,
+    contactName: process.env.KA_CONTACT_NAME,
+  };
+  process.env.NEMOCLAW_MODE = "live";
+  process.env.KA_DEFAULT_ZIP_CODE = "80636";
+  process.env.KA_DEFAULT_LOCATION_ID = "16360";
+  process.env.KA_CONTACT_NAME = "Jannik";
+  categoryContracts.rememberCategoryRequirements({
+    categoryId: 655,
+    category: "Haus & Garten > Test",
+    requiredAttributes: [],
+  });
+  const originalCreate = TOOLS.ka_create_ad.fn;
+  TOOLS.ka_create_ad.fn = async () => {
+    const error = new Error("Kategorie wurde im sichtbaren Formular nicht übernommen.");
+    error.code = "KA_BROWSER_FORM_INCOMPLETE";
+    error.definitiveNoWrite = true;
+    throw error;
+  };
+  const sent = [];
+  const gateway = { async send(_chatId, text) { sent.push(text); } };
+  const llmClient = {
+    model: "stub",
+    async complete() {
+      return {
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "browser-pre-submit",
+            type: "function",
+            function: {
+              name: "ka_create_ad",
+              arguments: JSON.stringify({
+                title: "Möbelerhöher",
+                description: "Sechs unbenutzte Möbelerhöher.",
+                categoryId: 655,
+                price: 6,
+                priceType: "FIXED",
+                imagePaths: [],
+              }),
+            },
+          }],
+        },
+      };
+    },
+  };
+
+  try {
+    await runAgent("browser-pre-submit", "Bereite die Anzeige vor.", { llmClient, gateway });
+    await runAgent("browser-pre-submit", "Go", { llmClient: null, gateway });
+    assert.equal(getPending("browser-pre-submit"), null);
+    assert.match(sent[1], /vor der externen Ausführung blockiert/);
+    assert.match(sent[1], /nicht ausgeführt/);
+    assert.doesNotMatch(sent[1], /Ausgang.*unklar|nicht automatisch wiederholen/i);
+  } finally {
+    TOOLS.ka_create_ad.fn = originalCreate;
+    clearPending("browser-pre-submit");
+    if (previous.mode === undefined) delete process.env.NEMOCLAW_MODE;
+    else process.env.NEMOCLAW_MODE = previous.mode;
+    if (previous.zipCode === undefined) delete process.env.KA_DEFAULT_ZIP_CODE;
+    else process.env.KA_DEFAULT_ZIP_CODE = previous.zipCode;
+    if (previous.locationId === undefined) delete process.env.KA_DEFAULT_LOCATION_ID;
+    else process.env.KA_DEFAULT_LOCATION_ID = previous.locationId;
+    if (previous.contactName === undefined) delete process.env.KA_CONTACT_NAME;
+    else process.env.KA_CONTACT_NAME = previous.contactName;
+  }
+});
+
 test("dry-run still allows an explicitly approved local inventory cleanup", async () => {
   const inserted = store.query({
     sql: "INSERT INTO assets (name,image_paths) VALUES (?,?)",
