@@ -38,32 +38,38 @@ async function run() {
   const { imageId, imageUrl } = await ka.uploadImage(buffer, path.basename(TEST_IMAGE), "image/jpeg", { forDraft: true });
   console.log(`[test] ✓ imageId=${imageId}  url=${imageUrl}`);
 
-  // ── 2. Save draft with image ───────────────────────────────────────────────
-  console.log("[test] Speichere Entwurf mit Bild...");
-  const { draftId, imageCount } = await ka.saveDraft({
-    title:       "Testentwurf mit Bild",
-    description: "Automatischer Test — wird sofort gelöscht.",
-    categoryId:  null,
-    imageUrls:   [imageUrl],
-  });
-  console.log(`[test] ✓ Entwurf gespeichert: draftId=${draftId}  imageCount=${imageCount}`);
+  let draftId = null;
+  try {
+    // ── 2. Save draft with image ─────────────────────────────────────────────
+    console.log("[test] Speichere Entwurf mit Bild...");
+    const savedDraft = await ka.saveDraft({
+      title:       "Testentwurf mit Bild",
+      description: "Automatischer Test — wird sofort gelöscht.",
+      categoryId:  null,
+      imageUrls:   [imageUrl],
+    });
+    draftId = savedDraft.draftId;
+    console.log(`[test] ✓ Entwurf gespeichert: draftId=${draftId}  imageCount=${savedDraft.imageCount}`);
 
-  // ── 3. Verify image is attached ────────────────────────────────────────────
-  console.log("[test] Prüfe Entwürfe...");
-  const drafts = await ka.getDrafts();
-  const saved  = drafts.find(d => String(d.id) === String(draftId));
-  if (!saved) throw new Error(`Entwurf ${draftId} nicht in Liste gefunden.`);
-  console.log(`[test] ✓ Entwurf gefunden: "${saved.title}"  images=${saved.images}`);
-  if (saved.images < 1) {
-    console.warn("[test] ⚠ Entwurf hat 0 Bilder — KA hat Bild-Anhang ignoriert.");
-  } else {
-    console.log("[test] ✓ Bild erfolgreich am Entwurf gespeichert.");
+    // ── 3. Verify image is attached ──────────────────────────────────────────
+    console.log("[test] Prüfe Entwürfe...");
+    const drafts = await ka.getDrafts();
+    const saved  = drafts.find(d => String(d.id) === String(draftId));
+    if (!saved) throw new Error(`Entwurf ${draftId} nicht in Liste gefunden.`);
+    console.log(`[test] ✓ Entwurf gefunden: "${saved.title}"  images=${saved.images}`);
+    if (saved.images < 1) {
+      console.warn("[test] ⚠ Entwurf hat 0 Bilder — KA hat Bild-Anhang ignoriert.");
+    } else {
+      console.log("[test] ✓ Bild erfolgreich am Entwurf gespeichert.");
+    }
+  } finally {
+    if (draftId) {
+      console.log(`[test] Lösche Entwurf ${draftId}...`);
+      await ka.deleteDraft(draftId);
+      console.log("[test] ✓ Entwurf gelöscht.");
+    }
   }
-
-  // ── 4. Cleanup ─────────────────────────────────────────────────────────────
-  console.log(`[test] Lösche Entwurf ${draftId}...`);
-  await ka.deleteDraft(draftId);
-  console.log("[test] ✓ Entwurf gelöscht. Test abgeschlossen.");
+  console.log("[test] ✓ Test abgeschlossen.");
 }
 
 run().catch(e => { console.error("[test] Fehler:", e.message); process.exit(1); });

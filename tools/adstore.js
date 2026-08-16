@@ -9,6 +9,23 @@ const { readProvenance } = require("./image");
 const DB_PATH = process.env.NEMOCLAW_DB_PATH || path.join(__dirname, "../workspace/ads.db");
 let _db = null;
 
+function addMissingColumns(database, table, definitions) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) {
+    throw new Error(`Ungültiger Tabellenname in Migration: ${table}`);
+  }
+  const existing = new Set(
+    database.pragma(`table_info(${table})`).map(column => String(column.name))
+  );
+  for (const [column, definition] of Object.entries(definitions)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(column)) {
+      throw new Error(`Ungültiger Spaltenname in Migration: ${column}`);
+    }
+    if (existing.has(column)) continue;
+    database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    existing.add(column);
+  }
+}
+
 function getDb() {
   if (_db) return _db;
   _db = new Database(DB_PATH);
@@ -93,19 +110,27 @@ function getDb() {
     CREATE INDEX IF NOT EXISTS idx_ka_snapshots_listing ON ka_snapshots(listing_id);
     CREATE INDEX IF NOT EXISTS idx_asset_images_asset ON asset_images(asset_id);
   `);
-  // Migrations — idempotent: SQLite throws if column already exists, safe to swallow
-  try { _db.exec("ALTER TABLE assets ADD COLUMN image_paths TEXT"); } catch (_) {}
-  try { _db.exec("ALTER TABLE assets ADD COLUMN ka_draft_id TEXT"); } catch (_) {}
-  try { _db.exec("ALTER TABLE assets ADD COLUMN vinted_draft_id TEXT"); } catch (_) {}
-  try { _db.exec("ALTER TABLE assets ADD COLUMN last_listing_payload_json TEXT"); } catch (_) {}
-  try { _db.exec("ALTER TABLE ka_listings ADD COLUMN payload_json TEXT"); } catch (_) {}
-  try { _db.exec("ALTER TABLE ka_listings ADD COLUMN last_seen_at TEXT"); } catch (_) {}
-  try { _db.exec("ALTER TABLE ka_listings ADD COLUMN missing_checks INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
-  try { _db.exec("ALTER TABLE ka_listings ADD COLUMN remote_status TEXT"); } catch (_) {}
-  try { _db.exec("ALTER TABLE ka_listings ADD COLUMN alerted_state TEXT"); } catch (_) {}
-  try { _db.exec("ALTER TABLE ka_listings ADD COLUMN pending_event_json TEXT"); } catch (_) {}
-  try { _db.exec("ALTER TABLE ka_listings ADD COLUMN marketplace TEXT NOT NULL DEFAULT 'kleinanzeigen'"); } catch (_) {}
-  try { _db.exec("ALTER TABLE ka_listings ADD COLUMN external_id TEXT"); } catch (_) {}
+  // Inspect the schema explicitly so only genuinely missing columns are added.
+  // Unexpected SQLite errors must abort startup instead of leaving a partial schema hidden.
+  const migrateColumns = _db.transaction(() => {
+    addMissingColumns(_db, "assets", {
+      image_paths: "TEXT",
+      ka_draft_id: "TEXT",
+      vinted_draft_id: "TEXT",
+      last_listing_payload_json: "TEXT",
+    });
+    addMissingColumns(_db, "ka_listings", {
+      payload_json: "TEXT",
+      last_seen_at: "TEXT",
+      missing_checks: "INTEGER NOT NULL DEFAULT 0",
+      remote_status: "TEXT",
+      alerted_state: "TEXT",
+      pending_event_json: "TEXT",
+      marketplace: "TEXT NOT NULL DEFAULT 'kleinanzeigen'",
+      external_id: "TEXT",
+    });
+  });
+  migrateColumns();
   _db.exec(`
     UPDATE ka_listings
     SET external_id=ka_id

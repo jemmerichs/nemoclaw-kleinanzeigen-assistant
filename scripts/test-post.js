@@ -52,50 +52,58 @@ async function run() {
     imageUrls.push(imageUrl);
   }
 
-  // ── 4. Create ad ───────────────────────────────────────────────────────────
-  console.log("[test] Erstelle Anzeige...");
-  const { id: kaId, link } = await ka.createAd({
-    title:       asset.listing_name,
-    description: asset.description,
-    categoryId:  asset.category_id,
-    price:       asset.last_price_cents / 100,
-    priceType:   "NEGOTIABLE",
-    zipCode:     process.env.KA_DEFAULT_ZIP_CODE,
-    locationId:  process.env.KA_DEFAULT_LOCATION_ID,
-    contactName: process.env.KA_CONTACT_NAME,
-    imageUrls,
-    attributes: {},
-  });
+  let kaId = null;
+  try {
+    // ── 4. Create ad ─────────────────────────────────────────────────────────
+    console.log("[test] Erstelle Anzeige...");
+    const created = await ka.createAd({
+      title:       asset.listing_name,
+      description: asset.description,
+      categoryId:  asset.category_id,
+      price:       asset.last_price_cents / 100,
+      priceType:   "NEGOTIABLE",
+      zipCode:     process.env.KA_DEFAULT_ZIP_CODE,
+      locationId:  process.env.KA_DEFAULT_LOCATION_ID,
+      contactName: process.env.KA_CONTACT_NAME,
+      imageUrls,
+      attributes: {},
+    });
+    kaId = created.id;
+    console.log(`[test] ✓ Anzeige erstellt: id=${kaId}  link=${created.link}`);
 
-  console.log(`[test] ✓ Anzeige erstellt: id=${kaId}  link=${link}`);
-
-  // ── 5. Write to DB ─────────────────────────────────────────────────────────
-  dbQuery({
-    sql: `INSERT INTO ka_listings (asset_id, ka_id, ka_link, price_cents, status, posted_at)
-          VALUES (?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now'))`,
-    params: [asset.id, kaId, link, asset.last_price_cents, "active"],
-  });
-  dbQuery({
-    sql: `UPDATE assets SET has_active_listing=1, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?`,
-    params: [asset.id],
-  });
-  console.log("[test] ✓ DB aktualisiert.");
-
-  // ── 6. Delete ad (test cleanup) ────────────────────────────────────────────
-  console.log(`[test] Lösche Testanzeige ${kaId}...`);
-  const del = await ka.deleteAd(kaId);
-  console.log(`[test] ✓ Gelöscht (status=${del.status})`);
-
-  // Mark listing as removed in DB
-  dbQuery({
-    sql: `UPDATE ka_listings SET status='removed' WHERE ka_id=?`,
-    params: [kaId],
-  });
-  dbQuery({
-    sql: `UPDATE assets SET has_active_listing=0, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?`,
-    params: [asset.id],
-  });
-  console.log("[test] ✓ DB bereinigt. Test erfolgreich.");
+    // ── 5. Write to DB ───────────────────────────────────────────────────────
+    dbQuery({
+      sql: `INSERT INTO ka_listings (asset_id, ka_id, ka_link, price_cents, status, posted_at)
+            VALUES (?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now'))`,
+      params: [asset.id, kaId, created.link, asset.last_price_cents, "active"],
+    });
+    dbQuery({
+      sql: `UPDATE assets SET has_active_listing=1, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?`,
+      params: [asset.id],
+    });
+    console.log("[test] ✓ DB aktualisiert.");
+  } finally {
+    if (kaId) {
+      console.log(`[test] Lösche Testanzeige ${kaId}...`);
+      const deleted = await ka.deleteAd(kaId);
+      console.log(`[test] ✓ Gelöscht (status=${deleted.status})`);
+      dbQuery({
+        sql: `UPDATE ka_listings SET status='removed' WHERE ka_id=?`,
+        params: [kaId],
+      });
+      dbQuery({
+        sql: `UPDATE assets
+              SET has_active_listing=CASE WHEN EXISTS (
+                SELECT 1 FROM ka_listings WHERE asset_id=? AND status='active'
+              ) THEN 1 ELSE 0 END,
+                  updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+              WHERE id=?`,
+        params: [asset.id, asset.id],
+      });
+      console.log("[test] ✓ DB bereinigt.");
+    }
+  }
+  console.log("[test] ✓ Test erfolgreich.");
 }
 
 run().catch(e => { console.error("[test] Fehler:", e.message); process.exit(1); });

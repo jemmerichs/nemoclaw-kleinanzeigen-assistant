@@ -485,6 +485,54 @@ test("routine listing turns omit unrelated tools and skills to reduce fixed inpu
   );
 });
 
+test("an out-of-scope tool gets a neutral scope error instead of buyer-specific context", async () => {
+  const sent = [];
+  let step = 0;
+  const llmClient = {
+    model: "stub",
+    async complete(request) {
+      step++;
+      if (step === 1) {
+        return {
+          message: {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "wrong-scope-tool",
+              type: "function",
+              function: {
+                name: "vinted_get_account",
+                arguments: "{}",
+              },
+            }],
+          },
+        };
+      }
+      const result = JSON.parse(request.messages.at(-1).content);
+      assert.match(result.error, /aktuellen Arbeitskontext nicht verfügbar/);
+      assert.doesNotMatch(result.error, /Käuferverlauf|Thread/);
+      return {
+        message: {
+          role: "assistant",
+          content: "Ich bleibe bei der angefragten Kleinanzeigen-Aufgabe.",
+        },
+      };
+    },
+  };
+
+  const result = await runAgent(
+    "neutral-scope-error",
+    "Recherchiere den Preis und erstelle eine Kleinanzeigen-Anzeige.",
+    {
+      llmClient,
+      gateway: { async send(_chatId, text) { sent.push(text); } },
+    }
+  );
+
+  assert.deepEqual(result.toolCalls, ["vinted_get_account"]);
+  assert.deepEqual(sent, ["Ich bleibe bei der angefragten Kleinanzeigen-Aufgabe."]);
+});
+
 test("listing validation errors are translated for Telegram without leaking backend field names", () => {
   const message = describeListingValidationFailure(
     { id: "91cc1158e865" },

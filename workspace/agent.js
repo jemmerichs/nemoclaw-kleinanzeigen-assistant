@@ -2235,12 +2235,18 @@ async function runAgent(
         const toolName = String(call.function?.name || "");
         toolCallsSeen.push(toolName);
         if (excludedTurnTools.has(toolName)) {
+          const redundantInboxRead = preloaded && [
+            "ka_get_conversations",
+            "ka_get_messages",
+          ].includes(toolName);
           messages.push(modelMessage);
           messages.push({
             role: "tool",
             tool_call_id: call.id,
             content: JSON.stringify({
-              error: "Der vollständige aktuelle Käuferverlauf wurde bereits von der Bridge bereitgestellt. Verwende ihn direkt und rufe den Thread nicht erneut ab.",
+              error: redundantInboxRead
+                ? "Der vollständige aktuelle Käuferverlauf wurde bereits von der Bridge bereitgestellt. Verwende ihn direkt und rufe den Thread nicht erneut ab."
+                : `Tool "${toolName}" ist im aktuellen Arbeitskontext nicht verfügbar. Verwende nur die für diesen Auftrag angebotenen Tools.`,
             }),
           });
           continue;
