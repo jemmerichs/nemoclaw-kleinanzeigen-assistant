@@ -17,7 +17,8 @@ process.env.NEMOCLAW_IMAGE_DIR = path.join(directory, "images");
 process.env.NEMOCLAW_KA_CATEGORY_CACHE_FILE = path.join(directory, "category-contracts.json");
 process.env.NEMOCLAW_MODE = "dry-run";
 
-require("../tools/kleinanzeigen-category-contracts").rememberCategoryRequirements({
+const categoryContracts = require("../tools/kleinanzeigen-category-contracts");
+categoryContracts.rememberCategoryRequirements({
   categoryId: 278,
   category: "Testkategorie",
   requiredAttributes: [],
@@ -274,6 +275,113 @@ test("ready bridge configuration cannot be hallucinated as unresolved", async ()
     assert.equal(getPending("ready-listing-config").args.contactName, "Jannik");
   } finally {
     clearPending("ready-listing-config");
+    if (previous.zipCode === undefined) delete process.env.KA_DEFAULT_ZIP_CODE;
+    else process.env.KA_DEFAULT_ZIP_CODE = previous.zipCode;
+    if (previous.locationId === undefined) delete process.env.KA_DEFAULT_LOCATION_ID;
+    else process.env.KA_DEFAULT_LOCATION_ID = previous.locationId;
+    if (previous.contactName === undefined) delete process.env.KA_CONTACT_NAME;
+    else process.env.KA_CONTACT_NAME = previous.contactName;
+  }
+});
+
+test("server-rejected category contract blocks a repeated empty-attribute proposal", async () => {
+  const previous = {
+    mode: process.env.NEMOCLAW_MODE,
+    zipCode: process.env.KA_DEFAULT_ZIP_CODE,
+    locationId: process.env.KA_DEFAULT_LOCATION_ID,
+    contactName: process.env.KA_CONTACT_NAME,
+  };
+  process.env.NEMOCLAW_MODE = "live";
+  process.env.KA_DEFAULT_ZIP_CODE = "80636";
+  process.env.KA_DEFAULT_LOCATION_ID = "16360";
+  process.env.KA_CONTACT_NAME = "Jannik";
+  categoryContracts.rememberCategoryRequirements({
+    categoryId: 654,
+    category: "Haus & Garten > Test",
+    requiredAttributes: [],
+  });
+  const originalCreate = TOOLS.ka_create_ad.fn;
+  TOOLS.ka_create_ad.fn = async () => {
+    const error = new Error("Versand fehlt");
+    error.code = "KA_LISTING_VALIDATION";
+    error.categoryId = 654;
+    error.validationErrors = [{
+      field: "attributeMap[haus_garten.versand_s]",
+      message: "Bitte gib einen Wert ein.",
+    }];
+    throw error;
+  };
+  const sent = [];
+  const gateway = { async send(_chatId, text) { sent.push(text); } };
+  const initialClient = {
+    model: "stub",
+    async complete() {
+      return {
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "initial-empty-attributes",
+            type: "function",
+            function: {
+              name: "ka_create_ad",
+              arguments: JSON.stringify({
+                title: "Möbelerhöher",
+                description: "Sechs unbenutzte Möbelerhöher. Nur Abholung.",
+                categoryId: 654,
+                price: 6,
+                priceType: "FIXED",
+                imagePaths: [],
+                attributes: {},
+              }),
+            },
+          }],
+        },
+      };
+    },
+  };
+
+  try {
+    await runAgent("category-quarantine", "Veröffentliche die Anzeige.", {
+      llmClient: initialClient,
+      gateway,
+    });
+    assert.equal(getPending("category-quarantine").tool, "ka_create_ad");
+    await runAgent("category-quarantine", "Go", { llmClient: null, gateway });
+    const requirements = categoryContracts.getCategoryRequirements(654);
+    assert.equal(requirements.verified, false);
+    assert.equal(requirements.invalidated, true);
+    assert.match(sent[1], /Kategorievertrag gesperrt/);
+    assert.doesNotMatch(sent[1], /attributeMap|versand_s/);
+
+    let retryCalls = 0;
+    const retryClient = {
+      model: "stub",
+      async complete(request) {
+        retryCalls++;
+        if (retryCalls === 1) return initialClient.complete();
+        assert.match(request.messages.at(-1).content, /Kategorie 654.*gesperrt.*Versandfeld/s);
+        return {
+          message: {
+            role: "assistant",
+            content: "Der aktuelle Kategorievertrag muss zuerst neu geprüft werden.",
+          },
+        };
+      },
+    };
+    const retry = await runAgent("category-quarantine", "Kein Versand", {
+      llmClient: retryClient,
+      gateway,
+    });
+    assert.equal(retryCalls, 2);
+    assert.equal(retry.answered, true);
+    assert.equal(getPending("category-quarantine"), null);
+    assert.match(sent.at(-1), /zuerst neu geprüft/);
+  } finally {
+    TOOLS.ka_create_ad.fn = originalCreate;
+    clearPending("category-quarantine");
+    if (previous.mode === undefined) delete process.env.NEMOCLAW_MODE;
+    else process.env.NEMOCLAW_MODE = previous.mode;
     if (previous.zipCode === undefined) delete process.env.KA_DEFAULT_ZIP_CODE;
     else process.env.KA_DEFAULT_ZIP_CODE = previous.zipCode;
     if (previous.locationId === undefined) delete process.env.KA_DEFAULT_LOCATION_ID;

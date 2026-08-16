@@ -10,6 +10,7 @@ A German-language selling assistant for Kleinanzeigen and Vinted. It analyzes an
 - Any intervening user message invalidates the old approval.
 - Images are not uploaded while preparing a proposal. Upload and publication happen together only after approval.
 - Kleinanzeigen category contracts are discovered generically from the current signed-in posting form and cached for 14 days. Unknown categories are navigated read-only via their visible category path; exact required fields and permitted values are then validated before approval and upload. A new server-side form validation error is surfaced as repairable schema feedback, never as a claimed publication.
+- If Kleinanzeigen rejects a category attribute despite local validation, the bridge persistently quarantines that category contract. A user choice such as “Kein Versand” cannot bypass the quarantine: a fresh visible-form inspection must produce a materially repaired contract and, for a shipping rejection, must actually expose the shipping field and its allowed values. Cached contracts from older inspection versions are refreshed once after an upgrade.
 - Original photos are immutable. Edited derivatives store source/output hashes and exact operations; no generative retouching is available.
 - Every saved draft or published listing stores a canonical relist payload plus ordered image provenance.
 - Automatic inbox and listing checks cannot delete or replace an action already waiting for `Go`.

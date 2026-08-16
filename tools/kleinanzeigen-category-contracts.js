@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
@@ -7,6 +8,7 @@ const CACHE_FILE = process.env.NEMOCLAW_KA_CATEGORY_CACHE_FILE
   ? path.resolve(process.env.NEMOCLAW_KA_CATEGORY_CACHE_FILE)
   : path.resolve(__dirname, "../.ka-category-contracts.json");
 const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const CONTRACT_INSPECTION_VERSION = 2;
 
 const CATEGORY_CONTRACTS = new Map([
   [82, {
@@ -67,6 +69,95 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function cachedEntry(categoryId) {
+  const entry = readDynamicContracts()[String(categoryId)];
+  return entry && typeof entry === "object" ? entry : null;
+}
+
+function contractFingerprint(contract) {
+  if (!contract) return "";
+  const value = {
+    categoryId: normalizeCategoryId(contract.categoryId),
+    requiredAttributes: Array.isArray(contract.requiredAttributes)
+      ? contract.requiredAttributes
+      : [],
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function validationRejection(validationErrors = []) {
+  const errors = Array.isArray(validationErrors) ? validationErrors.slice(0, 20) : [];
+  const combined = errors.map(error => (
+    `${String(error?.field || "")} ${String(error?.message || "")}`
+  )).join(" ");
+  return {
+    relevant: errors.some(error => /attributeMap|categoryId/i.test(String(error?.field || "")))
+      || /versand|shipping/i.test(combined),
+    attributeRejected: errors.some(error => /attributeMap/i.test(String(error?.field || ""))),
+    capabilities: [
+      /versand|shipping/i.test(combined) ? "shipping" : null,
+    ].filter(Boolean),
+  };
+}
+
+function invalidationFor(categoryId) {
+  const entry = cachedEntry(categoryId);
+  if (!entry?.invalidatedAt) return null;
+  return {
+    invalidatedAt: String(entry.invalidatedAt),
+    rejectedContractFingerprint: String(entry.rejectedContractFingerprint || ""),
+    attributeRejected: entry.attributeRejected === true,
+    capabilities: Array.isArray(entry.requiredCapabilities)
+      ? entry.requiredCapabilities.filter(value => value === "shipping")
+      : [],
+  };
+}
+
+function fieldProvidesCapability(field, capability) {
+  if (capability !== "shipping") return false;
+  return /versand|shipping/i.test(`${String(field?.key || "")} ${String(field?.label || "")}`)
+    && Array.isArray(field?.values)
+    && field.values.length > 0;
+}
+
+function assertRefreshResolvesInvalidation(contract, invalidation) {
+  if (!invalidation) return;
+  const missingCapabilities = invalidation.capabilities.filter(capability => (
+    !contract.requiredAttributes.some(field => fieldProvidesCapability(field, capability))
+  ));
+  if (missingCapabilities.length) {
+    const error = new Error(
+      "Die aktuelle Formularinspektion konnte das zuvor serverseitig verlangte Versandfeld " +
+      "nicht mit seinen sichtbaren erlaubten Werten verifizieren. Der Kategorievertrag bleibt gesperrt."
+    );
+    error.code = "KA_CATEGORY_INSPECTION_INCOMPLETE";
+    error.categoryId = contract.categoryId;
+    error.missingCapabilities = missingCapabilities;
+    throw error;
+  }
+  if (invalidation.attributeRejected && !contract.requiredAttributes.length) {
+    const error = new Error(
+      "Die aktuelle Formularinspektion fand weiterhin keine Pflichtattribute, obwohl Kleinanzeigen zuvor " +
+      "ein Kategorieattribut verlangt hat. Der Kategorievertrag bleibt gesperrt."
+    );
+    error.code = "KA_CATEGORY_INSPECTION_INCOMPLETE";
+    error.categoryId = contract.categoryId;
+    throw error;
+  }
+  if (
+    invalidation.rejectedContractFingerprint
+    && contractFingerprint(contract) === invalidation.rejectedContractFingerprint
+  ) {
+    const error = new Error(
+      "Die aktuelle Formularinspektion lieferte unverändert denselben Kategorievertrag, den Kleinanzeigen " +
+      "zuvor abgelehnt hat. Der Kategorievertrag bleibt bis zu einer vollständigeren Inspektion gesperrt."
+    );
+    error.code = "KA_CATEGORY_INSPECTION_INCOMPLETE";
+    error.categoryId = contract.categoryId;
+    throw error;
+  }
+}
+
 function readDynamicContracts() {
   if (dynamicContracts) return dynamicContracts;
   try {
@@ -117,6 +208,7 @@ function sanitizeContract(contract) {
   return {
     categoryId,
     category,
+    inspectionVersion: CONTRACT_INSPECTION_VERSION,
     verifiedAt: Number.isFinite(observedAt)
       ? new Date(observedAt).toISOString()
       : new Date().toISOString(),
@@ -128,8 +220,10 @@ function sanitizeContract(contract) {
 }
 
 function dynamicContract(categoryId) {
-  const cached = readDynamicContracts()[String(categoryId)];
+  const cached = cachedEntry(categoryId);
   if (!cached || typeof cached !== "object") return null;
+  if (cached.invalidatedAt) return null;
+  if (Number(cached.inspectionVersion) !== CONTRACT_INSPECTION_VERSION) return null;
   const observedAt = Date.parse(cached.verifiedAt || "");
   if (!Number.isFinite(observedAt) || Date.now() - observedAt > CACHE_TTL_MS) return null;
   try {
@@ -140,15 +234,53 @@ function dynamicContract(categoryId) {
 }
 
 function contractFor(categoryId) {
+  if (invalidationFor(categoryId)) return null;
   return dynamicContract(categoryId) || CATEGORY_CONTRACTS.get(categoryId);
 }
 
 function rememberCategoryRequirements(contract) {
   const sanitized = sanitizeContract(contract);
+  assertRefreshResolvesInvalidation(sanitized, invalidationFor(sanitized.categoryId));
   const contracts = readDynamicContracts();
   contracts[String(sanitized.categoryId)] = sanitized;
   writeDynamicContracts(contracts);
   return clone(sanitized);
+}
+
+function invalidateCategoryRequirements(categoryId, validationErrors = []) {
+  const normalizedId = normalizeCategoryId(categoryId);
+  if (!normalizedId) throw new Error("categoryId ist ungültig.");
+  const rejection = validationRejection(validationErrors);
+  if (!rejection.relevant) return { categoryId: normalizedId, invalidated: false };
+
+  const contracts = readDynamicContracts();
+  const existing = cachedEntry(normalizedId);
+  let previousCachedContract = null;
+  try {
+    if (existing?.requiredAttributes) {
+      previousCachedContract = sanitizeContract({ ...existing, categoryId: normalizedId });
+    }
+  } catch {}
+  const currentContract = contractFor(normalizedId) || previousCachedContract;
+  const existingCapabilities = Array.isArray(existing?.requiredCapabilities)
+    ? existing.requiredCapabilities.filter(value => value === "shipping")
+    : [];
+  contracts[String(normalizedId)] = {
+    ...(existing || (currentContract ? clone(currentContract) : { categoryId: normalizedId })),
+    categoryId: normalizedId,
+    invalidatedAt: new Date().toISOString(),
+    rejectedContractFingerprint: String(
+      existing?.rejectedContractFingerprint || contractFingerprint(currentContract)
+    ),
+    attributeRejected: existing?.attributeRejected === true || rejection.attributeRejected,
+    requiredCapabilities: [...new Set([...existingCapabilities, ...rejection.capabilities])],
+  };
+  writeDynamicContracts(contracts);
+  return {
+    categoryId: normalizedId,
+    invalidated: true,
+    requiredCapabilities: rejection.capabilities,
+  };
 }
 
 function getCategoryRequirements(categoryId) {
@@ -156,6 +288,33 @@ function getCategoryRequirements(categoryId) {
   if (!normalizedId) throw new Error("categoryId ist ungültig.");
   const contract = contractFor(normalizedId);
   if (!contract) {
+    const invalidation = invalidationFor(normalizedId);
+    if (invalidation) {
+      const requirements = invalidation.capabilities.includes("shipping")
+        ? " Dabei muss insbesondere das sichtbare Versandfeld mit seinen erlaubten Werten erfasst werden."
+        : "";
+      return {
+        categoryId: normalizedId,
+        verified: false,
+        invalidated: true,
+        requiredAttributes: [],
+        instruction:
+          "Kleinanzeigen hat den bisherigen Kategorievertrag serverseitig abgelehnt. " +
+          `Das aktuelle Formular muss vollständig neu inspiziert werden.${requirements}`,
+      };
+    }
+    const staleEntry = cachedEntry(normalizedId);
+    if (staleEntry && Number(staleEntry.inspectionVersion) !== CONTRACT_INSPECTION_VERSION) {
+      return {
+        categoryId: normalizedId,
+        verified: false,
+        stale: true,
+        requiredAttributes: [],
+        instruction:
+          "Der gespeicherte Kategorievertrag stammt aus einer älteren Formularinspektion. " +
+          "Das aktuelle sichtbare Formular muss vor der nächsten Veröffentlichung einmal neu geprüft werden.",
+      };
+    }
     return {
       categoryId: normalizedId,
       verified: false,
@@ -204,6 +363,16 @@ function validateCategoryAttributes(
   const contract = contractFor(normalizedId);
   if (!contract) {
     if (requireVerified) {
+      const invalidation = invalidationFor(normalizedId);
+      if (invalidation) {
+        const requirement = invalidation.capabilities.includes("shipping")
+          ? " Das sichtbare Versandfeld und seine erlaubten Werte wurden noch nicht neu verifiziert."
+          : "";
+        throw new Error(
+          `Kategorie ${normalizedId} ist nach einer serverseitigen Formularablehnung gesperrt.` +
+          `${requirement} Prüfe zuerst das aktuelle sichtbare Kategorieformular; keine Werte raten.`
+        );
+      }
       throw new Error(
         `Kategorie ${normalizedId} wurde noch nicht anhand des aktuellen Formulars verifiziert. ` +
         "Prüfe zuerst den sichtbaren Kategoriepfad und die erlaubten Pflichtwerte; keine Werte raten."
@@ -240,6 +409,7 @@ function validateCategoryAttributes(
 module.exports = {
   applyCategoryPreferences,
   getCategoryRequirements,
+  invalidateCategoryRequirements,
   rememberCategoryRequirements,
   validateCategoryAttributes,
 };

@@ -13,6 +13,7 @@ const KleinanzeigenClient = require("../tools/kleinanzeigen");
 const {
   applyCategoryPreferences,
   getCategoryRequirements,
+  invalidateCategoryRequirements,
   validateCategoryAttributes,
 } = require("../tools/kleinanzeigen-category-contracts");
 const { inspectCategoryForm } = require("../tools/kleinanzeigen-form");
@@ -1791,7 +1792,7 @@ function validationFieldLabel(field) {
   return "Formularangabe";
 }
 
-function describeListingValidationFailure(action, error) {
+function describeListingValidationFailure(action, error, { categoryContractInvalidated = false } = {}) {
   const validationErrors = Array.isArray(error?.validationErrors)
     ? error.validationErrors.slice(0, 10)
     : [];
@@ -1805,6 +1806,9 @@ function describeListingValidationFailure(action, error) {
     "Kleinanzeigen hat folgende Angaben abgelehnt:",
     ...details,
     "",
+    ...(categoryContractInvalidated
+      ? ["Die Bridge hat den abgelehnten Kategorievertrag gesperrt, bis das aktuelle Formular erfolgreich neu geprüft wurde."]
+      : []),
     "Es wurde nichts veröffentlicht oder gespeichert. Der Vorschlag muss mit aktuell verifizierten " +
       "Kategorie- und Standortfeldern neu vorbereitet und erneut mit Go bestätigt werden.",
   ].join("\n");
@@ -1968,10 +1972,23 @@ async function handleApproval(chatId, gateway) {
   } catch (error) {
     const dryRunBlocked = getMode() !== "live" && error.message.includes("dry-run-Modus blockiert");
     const categoryValidation = error.code === "KA_LISTING_VALIDATION";
+    let invalidatedCategory = null;
+    if (categoryValidation && action.tool === "ka_create_ad") {
+      try {
+        invalidatedCategory = invalidateCategoryRequirements(
+          error.categoryId || action.args?.categoryId,
+          error.validationErrors
+        );
+      } catch (invalidationError) {
+        console.error(`[agent] Kategorievertrag konnte nicht gesperrt werden: ${invalidationError.message}`);
+      }
+    }
     const ambiguousExternalFailure = externalWriteStarted && !dryRunBlocked && !categoryValidation;
     const marketplace = action.tool.startsWith("vinted_") ? "Vinted" : "Kleinanzeigen";
     const message = categoryValidation
-      ? describeListingValidationFailure(action, error)
+      ? describeListingValidationFailure(action, error, {
+        categoryContractInvalidated: invalidatedCategory?.invalidated === true,
+      })
       : dryRunBlocked
       ? `Aktion ${action.id} wurde durch den dry-run-Modus blockiert und nicht ausgeführt.`
       : ambiguousExternalFailure
@@ -1981,6 +1998,7 @@ async function handleApproval(chatId, gateway) {
       chatId,
       categoryValidation
         ? "System: Kleinanzeigen-Formularvertrag veraltet oder unvollständig. " +
+          `${invalidatedCategory?.invalidated ? "Die Bridge hat den abgelehnten Kategorievertrag gesperrt. " : ""}` +
           `Kategorie ${error.categoryId || action.args?.categoryId || "unbekannt"} vor einem neuen Vorschlag ` +
           "read-only mit ka_get_category_requirements und refresh=true prüfen. " +
           `Validierungsdaten: ${boundedJson(error.validationErrors || [], 3000)}. ` +

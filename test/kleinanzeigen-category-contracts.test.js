@@ -165,11 +165,121 @@ test("a newly inspected category is sanitized, cached, and enforced without sour
     const { result, rejected } = JSON.parse(output);
     assert.equal(result.verified, true);
     assert.equal(result.categoryId, 321);
+    assert.equal(result.inspectionVersion, 2);
     assert.deepEqual(result.requiredAttributes[0].values, [
       { value: "regal", label: "Regal" },
     ]);
     assert.equal(rejected, true);
     assert.equal(fs.statSync(cacheFile).mode & 0o777, 0o600);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("server-rejected category contracts stay quarantined until a materially repaired refresh", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-category-quarantine-"));
+  const cacheFile = path.join(directory, "contracts.json");
+  const modulePath = require.resolve("../tools/kleinanzeigen-category-contracts");
+  const initialScript = `
+    const contracts = require(${JSON.stringify(modulePath)});
+    contracts.rememberCategoryRequirements({
+      categoryId: 87,
+      category: "Haus & Garten > Weiteres Haus & Garten",
+      requiredAttributes: []
+    });
+    contracts.invalidateCategoryRequirements(87, [{
+      field: "attributeMap[haus_garten.versand_s]",
+      message: "Bitte gib einen Wert für Versand ein."
+    }]);
+    contracts.rememberCategoryRequirements({
+      categoryId: 88,
+      category: "Haus & Garten > Sonstiges",
+      requiredAttributes: []
+    });
+    contracts.invalidateCategoryRequirements(88, [{
+      field: "location",
+      message: "Der Ort passt nicht zur Postleitzahl."
+    }]);
+  `;
+  const repairScript = `
+    const contracts = require(${JSON.stringify(modulePath)});
+    const before = contracts.getCategoryRequirements(87);
+    let unchangedRejected = false;
+    try {
+      contracts.rememberCategoryRequirements({
+        categoryId: 87,
+        category: "Haus & Garten > Weiteres Haus & Garten",
+        requiredAttributes: []
+      });
+    } catch (error) {
+      unchangedRejected = error.code === "KA_CATEGORY_INSPECTION_INCOMPLETE";
+    }
+    const repaired = contracts.rememberCategoryRequirements({
+      categoryId: 87,
+      category: "Haus & Garten > Weiteres Haus & Garten",
+      requiredAttributes: [{
+        key: "haus_garten.versand",
+        label: "Versand",
+        values: [
+          { value: "ja", label: "Versand möglich" },
+          { value: "nein", label: "Nur Abholung" }
+        ]
+      }]
+    });
+    process.stdout.write(JSON.stringify({
+      before,
+      unchangedRejected,
+      repaired,
+      preferred: contracts.applyCategoryPreferences(87, {}),
+      locationOnly: contracts.getCategoryRequirements(88)
+    }));
+  `;
+  try {
+    execFileSync(process.execPath, ["-e", initialScript], {
+      env: { ...process.env, NEMOCLAW_KA_CATEGORY_CACHE_FILE: cacheFile },
+    });
+    const output = execFileSync(process.execPath, ["-e", repairScript], {
+      encoding: "utf8",
+      env: { ...process.env, NEMOCLAW_KA_CATEGORY_CACHE_FILE: cacheFile },
+    });
+    const result = JSON.parse(output);
+    assert.equal(result.before.verified, false);
+    assert.equal(result.before.invalidated, true);
+    assert.match(result.before.instruction, /Versandfeld/);
+    assert.equal(result.unchangedRejected, true);
+    assert.equal(result.repaired.verified, undefined);
+    assert.equal(result.repaired.inspectionVersion, 2);
+    assert.deepEqual(result.preferred, { "haus_garten.versand": "nein" });
+    assert.equal(result.locationOnly.verified, true);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("legacy dynamic contracts require one current form inspection", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-category-legacy-"));
+  const cacheFile = path.join(directory, "contracts.json");
+  fs.writeFileSync(cacheFile, JSON.stringify({
+    87: {
+      categoryId: 87,
+      category: "Haus & Garten > Weiteres Haus & Garten",
+      verifiedAt: new Date().toISOString(),
+      requiredAttributes: [],
+    },
+  }), { mode: 0o600 });
+  const modulePath = require.resolve("../tools/kleinanzeigen-category-contracts");
+  const script = `
+    const result = require(${JSON.stringify(modulePath)}).getCategoryRequirements(87);
+    process.stdout.write(JSON.stringify(result));
+  `;
+  try {
+    const result = JSON.parse(execFileSync(process.execPath, ["-e", script], {
+      encoding: "utf8",
+      env: { ...process.env, NEMOCLAW_KA_CATEGORY_CACHE_FILE: cacheFile },
+    }));
+    assert.equal(result.verified, false);
+    assert.equal(result.stale, true);
+    assert.match(result.instruction, /älteren Formularinspektion/);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
