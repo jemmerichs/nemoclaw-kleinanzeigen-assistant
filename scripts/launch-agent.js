@@ -112,10 +112,11 @@ function assertReady(paths) {
   const doctor = spawnSync(paths.nodePath, [
     path.join(paths.root, "scripts", "doctor.js"),
     "--telegram",
+    "--account",
   ], { cwd: paths.root, encoding: "utf8", stdio: "inherit" });
   if (doctor.error) throw doctor.error;
   if (doctor.status !== 0) {
-    throw new Error("Der strikte Telegram-/Runtime-Check ist fehlgeschlagen.");
+    throw new Error("Der strikte Telegram-/Konto-Check ist fehlgeschlagen.");
   }
 }
 

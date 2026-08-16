@@ -76,6 +76,11 @@ if [ "${NEMOCLAW_SERVICE:-}" = "launchd" ]; then
   exit 0
 fi
 
+if existing_pid="$(read_running_agent_pid)"; then
+  echo "[start] Agent läuft bereits (PID $existing_pid)."
+  exit 0
+fi
+
 echo "[start] Starte nemoclaw Agent im eigenen Terminal..."
 open_agent_terminal true
 echo "[start] Terminal-Fenster geöffnet."

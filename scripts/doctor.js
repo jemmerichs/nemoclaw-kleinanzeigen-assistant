@@ -19,6 +19,7 @@ const {
 } = require("../workspace/runtime");
 let requiredFailures = 0;
 const requireTelegram = process.argv.includes("--telegram");
+const requireAccount = process.argv.includes("--account");
 
 function hasCookie(name) {
   return new RegExp(`(?:^|;\\s*)${name}=`).test(process.env.KA_COOKIES || "");
@@ -48,6 +49,11 @@ function line(label, ok, detail) {
 
 function optionalLine(label, configured, detail) {
   console.log(`${configured ? "✓" : "•"} ${label}: ${detail}`);
+}
+
+function accountLine(label, ok, detail) {
+  if (requireAccount) line(label, ok, detail);
+  else optionalLine(label, ok, detail);
 }
 
 function main() {
@@ -128,10 +134,10 @@ function main() {
   }
 
   const kaCookies = Boolean(process.env.KA_COOKIES);
-  line(
+  accountLine(
     "Kleinanzeigen-Session",
     kaCookies,
-    kaCookies ? "gesetzt" : "fehlt — npm run login benötigt einen nicht blockierten Netzwerkpfad"
+    kaCookies ? "gesetzt" : "fehlt — Bot startet trotzdem; Kontoaktionen benötigen später einen Login"
   );
   const csrfOk = hasCookie("CSRF-TOKEN");
   const derivedUserId = userIdFromAccessToken(cookieValue("access_token"));
@@ -148,13 +154,13 @@ function main() {
     && chromeMatch[1].split(".")[0] === installedChromeMatch[1].split(".")[0]
   );
   if (kaCookies) {
-    line("CSRF", csrfOk, csrfOk ? "vorhanden" : "fehlt");
-    line(
+    accountLine("CSRF", csrfOk, csrfOk ? "vorhanden" : "fehlt");
+    accountLine(
       "User-ID",
       userIdOk,
       hasCookie("user_id") ? "vorhanden" : (derivedUserId ? "aus Bearer abgeleitet" : "fehlt")
     );
-    line(
+    accountLine(
       "Bearer",
       bearerOk,
       !bearerOk
@@ -165,19 +171,19 @@ function main() {
             ? `gültig bis ${new Date(bearerExpiry).toISOString()}`
             : "vorhanden"
     );
-    line(
+    accountLine(
       "Session-Refresh",
       refreshOk,
       refreshOk
         ? "Refresh-Kontext vorhanden; Gültigkeit mit npm run smoke:ka prüfen"
         : "Refresh-Token fehlt — einmal neu anmelden"
     );
-    line(
+    accountLine(
       "Browser-Fingerabdruck",
       browserFingerprintOk,
       browserFingerprintOk ? `Chrome ${chromeMatch[1]}` : "fehlt — Login oder cURL-Import erneut ausführen"
     );
-    line(
+    accountLine(
       "Chrome-Abgleich",
       browserVersionAligned,
       browserVersionAligned
@@ -186,9 +192,9 @@ function main() {
     );
   }
   const chromePath = findChromeExecutable();
-  line("Chrome", Boolean(chromePath), chromePath || "nicht gefunden");
+  accountLine("Chrome", Boolean(chromePath), chromePath || "nicht gefunden; Browserfunktionen bleiben deaktiviert");
   const profile = path.join(root, "workspace", "browser-profile");
-  line("Login-Profil", fs.existsSync(profile), fs.existsSync(profile) ? "vorhanden" : "fehlt");
+  optionalLine("Login-Profil", fs.existsSync(profile), fs.existsSync(profile) ? "vorhanden" : "wird bei Bedarf angelegt");
   const vintedCookies = Boolean(process.env.VINTED_COOKIES);
   const vintedProfile = fs.existsSync(VINTED_PROFILE_DIR);
   optionalLine(
@@ -212,10 +218,10 @@ function main() {
   const contactName = String(process.env.KA_CONTACT_NAME || "").trim();
   const publishReady = /^\d{5}$/.test(zipCode) && zipCode !== "00000" && Boolean(locationId) && Boolean(contactName);
   line("Lokaler Dry-run", localReady, localReady ? "bereit — npm run chat" : "nicht bereit");
-  line(
+  accountLine(
     "Kontoaktionen",
     accountReady,
-    accountReady ? "Basis-Session bereit — mit npm run smoke:ka verifizieren" : "nicht bereit — npm run login"
+    accountReady ? "Basis-Session bereit — mit npm run smoke:ka verifizieren" : "nicht bereit; Bot und öffentliche Suche können trotzdem starten"
   );
   optionalLine(
     "Vinted-Kontoaktionen",

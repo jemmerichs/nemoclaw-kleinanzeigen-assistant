@@ -11,6 +11,7 @@
     "launch": "bash scripts/start.sh",
     "doctor": "node scripts/doctor.js",
     "doctor:telegram": "node scripts/doctor.js --telegram",
+    "doctor:account": "node scripts/doctor.js --telegram --account",
     "login": "node scripts/login.js",
     "login:vinted": "node scripts/login-vinted.js",
     "login:vinted:inspect": "node scripts/login-vinted.js --inspect-only",

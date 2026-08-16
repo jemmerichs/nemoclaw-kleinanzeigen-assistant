@@ -42,8 +42,13 @@ test("launchd plist is portable, private, and contains no secrets", () => {
 
 test("foreground launcher ties caffeinate to the visible agent process", () => {
   const startScript = fs.readFileSync(path.resolve(__dirname, "../scripts/start.sh"), "utf8");
+  const serviceScript = fs.readFileSync(path.resolve(__dirname, "../scripts/launch-agent.js"), "utf8");
   assert.match(startScript, /exec caffeinate -i -s node workspace\/agent\.js/);
   assert.match(startScript, /NEMOCLAW_SERVICE/);
+  assert.match(startScript, /doctor\.js --telegram/);
+  assert.doesNotMatch(startScript, /doctor\.js --telegram --account/);
+  assert.match(serviceScript, /"--telegram",\s*"--account"/);
+  assert.match(startScript, /Agent läuft bereits \(PID \$existing_pid\)/);
   assert.match(startScript, /workspace\/agent\.pid/);
   assert.match(startScript, /kill -0/);
   assert.match(startScript, /keinen gültigen PID-Lock übernommen/);

@@ -79,7 +79,7 @@ npm run smoke:vinted
 
 `npm run login` opens a native Chrome window with a dedicated persistent profile and navigates to the current listing flow. Log in manually and complete any CAPTCHA or 2FA yourself; do not submit a listing. The script observes only that dedicated local Chrome process, waits until `user_id`/Bearer identity and CSRF are genuinely present, stores the resulting cookie string plus matching Chrome request identity in the ignored `.env`, and then closes the window automatically. It does not rely on an ENTER prompt or reopen the profile headlessly after login. Keeping the request identity aligned matters because Kleinanzeigen's session-protection cookies can reject a request whose browser version does not match the login.
 
-Kleinanzeigen access tokens are short-lived. The runtime checks their embedded expiry locally and renews them before private requests through the login service's published OIDC `refresh_token` flow. Rotated tokens are stored atomically in `.env`; no browser is opened for authentication refresh. As long as the refresh token remains valid, hourly or daily manual login is unnecessary. An already expired or revoked refresh token requires one new bootstrap login. The startup doctor also rejects a saved request identity from a different Chrome major version; after a Chrome upgrade, re-import one current authenticated request instead of sending mismatched browser headers unattended.
+Kleinanzeigen access tokens are short-lived. The runtime checks their embedded expiry locally and renews them before private requests through the login service's published OIDC `refresh_token` flow. Rotated tokens are stored atomically in `.env`; no browser is opened for authentication refresh. As long as the refresh token remains valid, hourly or daily manual login is unnecessary. An already expired or revoked refresh token requires one new bootstrap login. The strict account doctor also rejects a saved request identity from a different Chrome major version; after a Chrome upgrade, re-import one current authenticated request instead of sending mismatched browser headers unattended.
 
 This dedicated profile is required for the standalone bot. A signed-in Codex in-app browser is useful for read-only UI verification, but its private cookies are intentionally not copied into the Node process. If Kleinanzeigen reports a blocked IP range, stop retrying. Disable VPN/proxy/iCloud Private Relay and retry later from a normal, stable home or mobile connection. The login helper detects common `403`, `429`, IP-range, and unusual-traffic blocks and exits without an automatic retry.
 
@@ -113,7 +113,7 @@ Telegram is optional: `npm run chat` works without a bot token or chat ID. Set t
 
 Codex and its in-app browser are development aids only. They are not runtime dependencies. The production Mac needs Node.js, this repository, Chrome, the OpenRouter key, and its own successful dedicated-profile login for each enabled marketplace.
 
-Before unattended Telegram operation, also set a real `KA_DEFAULT_ZIP_CODE`, `KA_DEFAULT_LOCATION_ID`, and `KA_CONTACT_NAME`, then run `npm run doctor:telegram`. `npm run launch` runs that strict startup check itself and refuses to start when Telegram configuration is incomplete.
+Before unattended Telegram operation, also set a real `KA_DEFAULT_ZIP_CODE`, `KA_DEFAULT_LOCATION_ID`, and `KA_CONTACT_NAME`, then run `npm run doctor:account`. Routine `npm start` checks the runtime and Telegram configuration, but an unavailable marketplace session no longer prevents the bot itself from starting; affected account tools remain fail-closed.
 
 `KA_DEFAULT_ZIP_CODE` and `KA_DEFAULT_LOCATION_ID` are one verified pair. The bridge always injects that configured pair into drafts and publications and ignores model-supplied alternatives, so the location is not re-decided for every listing. If Kleinanzeigen rejects the location, re-verify and update the pair itself instead of changing one listing payload.
 
@@ -134,7 +134,7 @@ npm run setup
 npm run login:clipboard
 npm run smoke:auth-refresh
 npm run smoke:ka
-npm run doctor:telegram
+npm run doctor:account
 ```
 
 `npm run setup` includes `npm ci`. Do not continue after a failed command, and do not copy marketplace cookies, tokens, or browser profiles from another Mac. If Vinted is enabled, also run `npm run login:vinted` and `npm run smoke:vinted` before the dry-run acceptance test.
@@ -155,7 +155,7 @@ npm run service:status
 npm run service:restart
 ```
 
-The installer reruns the strict Telegram/runtime doctor, writes no secrets into the plist, embeds the current Node/project paths, starts the existing `scripts/start.sh`, and stores private logs under `workspace/logs`. It runs only in the signed-in macOS user session; the Mac must remain awake and online. A PID lock prevents a second bot process from using the same Telegram account and local state.
+The installer reruns the strict Telegram/account doctor, writes no secrets into the plist, embeds the current Node/project paths, starts the existing `scripts/start.sh`, and stores private logs under `workspace/logs`. It runs only in the signed-in macOS user session; the Mac must remain awake and online. A PID lock prevents a second bot process from using the same Telegram account and local state.
 
 `scripts/start.sh` wraps the agent in `caffeinate -i -s`, so while the bot runs the Mac will not idle-sleep or system-sleep on AC power. This keeps the bot alive instead of stopping after a short idle timeout. The `caffeinate` process ends together with the agent, so it does not keep the Mac awake when the bot is stopped. Note that closing the lid or a manual sleep still suspends the Mac; for unattended 24/7 operation set Energy Saver to prevent sleep on AC power.
 
@@ -255,7 +255,8 @@ For an active but weak listing, ask the bot to analyze the asset. It reads the r
 | Command | Purpose |
 |---|---|
 | `npm run doctor` | Secret-safe local configuration diagnosis |
-| `npm run doctor:telegram` | Strict production check including Telegram credentials |
+| `npm run doctor:telegram` | Startup check including Telegram credentials; marketplace sessions are diagnostic only |
+| `npm run doctor:account` | Strict installation gate including Telegram and Kleinanzeigen account readiness |
 | `npm run smoke:openrouter` | One inexpensive live model/tool-calling check |
 | `npm run smoke:auth-refresh` | Refresh the dedicated Chrome session, persist it, then verify a private message read |
 | `npm run smoke:ka` | Read-only public + authenticated Kleinanzeigen API checks |
@@ -278,7 +279,7 @@ For an active but weak listing, ask the bot to analyze the asset. It reads the r
 | `npm run login:inspect` | Show only saved Kleinanzeigen cookie names/domains |
 | `npm run login:automated` | Explicit Playwright-driven login fallback |
 | `npm run refresh-auth` | Access-/Refresh-Token per OIDC erneuern und atomar speichern; kein Browserzugriff |
-| `npm run launch` / `npm start` | Strict preflight, optional OpenShell policy, then Telegram bot |
+| `npm run launch` / `npm start` | Runtime/Telegram preflight, optional OpenShell policy, then Telegram bot |
 | `npm run service:install` | Install/start the bot as a standard macOS user LaunchAgent |
 | `npm run service:status` | Inspect the loaded LaunchAgent |
 | `npm run service:restart` | Start the loaded LaunchAgent again after its visible bot Terminal has been closed |
