@@ -51,53 +51,54 @@ function verifySmokeResult({
   if (!result?.toolCalls?.includes("ka_search_ads")) {
     throw new Error(`Agent hat keine Preisrecherche ausgeführt. Tools: ${(result?.toolCalls || []).join(", ") || "keine"}`);
   }
-  if (!pending || pending.tool !== "ka_create_ad") {
+  if (!pending || pending.tool !== "ka_publish_prepared_listing") {
     throw new Error(`Agent hat keine Anzeige vorgemerkt. Tools: ${(result?.toolCalls || []).join(", ") || "keine"}`);
   }
+  const listing = pending.args.listing || {};
   if (result.route.tier !== "fast" || result.route.model !== expectedModel) {
     throw new Error(`Smoke-Test wurde unerwartet geroutet: ${result.route.tier}/${result.route.model}`);
   }
-  if (!Array.isArray(pending.args.imagePaths) || pending.args.imagePaths.length < 1) {
+  if (!Array.isArray(listing.imagePaths) || listing.imagePaths.length < 1) {
     throw new Error("Vorgemerkte Anzeige enthält keine ausgewählten Bilder.");
   }
-  if (pending.args.imagePaths.length > images.length) {
-    throw new Error(`Vorgemerkte Bildauswahl ist größer als der Eingang (${pending.args.imagePaths.length}/${images.length}).`);
+  if (listing.imagePaths.length > images.length) {
+    throw new Error(`Vorgemerkte Bildauswahl ist größer als der Eingang (${listing.imagePaths.length}/${images.length}).`);
   }
-  if (new Set(pending.args.imagePaths).size !== pending.args.imagePaths.length) {
+  if (new Set(listing.imagePaths).size !== listing.imagePaths.length) {
     throw new Error("Vorgemerkte Bildauswahl enthält doppelte Pfade.");
   }
   const allowedSources = new Set(images.map(image => path.resolve(image)));
-  for (const selectedPath of pending.args.imagePaths) {
+  for (const selectedPath of listing.imagePaths) {
     const sourcePath = path.resolve(imageSourceResolver(selectedPath));
     if (!allowedSources.has(sourcePath)) {
       throw new Error(`Vorgemerktes Bild stammt nicht aus dem Testalbum: ${selectedPath}`);
     }
   }
-  if (pending.materials.length !== pending.args.imagePaths.length) {
-    throw new Error(`Bild-Manifeste fehlen (${pending.materials.length}/${pending.args.imagePaths.length}).`);
+  if (pending.materials.length !== listing.imagePaths.length) {
+    throw new Error(`Bild-Manifeste fehlen (${pending.materials.length}/${listing.imagePaths.length}).`);
   }
   const observedCategoryIds = new Set(
     result.toolTrace
       .filter(entry => entry.tool === "ka_search_ads")
       .flatMap(entry => entry.result?.categoryIds || [])
   );
-  if (!observedCategoryIds.has(Number(pending.args.categoryId))) {
+  if (!observedCategoryIds.has(Number(listing.categoryId))) {
     throw new Error(
-      `Kategorie ${pending.args.categoryId} kam nicht in den Suchergebnissen vor ` +
+      `Kategorie ${listing.categoryId} kam nicht in den Suchergebnissen vor ` +
       `(beobachtet: ${[...observedCategoryIds].join(", ") || "keine"}).`
     );
   }
   for (const field of ["title", "description", "zipCode", "locationId", "contactName"]) {
-    if (!String(pending.args[field] || "").trim()) {
+    if (!String(listing[field] || "").trim()) {
       throw new Error(`Vorgemerkte Anzeige hat kein Feld ${field}.`);
     }
   }
   const proposalText = String(proposal || "");
   for (const expected of [
-    pending.args.title,
-    String(pending.args.categoryId),
-    String(pending.args.description),
-    `${pending.args.imagePaths.length}`,
+    listing.title,
+    pending.args.category,
+    String(listing.description),
+    `${listing.imagePaths.length}`,
   ]) {
     if (!proposalText.includes(expected)) {
       throw new Error(`Telegram-Vorschlag enthält den erwarteten Anzeigeninhalt nicht: ${expected}`);
@@ -112,7 +113,7 @@ function verifySmokeResult({
   for (const fact of requiredFacts) {
     const normalized = String(fact).trim().toLocaleLowerCase("de-DE");
     if (!normalized) continue;
-    if (!String(pending.args.description).toLocaleLowerCase("de-DE").includes(normalized)) {
+    if (!String(listing.description).toLocaleLowerCase("de-DE").includes(normalized)) {
       throw new Error(`Pflichtfakt fehlt in der Anzeigenbeschreibung: ${fact}`);
     }
     if (!proposalText.toLocaleLowerCase("de-DE").includes(normalized)) {
@@ -153,7 +154,7 @@ async function main() {
     const prompt = [
       ...images.map(image => `[FOTO path:${image}]`),
       context || "Nur ein Dry-run-Test: Erkenne den Artikel, recherchiere vergleichbare aktuelle Angebote und bereite eine vollständige ehrliche Verkaufsanzeige vor. Nichts ausführen.",
-      "Rufe für den fertigen Vorschlag ka_create_ad auf; die Bridge darf ihn ausschließlich als blockierte Dry-run-Aktion vormerken.",
+      "Bereite den fertigen Vorschlag mit ka_prepare_listing vor und rufe bei ready sofort ka_publish_prepared_listing nur mit der preparationId auf. Die Bridge darf ihn ausschließlich als blockierte Dry-run-Aktion vormerken.",
     ].join("\n");
     const result = await runAgent("agent-smoke", prompt, { llmClient, gateway });
     const pending = result?.pending;
@@ -172,10 +173,10 @@ async function main() {
       `route=${result.route.tier}:${result.route.reason}`,
       `tools=${result.toolCalls.join(" → ")}`,
       `action=${pending.id}`,
-      `title=${pending.args.title}`,
-      `categoryId=${pending.args.categoryId}`,
-      `price=${pending.args.price} EUR`,
-      `images=${pending.args.imagePaths.length}/${images.length} selected`,
+      `title=${pending.args.listing.title}`,
+      `categoryId=${pending.args.listing.categoryId}`,
+      `price=${pending.args.listing.price} EUR`,
+      `images=${pending.args.listing.imagePaths.length}/${images.length} selected`,
     ].join(" | "));
   } finally {
     clearPending("agent-smoke");

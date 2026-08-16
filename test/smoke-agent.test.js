@@ -9,36 +9,43 @@ function fixture(categoryId = 230) {
   const images = ["/images/one.jpg", "/images/two.jpg"];
   const result = {
     route: { tier: "fast", model: "google/gemini-3.6-flash" },
-    toolCalls: ["ka_search_ads", "ka_create_ad"],
+    toolCalls: ["ka_search_ads", "ka_prepare_listing", "ka_publish_prepared_listing"],
     toolTrace: [
       {
         tool: "ka_search_ads",
         args: { keyword: "item" },
         result: { count: 3, categoryIds: [230, 231] },
       },
-      { tool: "ka_create_ad", staged: true },
+      { tool: "ka_prepare_listing", ok: true },
+      { tool: "ka_publish_prepared_listing", staged: true },
     ],
   };
   const pending = {
     id: "abc123",
-    tool: "ka_create_ad",
+    tool: "ka_publish_prepared_listing",
     materials: images.map(path => ({ path, size: 10, sha256: "a".repeat(64) })),
     args: {
-      title: "Testartikel",
-      description: "Ehrliche Beschreibung",
-      categoryId,
-      price: 50,
-      zipCode: "80636",
-      locationId: "16360",
-      contactName: "Test",
-      imagePaths: images,
+      preparationId: "0".repeat(24),
+      category: "Haus & Garten > Test",
+      delivery: "pickup_only",
+      listing: {
+        title: "Testartikel",
+        description: "Ehrliche Beschreibung",
+        categoryId,
+        price: 50,
+        zipCode: "80636",
+        locationId: "16360",
+        contactName: "Test",
+        imagePaths: images,
+      },
     },
   };
+  const listing = pending.args.listing;
   const proposal = [
-    pending.args.title,
-    `Kategorie-ID: ${pending.args.categoryId}`,
-    `Fotos: ${pending.args.imagePaths.length} (one.jpg sha256:aaaaaaaaaaaa, two.jpg sha256:aaaaaaaaaaaa)`,
-    pending.args.description,
+    listing.title,
+    `Kategorie: ${pending.args.category}`,
+    `Fotos: ${listing.imagePaths.length} (one.jpg sha256:aaaaaaaaaaaa, two.jpg sha256:aaaaaaaaaaaa)`,
+    listing.description,
     "Dry-run ist aktiv",
   ].join("\n");
   return {
@@ -70,13 +77,13 @@ test("agent smoke verifier rejects missing image manifests and expensive routing
 
 test("agent smoke verifier accepts a subset or derivative but rejects unknown photos", () => {
   const subset = fixture();
-  subset.pending.args.imagePaths = [subset.images[1]];
+  subset.pending.args.listing.imagePaths = [subset.images[1]];
   subset.pending.materials = [subset.pending.materials[1]];
   subset.proposal = subset.proposal.replace("Fotos: 2", "Fotos: 1");
   assert.doesNotThrow(() => verifySmokeResult(subset));
 
   const derivative = fixture();
-  derivative.pending.args.imagePaths = ["/images/edited-one.jpg"];
+  derivative.pending.args.listing.imagePaths = ["/images/edited-one.jpg"];
   derivative.pending.materials = [{
     path: "/images/edited-one.jpg",
     size: 10,
@@ -87,7 +94,7 @@ test("agent smoke verifier accepts a subset or derivative but rejects unknown ph
   assert.doesNotThrow(() => verifySmokeResult(derivative));
 
   const unknown = fixture();
-  unknown.pending.args.imagePaths = ["/images/unknown.jpg"];
+  unknown.pending.args.listing.imagePaths = ["/images/unknown.jpg"];
   unknown.pending.materials = [{
     path: "/images/unknown.jpg",
     size: 10,
@@ -98,10 +105,10 @@ test("agent smoke verifier accepts a subset or derivative but rejects unknown ph
 
 test("agent smoke verifier requires exact proposal fields and requested condition facts", () => {
   const valid = fixture();
-  valid.pending.args.description = "Ehrliche Beschreibung mit sichtbarem Lackabplatzer.";
+  valid.pending.args.listing.description = "Ehrliche Beschreibung mit sichtbarem Lackabplatzer.";
   valid.proposal = valid.proposal.replace(
     "Ehrliche Beschreibung",
-    valid.pending.args.description
+    valid.pending.args.listing.description
   );
   valid.requiredFacts = ["Lackabplatzer"];
   assert.doesNotThrow(() => verifySmokeResult(valid));

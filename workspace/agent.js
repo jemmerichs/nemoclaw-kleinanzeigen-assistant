@@ -18,6 +18,13 @@ const {
 } = require("../tools/kleinanzeigen-category-contracts");
 const { inspectCategoryForm } = require("../tools/kleinanzeigen-form");
 const kleinanzeigenPublishForm = require("../tools/kleinanzeigen-publish-form");
+const {
+  getListingPreparation,
+  normalizeCategoryPath,
+  preparationTechnicalFailure,
+  resolveCategoryAttributes,
+  storeListingPreparation,
+} = require("../tools/kleinanzeigen-listing-preparation");
 const VintedClient = require("../tools/vinted");
 const { PROFILE_DIR: VINTED_PROFILE_DIR } = require("../tools/vinted-auth");
 const { OpenRouterClient } = require("../tools/openrouter");
@@ -182,6 +189,32 @@ const attributesSchema = {
   additionalProperties: { type: "string" },
   maxProperties: 30,
 };
+const categoryAnswersSchema = {
+  type: "object",
+  description: "Nur bei Bedarf: sichtbare Feldbezeichnung auf sichtbare Optionsbezeichnung abbilden.",
+  additionalProperties: { type: "string", minLength: 1, maxLength: 200 },
+  maxProperties: 20,
+};
+const kleinanzeigenCreateSchema = objectSchema({
+  assetId: integer("Optional vorhandene lokale Asset-ID", { minimum: 1 }),
+  assetName: string("Interner Artikelname", { maxLength: 200 }),
+  title: string("Anzeigentitel", { minLength: 1, maxLength: 65 }),
+  description: string("Ehrliche Beschreibung inklusive bekannter Mängel", { minLength: 1, maxLength: 4000 }),
+  categoryId: integer("Exakte Kleinanzeigen-Kategorie-ID", { minimum: 1 }),
+  price: integer("Preis in ganzen EUR", { minimum: 0 }),
+  priceType: string("FIXED, NEGOTIABLE oder GIVE_AWAY", { enum: ["FIXED", "NEGOTIABLE", "GIVE_AWAY"] }),
+  zipCode: string("Konfigurierte feste PLZ", { pattern: "^\\d{5}$" }),
+  locationId: string("Konfigurierte feste Orts-ID", { minLength: 1, maxLength: 50 }),
+  contactName: string("Konfigurierter Anzeigename", { minLength: 1, maxLength: 30 }),
+  imagePaths: stringArray("Lokale Bildpfade aus FOTO-Tokens"),
+  attributes: attributesSchema,
+}, [
+  "title",
+  "description",
+  "categoryId",
+  "price",
+  "imagePaths",
+]);
 const vintedAttributesSchema = {
   type: "object",
   description: "Exakt sichtbare Vinted-Formularfelder, z. B. computer_ram. Werte müssen dem aktuellen Auswahltext entsprechen.",
@@ -626,6 +659,90 @@ function prepareCreateArgs(rawArgs) {
   return args;
 }
 
+async function prepareSemanticKleinanzeigenListing(rawArgs, {
+  inspect = inspectCategoryForm,
+} = {}) {
+  const categoryPath = normalizeCategoryPath(rawArgs.category);
+  try {
+    const inspection = await inspect({ categoryPath });
+    if (inspection.status === "selection_required") {
+      return {
+        status: "needs_input",
+        question: inspection.issue || "Welche sichtbare Unterkategorie passt?",
+        field: "Kategorie",
+        selectedCategory: (inspection.selectedPath || []).join(" > "),
+        choices: (inspection.choices || []).map(choice => choice.label).filter(Boolean),
+        instruction:
+          "Rufe ka_prepare_listing mit dem vervollständigten sichtbaren Kategoriepfad erneut auf. Keine Kategorie-ID raten.",
+      };
+    }
+    if (inspection.status !== "ready" || inspection.verified !== true) {
+      throw new Error("Die aktuelle Kategorieprüfung lieferte keinen verifizierten Formularvertrag.");
+    }
+
+    const delivery = rawArgs.delivery || "pickup_only";
+    const categoryResolution = resolveCategoryAttributes(inspection, {
+      delivery,
+      categoryAnswers: rawArgs.categoryAnswers,
+    });
+    if (categoryResolution.status !== "ready") {
+      return {
+        ...categoryResolution,
+        category: String(inspection.category || categoryPath.join(" > ")),
+        instruction: categoryResolution.instruction ||
+          "Rufe ka_prepare_listing mit den sichtbaren Bezeichnungen in categoryAnswers erneut auf. Keine internen Feldwerte raten.",
+      };
+    }
+
+    const listing = prepareCreateArgs({
+      ...(rawArgs.assetId !== undefined ? { assetId: rawArgs.assetId } : {}),
+      ...(rawArgs.assetName !== undefined ? { assetName: rawArgs.assetName } : {}),
+      title: rawArgs.title,
+      description: rawArgs.description,
+      categoryId: inspection.categoryId,
+      price: rawArgs.price,
+      priceType: rawArgs.priceType || "NEGOTIABLE",
+      imagePaths: rawArgs.imagePaths,
+      attributes: categoryResolution.attributes,
+    });
+    const category = String(inspection.category || categoryPath.join(" > ")).trim();
+    const snapshot = { category, delivery, listing };
+    const preparationId = storeListingPreparation(snapshot);
+    return {
+      status: "ready",
+      preparationId,
+      preview: {
+        title: listing.title,
+        description: listing.description,
+        price: listing.price,
+        priceType: listing.priceType,
+        category,
+        delivery: delivery === "shipping_available" ? "Versand möglich" : "Nur Abholung",
+        imageCount: listing.imagePaths.length,
+      },
+      instruction:
+        "Wenn diese Anzeige veröffentlicht werden soll, rufe jetzt ka_publish_prepared_listing nur mit der preparationId auf. Die Bridge zeigt danach die Go-Freigabe.",
+    };
+  } catch (error) {
+    return preparationTechnicalFailure(error, { categoryPath });
+  }
+}
+
+async function publishKleinanzeigenListing(rawArgs) {
+  const args = prepareCreateArgs(rawArgs);
+  const client = requireAuthenticatedKa();
+  const result = await kleinanzeigenPublishForm.publishListingViaForm(
+    args,
+    { cookieHeader: client.cookies }
+  );
+  try {
+    const assetId = recordPublishedListing(args, result);
+    return { ...result, assetId, imageCount: args.imagePaths.length };
+  } catch (error) {
+    return { ...result, imageCount: args.imagePaths.length, localTrackingError: error.message };
+  }
+}
+
 function prepareDraftArgs(rawArgs) {
   const args = prepareListingArgs(rawArgs);
   if (!args.title && !args.description && !args.imagePaths.length) {
@@ -657,7 +774,8 @@ function prepareVintedArgs(rawArgs, { draft = false } = {}) {
 }
 
 function imageMaterials(args) {
-  return (args.imagePaths || []).map(filePath => {
+  const imagePaths = args.listing?.imagePaths || args.imagePaths || [];
+  return imagePaths.map(filePath => {
     const resolved = assertImagePath(filePath);
     const buffer = fs.readFileSync(resolved);
     return {
@@ -751,6 +869,7 @@ const TOOLS = {
         description: "Nach einem serverseitigen Formularfehler true setzen, um einen Cache-Treffer bewusst zu umgehen",
       },
     }),
+    agentFacing: false,
     fn: async args => {
       if (args.categoryId && !args.categoryPath?.length && !args.refresh) {
         const cached = getCategoryRequirements(args.categoryId);
@@ -859,39 +978,83 @@ const TOOLS = {
       }
     },
   },
-  ka_create_ad: {
-    description: "Eine Anzeige samt lokalen Bildern veröffentlichen und danach lokal erfassen. Externe Veröffentlichung; benötigt ein exaktes Go.",
+  ka_prepare_listing: {
+    description:
+      "Eine Kleinanzeigen-Anzeige fachlich vorbereiten. Die Bridge prüft den sichtbaren Kategoriepfad im aktuellen Formular, " +
+      "setzt Standort, Kontakt und Versand intern und liefert ready, needs_input oder technical_failure. Führt keine Veröffentlichung aus.",
     schema: objectSchema({
       assetId: integer("Optional vorhandene lokale Asset-ID", { minimum: 1 }),
       assetName: string("Interner Artikelname", { maxLength: 200 }),
       title: string("Anzeigentitel", { minLength: 1, maxLength: 65 }),
       description: string("Ehrliche Beschreibung inklusive bekannter Mängel", { minLength: 1, maxLength: 4000 }),
-      categoryId: integer("Exakte Kleinanzeigen-Kategorie-ID", { minimum: 1 }),
+      category: string("Sichtbarer Kategoriepfad, zum Beispiel Haus & Garten > Weiteres Haus & Garten", { maxLength: 400 }),
       price: integer("Preis in ganzen EUR", { minimum: 0 }),
       priceType: string("FIXED, NEGOTIABLE oder GIVE_AWAY", { enum: ["FIXED", "NEGOTIABLE", "GIVE_AWAY"] }),
-      zipCode: string("Optional; die Bridge ersetzt dies durch die konfigurierte feste PLZ", { pattern: "^\\d{5}$" }),
-      locationId: string("Optional; die Bridge ersetzt dies durch die konfigurierte feste Orts-ID", { maxLength: 50 }),
-      contactName: string("Optional; die Bridge ersetzt dies durch den konfigurierten Anzeigenamen", { maxLength: 30 }),
+      delivery: string("Fachliche Versandwahl; Standard ist pickup_only", {
+        enum: ["pickup_only", "shipping_available"],
+      }),
+      categoryAnswers: categoryAnswersSchema,
       imagePaths: stringArray("Lokale Bildpfade aus FOTO-Tokens"),
-      attributes: attributesSchema,
-    }, ["title", "description", "categoryId", "price", "imagePaths"]),
+    }, ["title", "description", "price", "imagePaths"]),
+    fn: async args => {
+      try {
+        if (TOOLS.ka_prepare_listing.ensureSession) {
+          await TOOLS.ka_prepare_listing.ensureSession();
+        } else {
+          const client = requireAuthenticatedKa();
+          if (client.accessTokenExpiresWithin()) await refreshBearer();
+        }
+        return await prepareSemanticKleinanzeigenListing(args, {
+          inspect: TOOLS.ka_prepare_listing.inspect || inspectCategoryForm,
+        });
+      } catch (error) {
+        return preparationTechnicalFailure(error, {
+          categoryPath: normalizeCategoryPath(args.category),
+        });
+      }
+    },
+  },
+  ka_publish_prepared_listing: {
+    description:
+      "Eine zuvor mit ka_prepare_listing verifizierte Anzeige zur exakten Go-Freigabe vormerken. " +
+      "Nur die undurchsichtige preparationId übergeben.",
+    schema: objectSchema({
+      preparationId: string("Undurchsichtige ID aus ka_prepare_listing", {
+        pattern: "^[a-f0-9]{24}$",
+      }),
+    }, ["preparationId"]),
+    actionSchema: objectSchema({
+      preparationId: string("Gebundene Vorbereitungs-ID", { pattern: "^[a-f0-9]{24}$" }),
+      category: string("Verifizierter sichtbarer Kategoriepfad", { minLength: 1, maxLength: 400 }),
+      delivery: string("Fachliche Versandwahl", {
+        enum: ["pickup_only", "shipping_available"],
+      }),
+      listing: kleinanzeigenCreateSchema,
+    }, ["preparationId", "category", "delivery", "listing"]),
+    requiresApproval: true,
+    requiresLive: true,
+    prepareForApproval: args => {
+      const snapshot = getListingPreparation(args.preparationId);
+      return {
+        preparationId: String(args.preparationId).trim(),
+        ...snapshot,
+        listing: prepareCreateArgs(snapshot.listing),
+      };
+    },
+    prepareAction: args => ({
+      ...args,
+      listing: prepareCreateArgs(args.listing),
+    }),
+    fn: args => publishKleinanzeigenListing(args.listing),
+  },
+  ka_create_ad: {
+    description: "Eine Anzeige samt lokalen Bildern veröffentlichen und danach lokal erfassen. Externe Veröffentlichung; benötigt ein exaktes Go.",
+    schema: kleinanzeigenCreateSchema,
+    agentFacing: false,
     requiresApproval: true,
     requiresLive: true,
     prepare: prepareCreateArgs,
-    fn: async rawArgs => {
-      const args = prepareCreateArgs(rawArgs);
-      const client = requireAuthenticatedKa();
-      const result = await kleinanzeigenPublishForm.publishListingViaForm(
-        args,
-        { cookieHeader: client.cookies }
-      );
-      try {
-        const assetId = recordPublishedListing(args, result);
-        return { ...result, assetId, imageCount: args.imagePaths.length };
-      } catch (error) {
-        return { ...result, imageCount: args.imagePaths.length, localTrackingError: error.message };
-      }
-    },
+    fn: publishKleinanzeigenListing,
   },
   ka_delete_ad: {
     description: "Eine veröffentlichte Anzeige löschen und den lokalen Status aktualisieren. Benötigt ein exaktes Go.",
@@ -1114,6 +1277,7 @@ function toolDefinitions({ exclude = [], include = null } = {}) {
   return Object.entries(TOOLS)
     .filter(([name, tool]) => (
       tool.expose !== false
+      && tool.agentFacing !== false
       && !excluded.has(name)
       && (!included || included.has(name))
     ))
@@ -1133,6 +1297,7 @@ function toolManifest({ exclude = [], include = null } = {}) {
   return Object.entries(TOOLS)
     .filter(([name, tool]) => (
       tool.expose !== false
+      && tool.agentFacing !== false
       && !excluded.has(name)
       && (!included || included.has(name))
     ))
@@ -1145,10 +1310,10 @@ const TURN_SCOPES = Object.freeze({
     name: "kleinanzeigen-listing",
     tools: Object.freeze([
       "ka_search_ads",
-      "ka_get_category_requirements",
       "image_edit",
       "ka_save_draft",
-      "ka_create_ad",
+      "ka_prepare_listing",
+      "ka_publish_prepared_listing",
       "inventory_list",
       "inventory_get_asset",
       "inventory_mark_sold",
@@ -1164,11 +1329,11 @@ const TURN_SCOPES = Object.freeze({
       "ka_get_ad_bundles",
       "ka_get_drafts",
       "ka_search_ads",
-      "ka_get_category_requirements",
       "image_edit",
       "ka_save_draft",
       "ka_delete_draft",
-      "ka_create_ad",
+      "ka_prepare_listing",
+      "ka_publish_prepared_listing",
       "ka_delete_ad",
       "inventory_list",
       "inventory_get_asset",
@@ -1204,14 +1369,14 @@ const TURN_SCOPES = Object.freeze({
     name: "vinted",
     tools: Object.freeze([
       "ka_search_ads",
-      "ka_get_category_requirements",
       "vinted_get_account",
       "vinted_search_items",
       "vinted_get_my_items",
       "vinted_get_conversations",
       "image_edit",
       "ka_save_draft",
-      "ka_create_ad",
+      "ka_prepare_listing",
+      "ka_publish_prepared_listing",
       "vinted_save_draft",
       "vinted_create_item",
       "vinted_delete_item",
@@ -1238,7 +1403,7 @@ const TURN_SCOPES = Object.freeze({
     name: "vollstaendig",
     tools: Object.freeze(
       Object.entries(TOOLS)
-        .filter(([_name, tool]) => tool.expose !== false)
+        .filter(([_name, tool]) => tool.expose !== false && tool.agentFacing !== false)
         .map(([name]) => name)
     ),
     skills: Object.freeze([
@@ -1313,7 +1478,7 @@ function verifiedKaAccessFailureMessage(toolName, error) {
   ]);
   if (!privateAccessCodes.has(code) && !publicAccessCodes.has(code)) return null;
 
-  const operation = toolName === "ka_get_category_requirements"
+  const operation = ["ka_get_category_requirements", "ka_prepare_listing"].includes(toolName)
     ? "die Kategorieprüfung"
     : "den angeforderten Kleinanzeigen-Zugriff";
   if (code === "KA_BROWSER_REJECTED" || code === "KA_BROWSER_BACKOFF") {
@@ -1348,7 +1513,7 @@ function verifiedKaAccessFailureMessage(toolName, error) {
 
 function verifiedCategoryInspectionFailureMessage(toolName, error) {
   if (
-    toolName !== "ka_get_category_requirements"
+    !["ka_get_category_requirements", "ka_prepare_listing"].includes(toolName)
     || error?.code !== "KA_CATEGORY_INSPECTION_INCOMPLETE"
   ) return null;
   const categoryId = Number(error?.categoryId);
@@ -1695,6 +1860,18 @@ function describeAction(action) {
   const args = action.args || {};
   const header = `Aktion ${action.id}`;
   switch (action.tool) {
+    case "ka_publish_prepared_listing": {
+      const listing = args.listing || {};
+      return [
+        `${header}: Anzeige veröffentlichen`,
+        `Titel: ${listing.title}`,
+        `Preis: ${euro(listing.price)} (${listing.priceType || "NEGOTIABLE"})`,
+        `Kategorie: ${args.category}`,
+        `Versand: ${args.delivery === "shipping_available" ? "Versand möglich" : "Nur Abholung"}`,
+        `Fotos: ${action.materials.length}${action.materials.length ? ` (${action.materials.map(item => `${path.basename(item.path)} sha256:${item.sha256.slice(0, 12)}`).join(", ")})` : ""}`,
+        `Beschreibung:\n${listing.description}`,
+      ].join("\n");
+    }
     case "ka_create_ad":
       return [
         `${header}: Anzeige veröffentlichen`,
@@ -1768,6 +1945,7 @@ function describeResult(toolName, result) {
     ? `\nAchtung: ${marketplace} hat die Aktion bestätigt, aber die lokale Inventar-Aktualisierung ist fehlgeschlagen: ${result.localTrackingError}`
     : "";
   switch (toolName) {
+    case "ka_publish_prepared_listing":
     case "ka_create_ad":
       return [
         `Anzeige veröffentlicht: ${result.link || result.id}`,
@@ -1825,10 +2003,11 @@ function describeListingValidationFailure(action, error, { categoryContractInval
     ...details,
     "",
     ...(categoryContractInvalidated
-      ? ["Die Bridge hat den abgelehnten Kategorievertrag gesperrt, bis das aktuelle Formular erfolgreich neu geprüft wurde."]
+      ? ["Die Bridge hat diese Vorbereitung verworfen. Eine neue Vorbereitung prüft automatisch das aktuelle sichtbare Formular."]
       : []),
-    "Es wurde nichts veröffentlicht oder gespeichert. Der Vorschlag muss mit aktuell verifizierten " +
-      "Kategorie- und Standortfeldern neu vorbereitet und erneut mit Go bestätigt werden.",
+    "Technische Referenz: KA_LISTING_VALIDATION / publish_current_listing_form.",
+    "Es wurde nichts veröffentlicht oder gespeichert. Bereite denselben fachlichen Vorschlag erneut vor; " +
+      "Kategorie-IDs oder Formularfelder müssen dabei nicht manuell korrigiert werden.",
   ].join("\n");
 }
 
@@ -1843,6 +2022,21 @@ function describeAmbiguousActionFailure(action, error, marketplace) {
     "Sie wird nicht automatisch wiederholt. Prüfe zuerst den aktuellen Stand auf dem Marktplatz.",
     "Derselbe unveränderte Versuch bleibt gesperrt; für einen neuen Vorschlag müssen fehlerhafte " +
       "Formularwerte korrigiert werden.",
+  ].join("\n");
+}
+
+function describePreparationTechnicalFailure(result) {
+  const diagnostic = result?.diagnostic || {};
+  return [
+    String(result?.message || "Die Anzeige konnte nicht sicher vorbereitet werden."),
+    "",
+    "Technische Diagnose für den Backend-Entwicklungsagenten:",
+    `- Code: ${String(diagnostic.code || "KA_PREPARATION_FAILED")}`,
+    `- Schritt: ${String(diagnostic.step || "prepare_current_listing_form")}`,
+    `- Kategorie: ${String(diagnostic.category || "noch nicht gewählt")}`,
+    `- Fehler: ${String(diagnostic.error || "Keine weiteren Details").slice(0, 1000)}`,
+    "",
+    String(result?.instruction || "Keine technischen Formularwerte raten."),
   ].join("\n");
 }
 
@@ -1912,9 +2106,9 @@ function userPrompt(chatId, history) {
       `Modus: ${getMode()}`,
       `Vorgemerkte Aktion: ${pending ? `${pending.tool} (${pending.id})` : "keine"}`,
       listingConfig.ready
-        ? "Kleinanzeigen-Veröffentlichungskonfiguration: bereit. Die Bridge setzt Standard-PLZ, interne Orts-ID und Profilname bei ka_create_ad automatisch ein; diese Werte weder erfragen noch selbst setzen."
+        ? "Kleinanzeigen-Veröffentlichungskonfiguration: bereit. ka_prepare_listing setzt Standort, Profilname, Kategorie-ID und Formularattribute intern; diese technischen Werte weder erfragen noch selbst setzen."
         : "Kleinanzeigen-Veröffentlichungskonfiguration: blockiert; auf diesem Mac fehlt oder ist ungültig: " +
-          `${listingConfig.problems.join(", ")}. ka_create_ad kann erst nach lokaler Konfiguration vorgemerkt werden.`,
+          `${listingConfig.problems.join(", ")}. Eine Veröffentlichung kann erst nach lokaler Konfiguration vorbereitet werden.`,
       "Ein früherer Entwurf, Link oder Veröffentlichungserfolg gilt nicht als aktuell bestätigt, " +
         "wenn er nur im Gespräch erwähnt wurde. Bei Bedarf den aktuellen Marktplatzstand mit dem passenden Lesetool prüfen.",
     ].join("\n"),
@@ -1975,9 +2169,14 @@ async function handleApproval(chatId, gateway) {
     if (expectedId !== action.id) {
       throw new Error("Die vorgemerkte Aktion wurde seit der Anzeige verändert und deshalb verworfen.");
     }
-    validateSchema(action.args, tool.schema);
-    const canonicalArgs = tool.prepare ? tool.prepare(action.args) : action.args;
-    validateSchema(canonicalArgs, tool.schema);
+    const actionSchema = tool.actionSchema || tool.schema;
+    validateSchema(action.args, actionSchema);
+    const canonicalArgs = tool.prepareAction
+      ? tool.prepareAction(action.args)
+      : tool.prepare
+        ? tool.prepare(action.args)
+        : action.args;
+    validateSchema(canonicalArgs, actionSchema);
     if (stableJson(canonicalArgs) !== stableJson(action.args)) {
       throw new Error("Die vorgemerkten Argumente sind nicht mehr kanonisch und wurden verworfen.");
     }
@@ -1991,10 +2190,10 @@ async function handleApproval(chatId, gateway) {
     const dryRunBlocked = getMode() !== "live" && error.message.includes("dry-run-Modus blockiert");
     const categoryValidation = error.code === "KA_LISTING_VALIDATION";
     let invalidatedCategory = null;
-    if (categoryValidation && action.tool === "ka_create_ad") {
+    if (categoryValidation && ["ka_create_ad", "ka_publish_prepared_listing"].includes(action.tool)) {
       try {
         invalidatedCategory = invalidateCategoryRequirements(
-          error.categoryId || action.args?.categoryId,
+          error.categoryId || action.args?.listing?.categoryId || action.args?.categoryId,
           error.validationErrors
         );
       } catch (invalidationError) {
@@ -2020,8 +2219,8 @@ async function handleApproval(chatId, gateway) {
       categoryValidation
         ? "System: Kleinanzeigen-Formularvertrag veraltet oder unvollständig. " +
           `${invalidatedCategory?.invalidated ? "Die Bridge hat den abgelehnten Kategorievertrag gesperrt. " : ""}` +
-          `Kategorie ${error.categoryId || action.args?.categoryId || "unbekannt"} vor einem neuen Vorschlag ` +
-          "read-only mit ka_get_category_requirements und refresh=true prüfen. " +
+          `Kategorie ${error.categoryId || action.args?.listing?.categoryId || action.args?.categoryId || "unbekannt"} vor einem neuen Vorschlag ` +
+          "über ka_prepare_listing erneut am aktuellen sichtbaren Formular prüfen. " +
           `Validierungsdaten: ${boundedJson(error.validationErrors || [], 3000)}. ` +
           "Keine Attributwerte oder Ortsdaten raten und keinen Schreibversuch automatisch wiederholen."
         : !ambiguousExternalFailure
@@ -2305,7 +2504,7 @@ async function runAgent(
         let args;
         try {
           args = parseToolArguments(call.function?.arguments);
-          if (tool && tool.expose !== false) {
+          if (tool && tool.expose !== false && tool.agentFacing !== false) {
             validateSchema(args, tool.schema);
             if (tool.prepare) args = tool.prepare(args);
             validateSchema(args, tool.schema);
@@ -2319,7 +2518,7 @@ async function runAgent(
           });
           continue;
         }
-        if (!tool || tool.expose === false) {
+        if (!tool || tool.expose === false || tool.agentFacing === false) {
           messages.push(modelMessage);
           messages.push({
             role: "tool",
@@ -2334,6 +2533,8 @@ async function runAgent(
         const unreviewedEditInput = toolName === "image_edit"
           && remainingVisuals.includes(args.inputPath);
         const needsCompleteAlbumReview = [
+          "ka_prepare_listing",
+          "ka_publish_prepared_listing",
           "ka_create_ad",
           "ka_save_draft",
           "vinted_create_item",
@@ -2385,6 +2586,8 @@ async function runAgent(
           }
           let action;
           try {
+            if (tool.prepareForApproval) args = await tool.prepareForApproval(args);
+            validateSchema(args, tool.actionSchema || tool.schema);
             action = stagePending(chatId, toolName, args);
           } catch (error) {
             toolTrace.push({
@@ -2469,6 +2672,13 @@ async function runAgent(
             }
           }
           toolTrace.push(compactToolTrace(toolName, args, result));
+          if (toolName === "ka_prepare_listing" && result?.status === "technical_failure") {
+            const message = describePreparationTechnicalFailure(result);
+            await gateway.send(chatId, message);
+            appendHistory(chatId, `Agent: ${message}`);
+            answered = true;
+            break;
+          }
           const resultJson = boundedJson(result);
           messages.push({ role: "tool", tool_call_id: call.id, content: resultJson });
           if (toolName === "image_edit" && result?.outputPath) {
@@ -2534,7 +2744,7 @@ async function runAgent(
           content:
             "Korrektur durch die Bridge: Die Kleinanzeigen-Veröffentlichungskonfiguration auf diesem Mac ist vollständig und gültig. " +
             "Die vorige gegenteilige Diagnose darf nicht ausgegeben werden. Nenne keine internen Variablennamen und erfrage keine Standortwerte. " +
-            "Wenn Jannik veröffentlichen möchte und alle Angebotsdaten vorliegen, rufe ka_create_ad ohne zipCode, locationId und contactName auf; " +
+            "Wenn Jannik veröffentlichen möchte und alle Angebotsdaten vorliegen, rufe ka_prepare_listing mit sichtbarem Kategoriepfad und fachlicher Versandwahl auf; " +
             "andernfalls antworte nur mit der tatsächlich noch fehlenden Nutzerentscheidung.",
         });
         continue;
@@ -2756,11 +2966,11 @@ function listingLifecyclePrompt(event) {
       "Informiere Jannik knapp über die erkannte Änderung. Schlage keine Aktion vor und ändere nichts weiter, solange er nicht darum bittet.",
     ] : isPaused ? [
       "Informiere Jannik, dass die bestehende Anzeige pausiert ist und deshalb nicht als neue Anzeige dupliziert werden darf.",
-      "Schlage vor, die vorhandene Anzeige manuell auf Kleinanzeigen zu reaktivieren. Merke jetzt kein ka_create_ad vor. Falls Jannik stattdessen wirklich eine neue Anzeige will, muss die pausierte Anzeige zuerst entfernt und der aktuelle Stand erneut geprüft werden.",
+      "Schlage vor, die vorhandene Anzeige manuell auf Kleinanzeigen zu reaktivieren. Bereite jetzt keine neue Veröffentlichung vor. Falls Jannik stattdessen wirklich eine neue Anzeige will, muss die pausierte Anzeige zuerst entfernt und der aktuelle Stand erneut geprüft werden.",
     ] : [
       "Prüfe bei einem bloßen Fehlen zuerst mit ka_get_ad_bundles, ob die Anzeige pausiert, abgelaufen oder entfernt ist.",
       "Informiere Jannik proaktiv und nenne den bisherigen Anzeigentitel. Wenn das Asset nicht verkauft ist und die Bilder noch vorhanden sind, schlage eine konkrete Neuveröffentlichung mit dem gespeicherten kanonischen Posting und derselben Bildreihenfolge vor.",
-      "Verwende dabei die bestehende assetId. Veröffentliche niemals automatisch: ka_create_ad darf nur als exakte, Go-pflichtige Aktion vorgemerkt werden. Bei Unsicherheit bleibe bei einem Textvorschlag.",
+      "Verwende dabei die bestehende assetId. Veröffentliche niemals automatisch: ka_prepare_listing und ka_publish_prepared_listing müssen in die exakte Go-pflichtige Aktion münden. Bei Unsicherheit bleibe bei einem Textvorschlag.",
     ]),
     `Lifecycle-Ereignis und lokaler Stand:\n${boundedJson({ ...event, bundle: { ...bundle, asset } }, 16000)}`,
   ].join("\n");

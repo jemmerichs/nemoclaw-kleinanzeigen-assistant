@@ -25,6 +25,12 @@ Do not scrape credentials from an ordinary browser profile. Prefer `npm run logi
 | Read/send conversations | gateway messagebox API | bearer |
 | Read ad bundles | gateway private bundles API | bearer |
 
+The model-facing listing contract is deliberately smaller than the browser form. `ka_prepare_listing`
+accepts the visible category path, listing content, images, price, and the semantic delivery choice.
+It returns an opaque preparation ID after resolving current provider fields. Only
+`ka_publish_prepared_listing(preparationId)` can stage that snapshot for `Go`; category IDs,
+`attributeMap` keys, location IDs, and the form action stay inside the bridge.
+
 ## Verification status
 
 - Public search has a live read-only smoke test: `npm run smoke:ka`.

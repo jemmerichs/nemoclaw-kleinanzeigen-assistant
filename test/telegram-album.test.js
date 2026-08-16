@@ -22,11 +22,21 @@ require("../tools/kleinanzeigen-category-contracts").rememberCategoryRequirement
   requiredAttributes: [],
 });
 const {
+  TOOLS,
   clearPending,
   getPending,
   processTelegramUpdates,
 } = require("../workspace/agent");
+const listingPreparations = require("../tools/kleinanzeigen-listing-preparation");
 const { createSerialExecutor } = require("../workspace/runtime");
+
+function preparedListingId(listing) {
+  return listingPreparations.storeListingPreparation({
+    category: "Testkategorie",
+    delivery: "pickup_only",
+    listing: TOOLS.ka_create_ad.prepare(listing),
+  });
+}
 
 test.after(() => {
   fs.rmSync(temporary, { recursive: true, force: true });
@@ -157,17 +167,16 @@ test("a listing tool call is deferred until the remaining album batch was visibl
             id: `album-create-${callCount}`,
             type: "function",
             function: {
-              name: "ka_create_ad",
+              name: "ka_publish_prepared_listing",
               arguments: JSON.stringify({
-                title: "Album-Testartikel",
-                description: "Alle Bilder wurden geprüft.",
-                categoryId: 278,
-                price: 20,
-                priceType: "FIXED",
-                zipCode: "80636",
-                locationId: "16360",
-                contactName: "Jannik",
-                imagePaths,
+                preparationId: preparedListingId({
+                  title: "Album-Testartikel",
+                  description: "Alle Bilder wurden geprüft.",
+                  categoryId: 278,
+                  price: 20,
+                  priceType: "FIXED",
+                  imagePaths,
+                }),
               }),
             },
           }],
@@ -201,8 +210,8 @@ test("a listing tool call is deferred until the remaining album batch was visibl
   try {
     assert.equal(callCount, 2);
     assert.equal(imagePaths.length, 13);
-    assert.equal(getPending("43").tool, "ka_create_ad");
-    assert.deepEqual(getPending("43").args.imagePaths, imagePaths);
+    assert.equal(getPending("43").tool, "ka_publish_prepared_listing");
+    assert.deepEqual(getPending("43").args.listing.imagePaths, imagePaths);
     assert.equal(sent.length, 1);
     assert.match(sent[0], /Album-Testartikel/);
   } finally {

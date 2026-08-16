@@ -18,6 +18,7 @@ process.env.NEMOCLAW_KA_CATEGORY_CACHE_FILE = path.join(directory, "category-con
 process.env.NEMOCLAW_MODE = "dry-run";
 
 const categoryContracts = require("../tools/kleinanzeigen-category-contracts");
+const listingPreparations = require("../tools/kleinanzeigen-listing-preparation");
 categoryContracts.rememberCategoryRequirements({
   categoryId: 278,
   category: "Testkategorie",
@@ -41,6 +42,30 @@ const {
   verifiedCategoryInspectionFailureMessage,
   verifiedKaAccessFailureMessage,
 } = require("../workspace/agent");
+
+function preparedListingId(listing, {
+  category = "Testkategorie",
+  delivery = "pickup_only",
+} = {}) {
+  return listingPreparations.storeListingPreparation({
+    category,
+    delivery,
+    listing: TOOLS.ka_create_ad.prepare(listing),
+  });
+}
+
+function semanticListingArgs(overrides = {}) {
+  return {
+    title: "Testartikel",
+    description: "Ehrlicher Testtext",
+    category: "Haus & Garten > Weiteres Haus & Garten",
+    price: 10,
+    priceType: "FIXED",
+    delivery: "pickup_only",
+    imagePaths: [],
+    ...overrides,
+  };
+}
 
 test.after(() => {
   store.close();
@@ -103,10 +128,10 @@ test("private Kleinanzeigen 403 is never retried automatically", async () => {
 });
 
 test("agent does not ask the model to reinterpret a Kleinanzeigen access failure", async () => {
-  const original = TOOLS.ka_get_category_requirements.fn;
+  const original = TOOLS.ka_prepare_listing.fn;
   const sent = [];
   let modelCalls = 0;
-  TOOLS.ka_get_category_requirements.fn = async () => {
+  TOOLS.ka_prepare_listing.fn = async () => {
     const error = new Error("Öffentlicher Zugriff abgelehnt");
     error.code = "KA_PUBLIC_ACCESS_DENIED";
     error.status = 403;
@@ -125,8 +150,8 @@ test("agent does not ask the model to reinterpret a Kleinanzeigen access failure
             id: "category-access-failure",
             type: "function",
             function: {
-              name: "ka_get_category_requirements",
-              arguments: "{}",
+              name: "ka_prepare_listing",
+              arguments: JSON.stringify(semanticListingArgs()),
             },
           }],
         },
@@ -145,15 +170,15 @@ test("agent does not ask the model to reinterpret a Kleinanzeigen access failure
     assert.match(sent[0], /keine verifizierte öffentliche IP/);
     assert.doesNotMatch(sent[0], /Telekom|München|Wohnanschluss|Stunden|Tag/);
   } finally {
-    TOOLS.ka_get_category_requirements.fn = original;
+    TOOLS.ka_prepare_listing.fn = original;
   }
 });
 
 test("incomplete category inspection cannot become an invented fallback category", async () => {
-  const original = TOOLS.ka_get_category_requirements.fn;
+  const original = TOOLS.ka_prepare_listing.fn;
   const sent = [];
   let modelCalls = 0;
-  TOOLS.ka_get_category_requirements.fn = async () => {
+  TOOLS.ka_prepare_listing.fn = async () => {
     const error = new Error("Versandfeld nicht vollständig erkannt");
     error.code = "KA_CATEGORY_INSPECTION_INCOMPLETE";
     error.categoryId = 87;
@@ -172,12 +197,8 @@ test("incomplete category inspection cannot become an invented fallback category
             id: "incomplete-category-inspection",
             type: "function",
             function: {
-              name: "ka_get_category_requirements",
-              arguments: JSON.stringify({
-                categoryId: 87,
-                categoryPath: ["Haus & Garten", "Weiteres Haus & Garten"],
-                refresh: true,
-              }),
+              name: "ka_prepare_listing",
+              arguments: JSON.stringify(semanticListingArgs()),
             },
           }],
         },
@@ -205,7 +226,7 @@ test("incomplete category inspection cannot become an invented fallback category
       /nichts veröffentlicht/
     );
   } finally {
-    TOOLS.ka_get_category_requirements.fn = original;
+    TOOLS.ka_prepare_listing.fn = original;
   }
 });
 
@@ -226,17 +247,16 @@ test("protected model action is staged exactly and Go is consumed once", async (
             id: "call-1",
             type: "function",
             function: {
-              name: "ka_create_ad",
+              name: "ka_publish_prepared_listing",
               arguments: JSON.stringify({
-                title: "Testartikel",
-                description: "Ehrlicher Testtext",
-                categoryId: 278,
-                price: 10,
-                priceType: "FIXED",
-                zipCode: "80636",
-                locationId: "16360",
-                contactName: "Jannik",
-                imagePaths: [],
+                preparationId: preparedListingId({
+                  title: "Testartikel",
+                  description: "Ehrlicher Testtext",
+                  categoryId: 278,
+                  price: 10,
+                  priceType: "FIXED",
+                  imagePaths: [],
+                }),
               }),
             },
           }],
@@ -248,13 +268,13 @@ test("protected model action is staged exactly and Go is consumed once", async (
 
   const stagedResult = await runAgent("42", "Bereite die Anzeige vor.", { llmClient, gateway });
   const pending = getPending("42");
-  assert.equal(pending.tool, "ka_create_ad");
-  assert.equal(pending.args.title, "Testartikel");
+  assert.equal(pending.tool, "ka_publish_prepared_listing");
+  assert.equal(pending.args.listing.title, "Testartikel");
   assert.match(sent[0], /Aktion [a-f0-9]{12}/);
   assert.match(sent[0], /Dry-run ist aktiv/);
   assert.doesNotMatch(sent[0], /Ich habe einen vollständigen Vorschlag vorbereitet/);
   assert.equal(stagedResult.route.tier, "fast");
-  assert.deepEqual(stagedResult.toolCalls, ["ka_create_ad"]);
+  assert.deepEqual(stagedResult.toolCalls, ["ka_publish_prepared_listing"]);
   assert.equal(stagedResult.toolTrace[0].staged, true);
 
   await runAgent("42", "Go", { llmClient, gateway });
@@ -304,14 +324,16 @@ test("ready bridge configuration cannot be hallucinated as unresolved", async ()
             id: "corrected-create",
             type: "function",
             function: {
-              name: "ka_create_ad",
+              name: "ka_publish_prepared_listing",
               arguments: JSON.stringify({
-                title: "Möbelerhöher",
-                description: "Sechs unbenutzte Möbelerhöher.",
-                categoryId: 278,
-                price: 6,
-                priceType: "FIXED",
-                imagePaths: [],
+                preparationId: preparedListingId({
+                  title: "Möbelerhöher",
+                  description: "Sechs unbenutzte Möbelerhöher.",
+                  categoryId: 278,
+                  price: 6,
+                  priceType: "FIXED",
+                  imagePaths: [],
+                }),
               }),
             },
           }],
@@ -328,12 +350,12 @@ test("ready bridge configuration cannot be hallucinated as unresolved", async ()
     );
     assert.equal(modelCalls, 2);
     assert.equal(result.answered, true);
-    assert.deepEqual(result.toolCalls, ["ka_create_ad"]);
+    assert.deepEqual(result.toolCalls, ["ka_publish_prepared_listing"]);
     assert.equal(sent.length, 1);
     assert.doesNotMatch(sent[0], /nicht vollständig aufgelöst|KA_DEFAULT/);
-    assert.equal(getPending("ready-listing-config").args.zipCode, "80636");
-    assert.equal(getPending("ready-listing-config").args.locationId, "16360");
-    assert.equal(getPending("ready-listing-config").args.contactName, "Jannik");
+    assert.equal(getPending("ready-listing-config").args.listing.zipCode, "80636");
+    assert.equal(getPending("ready-listing-config").args.listing.locationId, "16360");
+    assert.equal(getPending("ready-listing-config").args.listing.contactName, "Jannik");
   } finally {
     clearPending("ready-listing-config");
     if (previous.zipCode === undefined) delete process.env.KA_DEFAULT_ZIP_CODE;
@@ -361,8 +383,8 @@ test("server-rejected category contract blocks a repeated empty-attribute propos
     category: "Haus & Garten > Test",
     requiredAttributes: [],
   });
-  const originalCreate = TOOLS.ka_create_ad.fn;
-  TOOLS.ka_create_ad.fn = async () => {
+  const originalCreate = TOOLS.ka_publish_prepared_listing.fn;
+  TOOLS.ka_publish_prepared_listing.fn = async () => {
     const error = new Error("Versand fehlt");
     error.code = "KA_LISTING_VALIDATION";
     error.categoryId = 654;
@@ -372,6 +394,15 @@ test("server-rejected category contract blocks a repeated empty-attribute propos
     }];
     throw error;
   };
+  const preparationId = preparedListingId({
+    title: "Möbelerhöher",
+    description: "Sechs unbenutzte Möbelerhöher. Nur Abholung.",
+    categoryId: 654,
+    price: 6,
+    priceType: "FIXED",
+    imagePaths: [],
+    attributes: {},
+  }, { category: "Haus & Garten > Test" });
   const sent = [];
   const gateway = { async send(_chatId, text) { sent.push(text); } };
   const initialClient = {
@@ -385,15 +416,9 @@ test("server-rejected category contract blocks a repeated empty-attribute propos
             id: "initial-empty-attributes",
             type: "function",
             function: {
-              name: "ka_create_ad",
+              name: "ka_publish_prepared_listing",
               arguments: JSON.stringify({
-                title: "Möbelerhöher",
-                description: "Sechs unbenutzte Möbelerhöher. Nur Abholung.",
-                categoryId: 654,
-                price: 6,
-                priceType: "FIXED",
-                imagePaths: [],
-                attributes: {},
+                preparationId,
               }),
             },
           }],
@@ -407,12 +432,12 @@ test("server-rejected category contract blocks a repeated empty-attribute propos
       llmClient: initialClient,
       gateway,
     });
-    assert.equal(getPending("category-quarantine").tool, "ka_create_ad");
+    assert.equal(getPending("category-quarantine").tool, "ka_publish_prepared_listing");
     await runAgent("category-quarantine", "Go", { llmClient: null, gateway });
     const requirements = categoryContracts.getCategoryRequirements(654);
     assert.equal(requirements.verified, false);
     assert.equal(requirements.invalidated, true);
-    assert.match(sent[1], /Kategorievertrag gesperrt/);
+    assert.match(sent[1], /Vorbereitung verworfen/);
     assert.doesNotMatch(sent[1], /attributeMap|versand_s/);
 
     let retryCalls = 0;
@@ -439,7 +464,7 @@ test("server-rejected category contract blocks a repeated empty-attribute propos
     assert.equal(getPending("category-quarantine"), null);
     assert.match(sent.at(-1), /zuerst neu geprüft/);
   } finally {
-    TOOLS.ka_create_ad.fn = originalCreate;
+    TOOLS.ka_publish_prepared_listing.fn = originalCreate;
     clearPending("category-quarantine");
     if (previous.mode === undefined) delete process.env.NEMOCLAW_MODE;
     else process.env.NEMOCLAW_MODE = previous.mode;
@@ -468,13 +493,21 @@ test("a browser pre-submit gate failure is definitive and never reported as an u
     category: "Haus & Garten > Test",
     requiredAttributes: [],
   });
-  const originalCreate = TOOLS.ka_create_ad.fn;
-  TOOLS.ka_create_ad.fn = async () => {
+  const originalCreate = TOOLS.ka_publish_prepared_listing.fn;
+  TOOLS.ka_publish_prepared_listing.fn = async () => {
     const error = new Error("Kategorie wurde im sichtbaren Formular nicht übernommen.");
     error.code = "KA_BROWSER_FORM_INCOMPLETE";
     error.definitiveNoWrite = true;
     throw error;
   };
+  const preparationId = preparedListingId({
+    title: "Möbelerhöher",
+    description: "Sechs unbenutzte Möbelerhöher.",
+    categoryId: 655,
+    price: 6,
+    priceType: "FIXED",
+    imagePaths: [],
+  }, { category: "Haus & Garten > Test" });
   const sent = [];
   const gateway = { async send(_chatId, text) { sent.push(text); } };
   const llmClient = {
@@ -488,14 +521,9 @@ test("a browser pre-submit gate failure is definitive and never reported as an u
             id: "browser-pre-submit",
             type: "function",
             function: {
-              name: "ka_create_ad",
+              name: "ka_publish_prepared_listing",
               arguments: JSON.stringify({
-                title: "Möbelerhöher",
-                description: "Sechs unbenutzte Möbelerhöher.",
-                categoryId: 655,
-                price: 6,
-                priceType: "FIXED",
-                imagePaths: [],
+                preparationId,
               }),
             },
           }],
@@ -512,7 +540,7 @@ test("a browser pre-submit gate failure is definitive and never reported as an u
     assert.match(sent[1], /nicht ausgeführt/);
     assert.doesNotMatch(sent[1], /Ausgang.*unklar|nicht automatisch wiederholen/i);
   } finally {
-    TOOLS.ka_create_ad.fn = originalCreate;
+    TOOLS.ka_publish_prepared_listing.fn = originalCreate;
     clearPending("browser-pre-submit");
     if (previous.mode === undefined) delete process.env.NEMOCLAW_MODE;
     else process.env.NEMOCLAW_MODE = previous.mode;
@@ -691,17 +719,16 @@ test("a progressing listing flow may finish after the old eight-step ceiling", a
             id: "create-after-eight",
             type: "function",
             function: {
-              name: "ka_create_ad",
+              name: "ka_publish_prepared_listing",
               arguments: JSON.stringify({
-                title: "Testartikel nach ausführlicher Prüfung",
-                description: "Ehrlicher Testtext.",
-                categoryId: 278,
-                price: 10,
-                priceType: "FIXED",
-                zipCode: "80636",
-                locationId: "16360",
-                contactName: "Jannik",
-                imagePaths: [],
+                preparationId: preparedListingId({
+                  title: "Testartikel nach ausführlicher Prüfung",
+                  description: "Ehrlicher Testtext.",
+                  categoryId: 278,
+                  price: 10,
+                  priceType: "FIXED",
+                  imagePaths: [],
+                }),
               }),
             },
           }],
@@ -719,7 +746,7 @@ test("a progressing listing flow may finish after the old eight-step ceiling", a
     assert.equal(step, 9);
     assert.equal(result.answered, true);
     assert.equal(result.toolCalls.length, 9);
-    assert.equal(getPending("long-listing-flow").tool, "ka_create_ad");
+    assert.equal(getPending("long-listing-flow").tool, "ka_publish_prepared_listing");
     assert.match(sent[0], /Testartikel nach ausführlicher Prüfung/);
     assert.doesNotMatch(sent.join("\n"), /keinen sicheren Abschluss erreicht/);
   } finally {
@@ -792,7 +819,9 @@ test("routine listing turns omit unrelated tools and skills to reduce fixed inpu
 
   assert.equal(scope.name, "kleinanzeigen-listing");
   assert.equal(names.includes("ka_search_ads"), true);
-  assert.equal(names.includes("ka_create_ad"), true);
+  assert.equal(names.includes("ka_prepare_listing"), true);
+  assert.equal(names.includes("ka_publish_prepared_listing"), true);
+  assert.equal(names.includes("ka_create_ad"), false);
   assert.equal(names.includes("vinted_search_items"), false);
   assert.equal(names.includes("ka_get_messages"), false);
   assert.doesNotMatch(leanContext, /Skill: Inbox/);
@@ -1433,17 +1462,16 @@ test("agent selectively edits one image, previews it, researches, and stages the
             id: "create-1",
             type: "function",
             function: {
-              name: "ka_create_ad",
+              name: "ka_publish_prepared_listing",
               arguments: JSON.stringify({
-                title: "Testartikel in gutem Zustand",
-                description: "Gebraucht, mit sichtbaren Gebrauchsspuren.",
-                categoryId: 278,
-                price: 25,
-                priceType: "NEGOTIABLE",
-                zipCode: "80636",
-                locationId: "16360",
-                contactName: "Jannik",
-                imagePaths: [editedPath],
+                preparationId: preparedListingId({
+                  title: "Testartikel in gutem Zustand",
+                  description: "Gebraucht, mit sichtbaren Gebrauchsspuren.",
+                  categoryId: 278,
+                  price: 25,
+                  priceType: "NEGOTIABLE",
+                  imagePaths: [editedPath],
+                }),
               }),
             },
           }],
@@ -1458,11 +1486,11 @@ test("agent selectively edits one image, previews it, researches, and stages the
       `[FOTO path:${originalPath}]\nErstelle daraus eine Anzeige.`,
       { llmClient, gateway }
     );
-    assert.deepEqual(result.toolCalls, ["image_edit", "ka_search_ads", "ka_create_ad"]);
+    assert.deepEqual(result.toolCalls, ["image_edit", "ka_search_ads", "ka_publish_prepared_listing"]);
     assert.equal(previews.length, 1);
     assert.equal(previews[0].filePath, editedPath);
     assert.match(previews[0].caption, /Original bleibt unverändert/);
-    assert.deepEqual(getPending("image-flow").args.imagePaths, [editedPath]);
+    assert.deepEqual(getPending("image-flow").args.listing.imagePaths, [editedPath]);
     assert.match(sent[0], /Testartikel in gutem Zustand/);
     assert.equal(fs.existsSync(`${editedPath}.provenance.json`), true);
   } finally {
@@ -1548,8 +1576,10 @@ test("two confirmed lifecycle misses proactively produce an exact relist proposa
             id: "stage-relist",
             type: "function",
             function: {
-              name: "ka_create_ad",
-              arguments: JSON.stringify({ ...payload, assetId }),
+              name: "ka_publish_prepared_listing",
+              arguments: JSON.stringify({
+                preparationId: preparedListingId({ ...payload, assetId }),
+              }),
             },
           }],
         },
@@ -1563,11 +1593,11 @@ test("two confirmed lifecycle misses proactively produce an exact relist proposa
       agent.listingLifecyclePrompt(second.events[0]),
       { llmClient, gateway, source: "system" }
     );
-    assert.deepEqual(result.toolCalls, ["ka_get_ad_bundles", "ka_create_ad"]);
+    assert.deepEqual(result.toolCalls, ["ka_get_ad_bundles", "ka_publish_prepared_listing"]);
     const pending = getPending("lifecycle-relist");
-    assert.equal(pending.tool, "ka_create_ad");
-    assert.equal(pending.args.assetId, assetId);
-    assert.deepEqual(pending.args.imagePaths, [storedImage]);
+    assert.equal(pending.tool, "ka_publish_prepared_listing");
+    assert.equal(pending.args.listing.assetId, assetId);
+    assert.deepEqual(pending.args.listing.imagePaths, [storedImage]);
     assert.match(sent[0], /Gespeicherter Lifecycle-Artikel/);
     assert.match(sent[0], /Dry-run ist aktiv/);
     assert.equal(store.query({
@@ -1790,7 +1820,7 @@ test("paused lifecycle notification recommends reactivation and cannot stage a d
   });
   assert.match(prompt, /bestehende Anzeige pausiert/);
   assert.match(prompt, /manuell.*reaktivieren/);
-  assert.match(prompt, /kein ka_create_ad/);
+  assert.match(prompt, /keine neue Veröffentlichung/);
 
   const sent = [];
   const gateway = { async send(_chatId, text) { sent.push(text); } };

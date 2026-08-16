@@ -9,8 +9,9 @@ A German-language selling assistant for Kleinanzeigen and Vinted. It analyzes an
 - A standalone `Go` can execute only the currently staged payload, once, within 30 minutes.
 - Any intervening user message invalidates the old approval.
 - Images are not uploaded while preparing a proposal. Upload and publication happen together only after approval.
-- Kleinanzeigen category contracts are discovered generically from the current signed-in posting form and cached for 14 days. Unknown categories are navigated read-only via their visible category path; exact required fields and permitted values are then validated before approval and upload. A new server-side form validation error is surfaced as repairable schema feedback, never as a claimed publication.
-- If Kleinanzeigen rejects a category attribute despite local validation, the bridge persistently quarantines that category contract. A user choice such as “Kein Versand” cannot bypass the quarantine: a fresh visible-form inspection must produce a materially repaired contract and, for a shipping rejection, must actually expose the shipping field and its allowed values. Cached contracts from older inspection versions are refreshed once after an upgrade.
+- The model prepares Kleinanzeigen listings with a visible category path and a semantic delivery choice (`pickup_only` or `shipping_available`). The bridge resolves category IDs, location, contact details, required form fields, and provider values itself; those internals are not part of the model-facing publish contract.
+- Every preparation checks the current signed-in posting form. It returns `ready`, `needs_input` with visible choices, or `technical_failure` with a bounded developer diagnostic. A `ready` preparation is bound to an opaque token and then staged through the existing exact `Go` approval. The confirmed browser submission checks the live form again and fails closed if it changed.
+- Category contracts may be cached for diagnostics and performance, but the cache is not the authority for a new preparation. A server-side validation rejection discards the preparation and is never reported as a successful publication.
 - Original photos are immutable. Edited derivatives store source/output hashes and exact operations; no generative retouching is available.
 - Every saved draft or published listing stores a canonical relist payload plus ordered image provenance.
 - Automatic inbox and listing checks cannot delete or replace an action already waiting for `Go`.
@@ -84,7 +85,7 @@ Kleinanzeigen access tokens are short-lived. The runtime checks their embedded e
 
 This dedicated profile is required for the standalone bot. A signed-in Codex in-app browser is useful for read-only UI verification, but its private cookies are intentionally not copied into the Node process. If Kleinanzeigen reports a blocked IP range, stop retrying. Disable VPN/proxy/iCloud Private Relay and retry later from a normal, stable home or mobile connection. The login helper detects common `403`, `429`, IP-range, and unusual-traffic blocks and exits without an automatic retry.
 
-Runtime form inspection never uses headless Chrome for Kleinanzeigen network access. An unknown category opens at most one visible window in the dedicated profile; consecutive path selections share that window for up to two minutes. Visible Chrome uses a reserved non-zero loopback debugging port, avoiding Chrome's special WebDriver marker for port `0` without modifying JavaScript, Canvas, WebGL, the user agent, or navigator properties. A browser rejection activates a 30-minute local circuit breaker instead of further automatic attempts. Common categories come from the short-lived verified cache and need no browser window.
+Runtime form inspection never uses headless Chrome for Kleinanzeigen network access. Preparing a listing opens one visible window in the dedicated profile; consecutive incomplete category-path selections share that window for up to two minutes. Visible Chrome uses a reserved non-zero loopback debugging port, avoiding Chrome's special WebDriver marker for port `0` without modifying JavaScript, Canvas, WebGL, the user agent, or navigator properties. A browser rejection activates a 30-minute local circuit breaker instead of further automatic attempts.
 
 `npm run login:vinted` opens a second, Vinted-only ordinary Chrome profile without DevTools attachment, polling, or scripted page interaction. Log in manually, complete any human check yourself, then close that dedicated window completely. Only after it exits does the helper open `about:blank`, import the profile's Vinted cookies into the ignored `.env`, and close again. Do not paste a raw Vinted token into chat or source files. `npm run smoke:vinted` then performs one read-only profile check in a visible browser; `--full` deliberately adds own-item and inbox reads.
 
@@ -300,6 +301,7 @@ The legacy scripts `scripts/test-post.js` and `scripts/test-draft-images.js` mut
 tools/
   openrouter.js       OpenRouter client, retries, usage ledger, daily cap
   kleinanzeigen.js    Kleinanzeigen web/gateway client
+  kleinanzeigen-listing-preparation.js  semantic preparation and opaque tokens
   vinted.js           Fail-closed Vinted browser/UI client
   vinted-auth.js      Isolated ordinary-Chrome login and session import
   telegram.js         Telegram transport and long polling

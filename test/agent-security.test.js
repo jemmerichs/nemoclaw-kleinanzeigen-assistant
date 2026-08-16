@@ -16,6 +16,7 @@ const { actionFingerprint } = require("../workspace/runtime");
 test("every externally destructive bridge tool requires approval", () => {
   for (const name of [
     "ka_send_message",
+    "ka_publish_prepared_listing",
     "ka_create_ad",
     "ka_save_draft",
     "ka_delete_draft",
@@ -36,11 +37,30 @@ test("every externally destructive bridge tool requires approval", () => {
 test("model only sees narrow tools and cannot call raw SQL", () => {
   const names = toolDefinitions().map(tool => tool.function.name);
   assert.equal(names.includes("db_query"), false);
-  assert.equal(names.includes("ka_create_ad"), true);
+  assert.equal(names.includes("ka_prepare_listing"), true);
+  assert.equal(names.includes("ka_publish_prepared_listing"), true);
+  assert.equal(names.includes("ka_create_ad"), false);
+  assert.equal(names.includes("ka_get_category_requirements"), false);
   assert.equal(names.includes("ka_delete_ad"), true);
   assert.equal(names.includes("vinted_create_item"), true);
   assert.equal(names.includes("vinted_delete_item"), true);
   assert.equal(names.includes("updateSkillFile"), false);
+});
+
+test("Kleinanzeigen publication exposes only semantic preparation and an opaque publish token", () => {
+  const definitions = new Map(
+    toolDefinitions().map(tool => [tool.function.name, tool.function.parameters])
+  );
+  const prepareProperties = definitions.get("ka_prepare_listing").properties;
+  assert.equal("category" in prepareProperties, true);
+  assert.equal("delivery" in prepareProperties, true);
+  for (const internal of ["categoryId", "zipCode", "locationId", "contactName", "attributes"]) {
+    assert.equal(internal in prepareProperties, false, `${internal} must stay inside the bridge`);
+  }
+  assert.deepEqual(
+    Object.keys(definitions.get("ka_publish_prepared_listing").properties),
+    ["preparationId"]
+  );
 });
 
 test("Vinted package IDs use provider-compatible integer schemas", () => {

@@ -18,7 +18,16 @@ process.env.KA_COOKIES = "csrf-token=journey-test; registered_user=true";
 const agent = require("../workspace/agent");
 const store = require("../tools/adstore");
 const kleinanzeigenPublishForm = require("../tools/kleinanzeigen-publish-form");
+const listingPreparations = require("../tools/kleinanzeigen-listing-preparation");
 const { createSerialExecutor } = require("../workspace/runtime");
+
+function preparedListingId(listing) {
+  return listingPreparations.storeListingPreparation({
+    category: "Haus & Garten > Lampen & Licht",
+    delivery: "pickup_only",
+    listing: agent.TOOLS.ka_create_ad.prepare(listing),
+  });
+}
 
 test.after(() => {
   store.close();
@@ -96,21 +105,20 @@ test("album, publish, relist, and buyer reply form one exact-approval journey", 
             id: "journey-create",
             type: "function",
             function: {
-              name: "ka_create_ad",
+              name: "ka_publish_prepared_listing",
               arguments: JSON.stringify({
-                assetName: "Schwarze Schreibtischlampe",
-                title: "Mattschwarze Schreibtischlampe",
-                description: "Funktionsfähig mit kleinem sichtbarem Lackabplatzer am Sockel.",
-                categoryId: 82,
-                price: 12,
-                priceType: "NEGOTIABLE",
-                zipCode: "80636",
-                locationId: "16360",
-                contactName: "Jannik",
-                imagePaths: albumPaths,
-                attributes: {
-                  "lampen_licht.versand": "nein",
-                },
+                preparationId: preparedListingId({
+                  assetName: "Schwarze Schreibtischlampe",
+                  title: "Mattschwarze Schreibtischlampe",
+                  description: "Funktionsfähig mit kleinem sichtbarem Lackabplatzer am Sockel.",
+                  categoryId: 82,
+                  price: 12,
+                  priceType: "NEGOTIABLE",
+                  imagePaths: albumPaths,
+                  attributes: {
+                    "lampen_licht.versand": "nein",
+                  },
+                }),
               }),
             },
           }],
@@ -160,7 +168,7 @@ test("album, publish, relist, and buyer reply form one exact-approval journey", 
     await new Promise(resolve => setTimeout(resolve, 100));
 
     assert.equal(albumPaths.length, 2);
-    assert.equal(agent.getPending("77").tool, "ka_create_ad");
+    assert.equal(agent.getPending("77").tool, "ka_publish_prepared_listing");
     assert.match(sent.at(-1), /Lackabplatzer/);
     assert.match(sent.at(-1), /Fotos: 2/);
     assert.match(sent.at(-1), /sha256:[a-f0-9]{12}/);
@@ -222,8 +230,8 @@ test("album, publish, relist, and buyer reply form one exact-approval journey", 
               id: "journey-relist",
               type: "function",
               function: {
-                name: "ka_create_ad",
-                arguments: JSON.stringify(relistPayload),
+                name: "ka_publish_prepared_listing",
+                arguments: JSON.stringify({ preparationId: preparedListingId(relistPayload) }),
               },
             }],
           },
@@ -236,9 +244,9 @@ test("album, publish, relist, and buyer reply form one exact-approval journey", 
       { llmClient: relistLlm, gateway, source: "system" }
     );
     const relistPending = agent.getPending("lifecycle-77");
-    assert.equal(relistPending.tool, "ka_create_ad");
-    assert.equal(relistPending.args.assetId, assetId);
-    assert.deepEqual(relistPending.args.imagePaths, albumPaths);
+    assert.equal(relistPending.tool, "ka_publish_prepared_listing");
+    assert.equal(relistPending.args.listing.assetId, assetId);
+    assert.deepEqual(relistPending.args.listing.imagePaths, albumPaths);
     await agent.runAgent("lifecycle-77", "Go", { llmClient: relistLlm, gateway });
 
     assert.equal(created.length, 2);
