@@ -24,21 +24,127 @@ require("../tools/kleinanzeigen-category-contracts").rememberCategoryRequirement
 });
 const store = require("../tools/adstore");
 const {
+  TOOLS,
+  acquireProcessLock,
   appendHistory,
   clearPending,
   contextStats,
   describeListingValidationFailure,
+  executeTool,
   getHistory,
   getPending,
   normalizeHistoryEntry,
   runAgent,
   selectTurnScope,
   stagePending,
+  verifiedKaAccessFailureMessage,
 } = require("../workspace/agent");
 
 test.after(() => {
   store.close();
   fs.rmSync(directory, { recursive: true, force: true });
+});
+
+test("agent process lock blocks a second instance and recovers a stale PID", () => {
+  const lockFile = path.join(directory, "agent.pid");
+  const release = acquireProcessLock(lockFile, {
+    pid: 4242,
+    isRunning: pid => pid === 4242,
+  });
+  assert.throws(
+    () => acquireProcessLock(lockFile, { pid: 4343, isRunning: pid => pid === 4242 }),
+    error => error.code === "NEMOCLAW_ALREADY_RUNNING"
+  );
+  release();
+  assert.equal(fs.existsSync(lockFile), false);
+
+  fs.writeFileSync(lockFile, "9999\n", { mode: 0o600 });
+  const releaseRecovered = acquireProcessLock(lockFile, {
+    pid: 4343,
+    isRunning: () => false,
+  });
+  assert.equal(fs.readFileSync(lockFile, "utf8"), "4343\n");
+  releaseRecovered();
+});
+
+test("private Kleinanzeigen access failures produce an evidence-bounded diagnosis", () => {
+  const error = new Error("private request rejected");
+  error.code = "KA_SESSION_REJECTED";
+  error.status = 403;
+  const message = verifiedKaAccessFailureMessage("ka_get_category_requirements", error);
+  assert.match(message, /Kategorieprüfung/);
+  assert.match(message, /belegt weder eine allgemeine IP-Sperre/);
+  assert.match(message, /npm run login/);
+  assert.doesNotMatch(message, /Telekom|München|Wohnanschluss|Stunden|Tag/);
+});
+
+test("private Kleinanzeigen 403 is never retried automatically", async () => {
+  const original = TOOLS.ka_search_ads.fn;
+  let calls = 0;
+  TOOLS.ka_search_ads.fn = async () => {
+    calls++;
+    const error = new Error("private request rejected");
+    error.code = "KA_SESSION_REJECTED";
+    error.status = 403;
+    throw error;
+  };
+
+  try {
+    await assert.rejects(
+      () => executeTool("ka_search_ads", { query: "test" }),
+      error => error.code === "KA_SESSION_REJECTED"
+    );
+    assert.equal(calls, 1);
+  } finally {
+    TOOLS.ka_search_ads.fn = original;
+  }
+});
+
+test("agent does not ask the model to reinterpret a Kleinanzeigen access failure", async () => {
+  const original = TOOLS.ka_get_category_requirements.fn;
+  const sent = [];
+  let modelCalls = 0;
+  TOOLS.ka_get_category_requirements.fn = async () => {
+    const error = new Error("Öffentlicher Zugriff abgelehnt");
+    error.code = "KA_PUBLIC_ACCESS_DENIED";
+    error.status = 403;
+    throw error;
+  };
+  const llmClient = {
+    model: "stub",
+    async complete() {
+      modelCalls++;
+      if (modelCalls > 1) throw new Error("Das Modell darf den Zugriffsfehler nicht ausdeuten.");
+      return {
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "category-access-failure",
+            type: "function",
+            function: {
+              name: "ka_get_category_requirements",
+              arguments: "{}",
+            },
+          }],
+        },
+      };
+    },
+  };
+
+  try {
+    const result = await runAgent("access-failure", "Prüfe die Kleinanzeigen-Kategorie.", {
+      llmClient,
+      gateway: { async send(_chatId, text) { sent.push(text); } },
+    });
+    assert.equal(result.answered, true);
+    assert.equal(modelCalls, 1);
+    assert.equal(sent.length, 1);
+    assert.match(sent[0], /keine verifizierte öffentliche IP/);
+    assert.doesNotMatch(sent[0], /Telekom|München|Wohnanschluss|Stunden|Tag/);
+  } finally {
+    TOOLS.ka_get_category_requirements.fn = original;
+  }
 });
 
 test("protected model action is staged exactly and Go is consumed once", async () => {

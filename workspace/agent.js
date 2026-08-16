@@ -69,6 +69,9 @@ const PENDING_FILE = process.env.NEMOCLAW_PENDING_FILE
 const IMAGE_ROOT = process.env.NEMOCLAW_IMAGE_DIR
   ? path.resolve(process.env.NEMOCLAW_IMAGE_DIR)
   : path.resolve(__dirname, "images");
+const AGENT_PID_FILE = process.env.NEMOCLAW_AGENT_PID_FILE
+  ? path.resolve(process.env.NEMOCLAW_AGENT_PID_FILE)
+  : path.resolve(__dirname, "agent.pid");
 const MAX_AGENT_STEPS = 13;
 const MAX_HISTORY_ENTRIES = 7;
 const MAX_HISTORY_CHARS = 4000;
@@ -84,11 +87,69 @@ let kaAuthenticated = false;
 let vinted = null;
 let vintedAuthenticated = false;
 let authRefreshPromise = null;
+let csrfRefreshPromise = null;
 let lastAuthRefreshFailure = null;
 let telegram = null;
 let llm = null;
 let sessions = readJson(SESSION_FILE, {});
 let pendingActions = readJson(PENDING_FILE, {});
+
+function processIsRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+function readProcessLock(filePath) {
+  try {
+    const value = fs.readFileSync(filePath, "utf8").trim();
+    return /^\d{1,10}$/.test(value) && Number(value) > 1 ? Number(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function acquireProcessLock(filePath = AGENT_PID_FILE, {
+  pid = process.pid,
+  isRunning = processIsRunning,
+} = {}) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const descriptor = fs.openSync(filePath, "wx", 0o600);
+      try {
+        fs.writeFileSync(descriptor, `${pid}\n`, "utf8");
+      } finally {
+        fs.closeSync(descriptor);
+      }
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (readProcessLock(filePath) === pid) {
+          try { fs.unlinkSync(filePath); } catch {}
+        }
+      };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      const existingPid = readProcessLock(filePath);
+      if (existingPid && isRunning(existingPid)) {
+        const lockError = new Error(`Der NemoClaw-Agent läuft bereits (PID ${existingPid}).`);
+        lockError.code = "NEMOCLAW_ALREADY_RUNNING";
+        throw lockError;
+      }
+      if (readProcessLock(filePath) !== existingPid) continue;
+      try { fs.unlinkSync(filePath); }
+      catch (unlinkError) {
+        if (unlinkError?.code !== "ENOENT") throw unlinkError;
+      }
+    }
+  }
+  throw new Error("Der NemoClaw-Prozess-Lock konnte nicht sicher übernommen werden.");
+}
 
 function readJson(filePath, fallback) {
   try {
@@ -191,7 +252,16 @@ function requireAuthenticatedVinted() {
   return vinted;
 }
 
-async function refreshCsrf() {
+function persistKleinanzeigenSession(client) {
+  saveToEnv({
+    KA_COOKIES: client.cookies,
+    KA_BEARER_TOKEN: null,
+  });
+  process.env.KA_COOKIES = client.cookies;
+  delete process.env.KA_BEARER_TOKEN;
+}
+
+async function refreshBearer() {
   if (
     lastAuthRefreshFailure &&
     Date.now() - lastAuthRefreshFailure.at < AUTH_REFRESH_FAILURE_COOLDOWN_MS
@@ -203,11 +273,10 @@ async function refreshCsrf() {
   if (!authRefreshPromise) {
     authRefreshPromise = (async () => {
       const client = requireAuthenticatedKa();
-      const newToken = await client.refreshCsrfToken();
-      saveToEnv({ KA_COOKIES: client.cookies });
-      process.env.KA_COOKIES = client.cookies;
+      const refreshed = await client.refreshAccessToken();
+      persistKleinanzeigenSession(client);
       lastAuthRefreshFailure = null;
-      console.log(`[agent] CSRF erneuert (${newToken.slice(0, 8)}…)`);
+      console.log(`[agent] Kleinanzeigen-Session bis ${refreshed.expiresAt} erneuert.`);
     })().catch(error => {
       lastAuthRefreshFailure = {
         at: Date.now(),
@@ -222,10 +291,27 @@ async function refreshCsrf() {
   return authRefreshPromise;
 }
 
-async function refreshBearer() {
-  await refreshCsrf();
-  ka = makeClient(process.env.KA_COOKIES || "");
-  console.log("[agent] Browser-Sitzung und Bearer erneuert.");
+async function refreshCsrf() {
+  await refreshBearer();
+  if (!csrfRefreshPromise) {
+    csrfRefreshPromise = (async () => {
+      const client = requireAuthenticatedKa();
+      const newToken = await client.refreshCsrfCookie();
+      persistKleinanzeigenSession(client);
+      lastAuthRefreshFailure = null;
+      console.log(`[agent] CSRF erneuert (${newToken.slice(0, 8)}…).`);
+    })().catch(error => {
+      lastAuthRefreshFailure = {
+        at: Date.now(),
+        code: error.code,
+        message: error.message,
+      };
+      throw error;
+    }).finally(() => {
+      csrfRefreshPromise = null;
+    });
+  }
+  return csrfRefreshPromise;
 }
 
 function assertImagePath(filePath) {
@@ -674,6 +760,8 @@ const TOOLS = {
         const cached = getCategoryRequirements(args.categoryId);
         if (cached.verified) return { status: "ready", cache: "hit", ...cached };
       }
+      const client = requireAuthenticatedKa();
+      if (client.accessTokenExpiresWithin()) await refreshBearer();
       return inspectCategoryForm({
         categoryId: args.categoryId,
         categoryPath: args.categoryPath,
@@ -1208,6 +1296,57 @@ function compactToolTrace(toolName, args, result, error = null) {
   return { tool: toolName, args, ok: true };
 }
 
+function verifiedKaAccessFailureMessage(toolName, error) {
+  const code = String(error?.code || "");
+  const privateAccessCodes = new Set([
+    "KA_BROWSER_BACKOFF",
+    "KA_BROWSER_REJECTED",
+    "KA_SESSION_REJECTED",
+    "KA_SESSION_EXPIRED",
+    "KA_CSRF_EXPIRED",
+    "KA_BEARER_EXPIRED",
+    "KA_REFRESH_EXPIRED",
+    "KA_REFRESH_FAILED",
+  ]);
+  const publicAccessCodes = new Set([
+    "KA_ACCESS_DENIED",
+    "KA_PUBLIC_ACCESS_DENIED",
+  ]);
+  if (!privateAccessCodes.has(code) && !publicAccessCodes.has(code)) return null;
+
+  const operation = toolName === "ka_get_category_requirements"
+    ? "die Kategorieprüfung"
+    : "den angeforderten Kleinanzeigen-Zugriff";
+  if (code === "KA_BROWSER_REJECTED" || code === "KA_BROWSER_BACKOFF") {
+    return [
+      code === "KA_BROWSER_BACKOFF"
+        ? `Die ${operation === "die Kategorieprüfung" ? "Kategorieprüfung" : "Browserprüfung"} bleibt nach einer vorherigen Zugriffsablehnung vorübergehend pausiert.`
+        : `Kleinanzeigen hat ${operation} im dedizierten Browser abgelehnt${Number(error?.status) === 403 ? " (HTTP 403)" : ""}.`,
+      "Gesichert ist nur die Ablehnung dieses Browseraufrufs. Das belegt weder eine allgemeine IP-Sperre noch eine bestimmte öffentliche IP, einen Provider, Standort oder eine Sperrdauer.",
+      "Zum Schutz des Zugangs wird der Browseraufruf nicht automatisch wiederholt. Es wurde nichts veröffentlicht oder vorgemerkt.",
+    ].join("\n\n");
+  }
+  if (code === "KA_REFRESH_FAILED") {
+    return [
+      "Der Kleinanzeigen-Login-Dienst konnte die Bot-Sitzung nicht erneuern.",
+      "Es gibt keinen Beleg für eine IP-Sperre oder einen ungültigen Login. Der private Marktplatzaufruf wurde deshalb nicht gestartet.",
+      "Nicht automatisch wiederholen; später genau einmal erneut versuchen. Es wurde nichts veröffentlicht oder vorgemerkt.",
+    ].join("\n\n");
+  }
+  if (privateAccessCodes.has(code)) {
+    return [
+      `Kleinanzeigen hat ${operation} in der angemeldeten Bot-Sitzung abgelehnt${Number(error?.status) === 403 ? " (HTTP 403)" : ""}.`,
+      "Gesichert ist nur, dass der private Zugriff nicht funktioniert hat. Das belegt weder eine allgemeine IP-Sperre noch eine bestimmte öffentliche IP, einen Provider, Standort oder eine Sperrdauer.",
+      "Die automatische Sitzungserneuerung hat das Problem nicht behoben. Bitte das dedizierte Bot-Profil einmal mit 'npm run login' neu anmelden und den Vorgang danach erneut starten. Es wurde nichts veröffentlicht oder vorgemerkt.",
+    ].join("\n\n");
+  }
+  return [
+    `Kleinanzeigen hat ${operation} abgelehnt.`,
+    "Der vorliegende Fehler enthält keine verifizierte öffentliche IP, Provider-/Standortangabe oder Sperrdauer; solche Details lassen sich daraus nicht ableiten.",
+    "Es wurde nichts veröffentlicht oder vorgemerkt. Nicht automatisch wiederholen; den Netzwerkzugriff separat prüfen und erst danach einen neuen Versuch starten.",
+  ].join("\n\n");
+}
+
 function getMode() {
   return normalizeMode(process.env.NEMOCLAW_MODE);
 }
@@ -1321,10 +1460,6 @@ async function executeTool(toolName, args) {
       return tool.fn(args || {});
     }
     if (error.code === "KA_SESSION_EXPIRED") {
-      await refreshCsrf();
-      return tool.fn(args || {});
-    }
-    if (error.code === "KA_SESSION_REJECTED") {
       await refreshCsrf();
       return tool.fn(args || {});
     }
@@ -2312,6 +2447,13 @@ async function runAgent(
           const resultJson = JSON.stringify({ error: error.message });
           appendHistory(chatId, `System: Tool "${toolName}" fehlgeschlagen: ${error.message}`);
           messages.push({ role: "tool", tool_call_id: call.id, content: resultJson });
+          const verifiedAccessFailure = verifiedKaAccessFailureMessage(toolName, error);
+          if (verifiedAccessFailure) {
+            const delivery = await deliverAgentMessage(chatId, verifiedAccessFailure, gateway);
+            appendHistory(chatId, `Agent: ${delivery.historyText}`);
+            answered = true;
+            break;
+          }
         }
         continue;
       }
@@ -2762,15 +2904,25 @@ async function main() {
 }
 
 if (require.main === module) {
-  main().catch(error => {
+  let releaseProcessLock;
+  try {
+    releaseProcessLock = acquireProcessLock();
+  } catch (error) {
     console.error(`[agent] Start fehlgeschlagen: ${error.message}`);
     process.exitCode = 1;
-  });
+  }
+  if (releaseProcessLock) {
+    main().catch(error => {
+      console.error(`[agent] Start fehlgeschlagen: ${error.message}`);
+      process.exitCode = 1;
+    }).finally(releaseProcessLock);
+  }
 }
 
 module.exports = {
   TOOLS,
   appendHistory,
+  acquireProcessLock,
   assertImagePath,
   clearPending,
   completeModelTurn,
@@ -2805,4 +2957,5 @@ module.exports = {
   toolDefinitions,
   toolRequiresApproval,
   validateConfig,
+  verifiedKaAccessFailureMessage,
 };

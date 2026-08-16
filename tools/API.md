@@ -8,9 +8,9 @@ These are unofficial interfaces and may change without notice. `tools/kleinanzei
 |---|---|---|
 | Public search | none | no session required |
 | Private web calls | `Cookie` header | `KA_COOKIES` from the dedicated native Chrome profile or explicit Copy-as-cURL bootstrap |
-| Messagebox/bundles | `Authorization: Bearer` | `access_token` cookie; a rejected token triggers one refresh through the dedicated Chrome profile |
+| Messagebox/bundles | `Authorization: Bearer` | `access_token` cookie; an expired token triggers one OIDC refresh without browser navigation |
 
-Do not scrape credentials from an ordinary browser profile. Prefer `npm run login` on the production Mac. The login/import flow stores the matching Chrome User-Agent alongside the cookies; do not hand-edit one without the other. If that isolated profile is blocked while an ordinary Chrome session works, the user may explicitly export one authenticated request with Copy-as-cURL and import it through `npm run login:clipboard` or `login:import-file`. Keep `.env`, the cURL text, and the dedicated browser profile local; Codex is not part of the runtime.
+Do not scrape credentials from an ordinary browser profile. Prefer `npm run login` on the production Mac. The login/import flow stores the matching Chrome User-Agent alongside the cookies; do not hand-edit one without the other. If that isolated profile is blocked while an ordinary Chrome session works, the user may explicitly export one authenticated request with Copy-as-cURL and import it through `npm run login:clipboard` or `login:import-file`. Keep `.env`, the cURL text, and the dedicated browser profile local; bootstrap a fresh session after moving to another Mac. Codex is not part of the runtime.
 
 ## Implemented surface
 

@@ -30,6 +30,7 @@ function servicePaths({
     nodePath,
     launchAgentsDir,
     plistPath: path.join(launchAgentsDir, `${LABEL}.plist`),
+    agentPidPath: path.join(root, "workspace", "agent.pid"),
     logDir,
     stdoutPath: path.join(logDir, "launchd.stdout.log"),
     stderrPath: path.join(logDir, "launchd.stderr.log"),
@@ -166,6 +167,21 @@ function status() {
 function restart() {
   assertMac();
   const paths = servicePaths();
+  try {
+    const pid = Number(fs.readFileSync(paths.agentPidPath, "utf8").trim());
+    if (Number.isInteger(pid) && pid > 1) {
+      process.kill(pid, 0);
+      console.log(`○ Der Agent läuft bereits sichtbar (PID ${pid}). Schließe zuerst sein Terminal-Fenster und starte ihn dann neu.`);
+      process.exitCode = 1;
+      return;
+    }
+  } catch (error) {
+    if (error?.code === "EPERM") {
+      console.log("○ Der Agent läuft bereits, kann von diesem Benutzer aber nicht geprüft werden.");
+      process.exitCode = 1;
+      return;
+    }
+  }
   const domain = `gui/${process.getuid()}`;
   const loaded = launchctl(["print", `${domain}/${LABEL}`], { tolerateFailure: true, inherit: false });
   if (loaded.status !== 0) {

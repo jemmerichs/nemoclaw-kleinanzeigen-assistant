@@ -5,13 +5,13 @@ const path = require("path");
 require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 
 const KleinanzeigenClient = require("../tools/kleinanzeigen");
-const { refreshCookies } = require("../tools/auth");
+const { refreshStoredSession } = require("../tools/auth");
 
 async function main() {
-  const refreshedCookies = await refreshCookies();
-  const verificationClient = new KleinanzeigenClient(refreshedCookies);
+  const refreshed = await refreshStoredSession();
+  const verificationClient = new KleinanzeigenClient(refreshed.cookieString);
   const conversations = await verificationClient.getConversations({ limit: 1 });
-  console.log(`✓ Profil-Refresh gespeichert; ${conversations.length} Konversation(en) verifiziert.`);
+  console.log(`✓ OIDC-Refresh bis ${refreshed.expiresAt} gespeichert; ${conversations.length} Konversation(en) verifiziert.`);
 }
 
 if (require.main === module) {

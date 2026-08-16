@@ -1,9 +1,11 @@
 "use strict";
 
-// login() — headed setup. refreshCookies() — headless renewal of a still-valid session.
+// Manual login/bootstrap plus standards-based renewal of a still-valid session.
 
 const { chromium } = require("playwright");
 const { execFileSync, spawn } = require("child_process");
+const http = require("http");
+const net = require("net");
 
 const fs   = require("fs");
 const path = require("path");
@@ -40,14 +42,28 @@ function classifyAccessProblem({ status, url = "", title = "", bodyText = "" } =
 }
 
 function blockedNetworkError(signal) {
-  return new Error(
+  const error = new Error(
     `Kleinanzeigen blockiert diesen Netzwerkpfad (${signal}). ` +
     "Der Login wurde ohne automatische Wiederholung beendet. " +
     "Bitte VPN/Proxy/iCloud Private Relay deaktivieren und später über eine stabile, normale Heim- oder Mobilfunkverbindung erneut versuchen."
   );
+  error.code = "KA_ACCESS_DENIED";
+  return error;
 }
 
-async function assertNetworkAccess(page, response = null) {
+function rejectedPrivateBrowserError(status = null) {
+  const hasStatus = status !== null && status !== undefined && Number.isInteger(Number(status));
+  const suffix = hasStatus ? ` (HTTP ${Number(status)})` : "";
+  const error = new Error(
+    `Der angemeldete Kleinanzeigen-Browserzugriff wurde abgelehnt${suffix}. ` +
+    "Dieser Befund allein belegt keine IP-Sperre; die dedizierte Sitzung oder ihr Browser-Fingerabdruck muss erneuert werden."
+  );
+  error.code = "KA_BROWSER_REJECTED";
+  if (hasStatus) error.status = Number(status);
+  return error;
+}
+
+async function assertNetworkAccess(page, response = null, { authenticated = false } = {}) {
   const status = response && typeof response.status === "function" ? response.status() : undefined;
   let title = "";
   let bodyText = "";
@@ -55,7 +71,11 @@ async function assertNetworkAccess(page, response = null) {
   try { bodyText = (await page.locator("body").innerText({ timeout: 2_000 })).slice(0, 8_000); } catch {}
 
   const problem = classifyAccessProblem({ status, url: page.url(), title, bodyText });
-  if (problem) throw blockedNetworkError(problem);
+  if (!problem) return;
+  if (authenticated) {
+    throw rejectedPrivateBrowserError(status);
+  }
+  throw blockedNetworkError(problem);
 }
 
 async function waitForCompletedLogin(page, timeoutMs = LOGIN_TIMEOUT_MS) {
@@ -115,6 +135,8 @@ function userIdFromAccessToken(accessToken) {
 function missingSessionParts(values) {
   const missing = [];
   if (!values.get("CSRF-TOKEN")) missing.push("CSRF-TOKEN");
+  if (!values.get("access_token")) missing.push("access_token");
+  if (!values.get("refresh_token")) missing.push("refresh_token");
   const userId = values.get("user_id") || userIdFromAccessToken(values.get("access_token"));
   if (!userId) missing.push("user_id oder ableitbare access_token-Identität");
   return missing;
@@ -374,18 +396,61 @@ function delay(timeoutMs) {
   return new Promise(resolve => setTimeout(resolve, timeoutMs));
 }
 
-async function waitForDevToolsEndpoint(child, timeoutMs = 15_000) {
+function reserveLoopbackPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = address && typeof address === "object" ? address.port : null;
+      server.close(error => {
+        if (error) return reject(error);
+        if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+          return reject(new Error("Kein lokaler Chrome-Debug-Port verfügbar."));
+        }
+        resolve(port);
+      });
+    });
+  });
+}
+
+function devToolsEndpointReady(endpoint) {
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = ready => {
+      if (settled) return;
+      settled = true;
+      resolve(ready);
+    };
+    const request = http.get(`${endpoint}/json/version`, { timeout: 500 }, response => {
+      response.resume();
+      finish(response.statusCode === 200);
+    });
+    request.once("timeout", () => request.destroy());
+    request.once("error", () => finish(false));
+  });
+}
+
+async function waitForDevToolsEndpoint(child, { port = 0, timeoutMs = 15_000 } = {}) {
   const deadline = Date.now() + timeoutMs;
+  const fixedEndpoint = Number.isInteger(port) && port > 0
+    ? `http://127.0.0.1:${port}`
+    : null;
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error("Das dedizierte Chrome-Fenster wurde vor dem Verbindungsaufbau geschlossen.");
     }
-    try {
-      const [port] = fs.readFileSync(DEVTOOLS_ACTIVE_PORT_FILE, "utf8").trim().split(/\r?\n/);
-      if (/^\d{2,5}$/.test(port) && Number(port) <= 65_535) {
-        return `http://127.0.0.1:${port}`;
-      }
-    } catch {}
+    if (fixedEndpoint) {
+      if (await devToolsEndpointReady(fixedEndpoint)) return fixedEndpoint;
+    } else {
+      try {
+        const [activePort] = fs.readFileSync(DEVTOOLS_ACTIVE_PORT_FILE, "utf8").trim().split(/\r?\n/);
+        if (/^\d{2,5}$/.test(activePort) && Number(activePort) <= 65_535) {
+          return `http://127.0.0.1:${activePort}`;
+        }
+      } catch {}
+    }
     await delay(100);
   }
   throw new Error("Das dedizierte Chrome-Fenster konnte nicht lokal validiert werden.");
@@ -395,7 +460,7 @@ async function waitForValidatedNativeSession(context, page, timeoutMs = LOGIN_TI
   const deadline = Date.now() + timeoutMs;
   let lastError = new Error("Sitzung noch nicht vollständig.");
   while (Date.now() < deadline) {
-    await assertNetworkAccess(page);
+    await assertNetworkAccess(page, null, { authenticated: true });
     try {
       const cookies = await context.cookies("https://www.kleinanzeigen.de");
       return {
@@ -423,6 +488,10 @@ function profileInUseError(error) {
 async function openNativeProfile({ headless = false, url = "about:blank" } = {}) {
   const executablePath = findChromeExecutable();
   if (!executablePath) throw new Error("Google Chrome/Chromium wurde nicht gefunden.");
+  // Port 0 marks Chrome as WebDriver-controlled. A reserved non-zero loopback
+  // port keeps the visible native browser internally consistent without JS,
+  // Canvas, WebGL, UA, or navigator-property spoofing.
+  const debugPort = headless ? 0 : await reserveLoopbackPort();
 
   fs.mkdirSync(PROFILE_DIR, { recursive: true, mode: 0o700 });
   fs.chmodSync(PROFILE_DIR, 0o700);
@@ -431,7 +500,7 @@ async function openNativeProfile({ headless = false, url = "about:blank" } = {})
   const args = [
     `--user-data-dir=${PROFILE_DIR}`,
     "--remote-debugging-address=127.0.0.1",
-    "--remote-debugging-port=0",
+    `--remote-debugging-port=${debugPort}`,
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-background-mode",
@@ -446,7 +515,7 @@ async function openNativeProfile({ headless = false, url = "about:blank" } = {})
   });
 
   try {
-    const endpoint = await waitForDevToolsEndpoint(child);
+    const endpoint = await waitForDevToolsEndpoint(child, { port: debugPort });
     browser = await chromium.connectOverCDP(endpoint);
     const context = browser.contexts()[0];
     if (!context) throw new Error("Das dedizierte Chrome-Profil konnte nicht geöffnet werden.");
@@ -485,7 +554,7 @@ async function importSessionFromProfile() {
 
   let nativeProfile;
   try {
-    nativeProfile = await openNativeProfile({ headless: true });
+    nativeProfile = await openNativeProfile({ headless: true, url: "about:blank" });
     const cookies = await nativeProfile.context.cookies("https://www.kleinanzeigen.de");
     const cs = validatedSessionCookieString(cookies);
     saveToEnv({
@@ -508,7 +577,7 @@ async function inspectProfileSession() {
   if (!fs.existsSync(PROFILE_DIR)) return [];
   let nativeProfile;
   try {
-    nativeProfile = await openNativeProfile({ headless: true });
+    nativeProfile = await openNativeProfile({ headless: true, url: "about:blank" });
     const cookies = await nativeProfile.context.cookies();
     return cookies
       .filter(cookie => {
@@ -559,7 +628,7 @@ async function login() {
     await waitForCompletedLogin(page);
 
     const csrfResponse = await page.goto(CSRF_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
-    await assertNetworkAccess(page, csrfResponse);
+    await assertNetworkAccess(page, csrfResponse, { authenticated: true });
 
     const cookies = await context.cookies("https://www.kleinanzeigen.de");
     const cs = validatedSessionCookieString(cookies);
@@ -579,34 +648,24 @@ async function login() {
   }
 }
 
-async function refreshCookies() {
-  if (!fs.existsSync(PROFILE_DIR)) {
-    throw new Error("Kein Browser-Profil gefunden — bitte zuerst 'npm run login' ausführen.");
-  }
-
-  let nativeProfile;
-  try {
-    nativeProfile = await openNativeProfile({ headless: true, url: CSRF_URL });
-    const { cookieString: cs } = await waitForValidatedNativeSession(
-      nativeProfile.context,
-      nativeProfile.page,
-      60_000
-    );
-
-    saveToEnv({
-      KA_COOKIES: cs,
-      KA_BEARER_TOKEN: null,
-      KA_USER_AGENT: systemChromeUserAgent(),
-      KA_ACCEPT_LANGUAGE: DEFAULT_ACCEPT_LANGUAGE,
-      KA_SEC_CH_UA: null,
-      KA_SEC_CH_UA_MOBILE: null,
-      KA_SEC_CH_UA_PLATFORM: null,
-    });
-    console.log("[auth] Cookies refreshed.");
-    return cs;
-  } finally {
-    await closeNativeProfile(nativeProfile);
-  }
+async function refreshStoredSession() {
+  require("dotenv").config({ path: ENV_FILE, override: true });
+  const KleinanzeigenClient = require("./kleinanzeigen");
+  const cookies = process.env.KA_COOKIES || "";
+  if (!cookies) throw new Error("KA_COOKIES fehlt — bitte zuerst 'npm run login' ausführen.");
+  const client = new KleinanzeigenClient(cookies, process.env.KA_BEARER_TOKEN || null);
+  const refreshed = await client.refreshAccessToken();
+  saveToEnv({
+    KA_COOKIES: client.cookies,
+    KA_BEARER_TOKEN: null,
+  });
+  process.env.KA_COOKIES = client.cookies;
+  delete process.env.KA_BEARER_TOKEN;
+  return {
+    cookieString: client.cookies,
+    expiresAt: refreshed.expiresAt,
+    refreshTokenRotated: refreshed.refreshTokenRotated,
+  };
 }
 
 module.exports = {
@@ -625,7 +684,7 @@ module.exports = {
   loginWithSystemChrome,
   openNativeProfile,
   requestMetadataFromCurl,
-  refreshCookies,
+  refreshStoredSession,
   saveToEnv,
   systemChromeUserAgent,
   userIdFromAccessToken,

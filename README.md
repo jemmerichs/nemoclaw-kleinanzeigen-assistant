@@ -79,7 +79,11 @@ npm run smoke:vinted
 
 `npm run login` opens a native Chrome window with a dedicated persistent profile and navigates to the current listing flow. Log in manually and complete any CAPTCHA or 2FA yourself; do not submit a listing. The script observes only that dedicated local Chrome process, waits until `user_id`/Bearer identity and CSRF are genuinely present, stores the resulting cookie string plus matching Chrome request identity in the ignored `.env`, and then closes the window automatically. It does not rely on an ENTER prompt or reopen the profile headlessly after login. Keeping the request identity aligned matters because Kleinanzeigen's session-protection cookies can reject a request whose browser version does not match the login.
 
+Kleinanzeigen access tokens are short-lived. The runtime checks their embedded expiry locally and renews them before private requests through the login service's published OIDC `refresh_token` flow. Rotated tokens are stored atomically in `.env`; no browser is opened for authentication refresh. As long as the refresh token remains valid, hourly or daily manual login is unnecessary. An already expired or revoked refresh token requires one new bootstrap login. The startup doctor also rejects a saved request identity from a different Chrome major version; after a Chrome upgrade, re-import one current authenticated request instead of sending mismatched browser headers unattended.
+
 This dedicated profile is required for the standalone bot. A signed-in Codex in-app browser is useful for read-only UI verification, but its private cookies are intentionally not copied into the Node process. If Kleinanzeigen reports a blocked IP range, stop retrying. Disable VPN/proxy/iCloud Private Relay and retry later from a normal, stable home or mobile connection. The login helper detects common `403`, `429`, IP-range, and unusual-traffic blocks and exits without an automatic retry.
+
+Runtime form inspection never uses headless Chrome for Kleinanzeigen network access. An unknown category opens at most one visible window in the dedicated profile; consecutive path selections share that window for up to two minutes. Visible Chrome uses a reserved non-zero loopback debugging port, avoiding Chrome's special WebDriver marker for port `0` without modifying JavaScript, Canvas, WebGL, the user agent, or navigator properties. A browser rejection activates a 30-minute local circuit breaker instead of further automatic attempts. Common categories come from the short-lived verified cache and need no browser window.
 
 `npm run login:vinted` opens a second, Vinted-only ordinary Chrome profile without DevTools attachment, polling, or scripted page interaction. Log in manually, complete any human check yourself, then close that dedicated window completely. Only after it exits does the helper open `about:blank`, import the profile's Vinted cookies into the ignored `.env`, and close again. Do not paste a raw Vinted token into chat or source files. `npm run smoke:vinted` then performs one read-only profile check in a visible browser; `--full` deliberately adds own-item and inbox reads.
 
@@ -97,7 +101,7 @@ If Kleinanzeigen blocks only the isolated Chrome profile while a normal Chrome p
 4. Run `npm run login:clipboard`.
 5. Copy any harmless text afterwards to replace the sensitive clipboard contents.
 
-The command reads the clipboard only when invoked, never prints its contents, extracts the Cookie, User-Agent, and language headers without executing the cURL command, validates `user_id` and `CSRF-TOKEN`, and writes the same ignored session metadata used by the native-profile flow. This is a bootstrap method, not a separate runtime.
+The command reads the clipboard only when invoked, never prints its contents, extracts the Cookie, User-Agent, and language headers without executing the cURL command, validates CSRF, identity, access token, and refresh token, and writes the same ignored session metadata used by the native-profile flow. This is a one-time bootstrap method, not a separate runtime. Run `npm run smoke:auth-refresh` immediately afterwards; a successful result proves that token rotation works before the background agent starts.
 
 The minimum configuration for local operation is:
 
@@ -147,11 +151,11 @@ npm run service:status
 npm run service:restart
 ```
 
-The installer reruns the strict Telegram/runtime doctor, writes no secrets into the plist, embeds the current Node/project paths, starts the existing `scripts/start.sh`, restarts it after crashes, and stores private logs under `workspace/logs`. It runs only in the signed-in macOS user session; the Mac must remain awake and online.
+The installer reruns the strict Telegram/runtime doctor, writes no secrets into the plist, embeds the current Node/project paths, starts the existing `scripts/start.sh`, and stores private logs under `workspace/logs`. It runs only in the signed-in macOS user session; the Mac must remain awake and online. A PID lock prevents a second bot process from using the same Telegram account and local state.
 
 `scripts/start.sh` wraps the agent in `caffeinate -i -s`, so while the bot runs the Mac will not idle-sleep or system-sleep on AC power. This keeps the bot alive instead of stopping after a short idle timeout. The `caffeinate` process ends together with the agent, so it does not keep the Mac awake when the bot is stopped. Note that closing the lid or a manual sleep still suspends the Mac; for unattended 24/7 operation set Energy Saver to prevent sleep on AC power.
 
-When running as a launchd service, a visible Terminal window opens directly showing the bot. Closing that window stops the bot. Run `npm run service:install` or `npm run service:restart` to start it again.
+When running as a launchd service, a visible Terminal window opens directly showing the bot. Closing that window stops the bot. Run `npm run service:install` or `npm run service:restart` to start it again; `service:restart` refuses to open another window while the current agent is still running.
 
 To stop automatic operation:
 
@@ -161,7 +165,7 @@ npm run service:uninstall
 
 Uninstalling removes only the LaunchAgent definition. It preserves `.env`, the Chrome profile, inventory, images and logs. The bot does not need Codex at runtime.
 
-If moving an already-running installation, stop the old process first and copy `.env`, `workspace/ads.db` (including any current WAL/SHM files) and `workspace/images` together. Never run two instances against the same Telegram bot and inventory at once.
+If moving an already-running installation, stop the old process first and copy `workspace/ads.db` (including any current WAL/SHM files), `workspace/images`, and the non-marketplace configuration from `.env` together. Never copy `workspace/browser-profile` or `workspace/vinted-browser-profile`; Chrome protects those profiles with machine-local credentials. Bootstrap fresh marketplace sessions in Chrome on the destination Mac, then run the account smoke tests before installing its service. Never run two instances against the same Telegram bot and inventory at once.
 
 ## Test locally before Telegram
 
@@ -269,11 +273,11 @@ For an active but weak listing, ask the bot to analyze the asset. It reads the r
 | `npm run login:import` | Retry only the local import from the closed dedicated profile |
 | `npm run login:inspect` | Show only saved Kleinanzeigen cookie names/domains |
 | `npm run login:automated` | Explicit Playwright-driven login fallback |
-| `npm run refresh-auth` | Refresh cookies from the saved profile |
+| `npm run refresh-auth` | Access-/Refresh-Token per OIDC erneuern und atomar speichern; kein Browserzugriff |
 | `npm run launch` / `npm start` | Strict preflight, optional OpenShell policy, then Telegram bot |
 | `npm run service:install` | Install/start the bot as a standard macOS user LaunchAgent |
 | `npm run service:status` | Inspect the loaded LaunchAgent |
-| `npm run service:restart` | Restart the running LaunchAgent (applies `start.sh`/config changes) |
+| `npm run service:restart` | Start the loaded LaunchAgent again after its visible bot Terminal has been closed |
 | `npm run service:uninstall` | Stop/remove only the LaunchAgent; retain bot data |
 | `npm test` | Offline regression suite |
 | `npm run check` | Syntax checks |

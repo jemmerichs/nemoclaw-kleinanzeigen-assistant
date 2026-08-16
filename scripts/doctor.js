@@ -7,7 +7,11 @@ const path = require("path");
 const root = path.resolve(__dirname, "..");
 require("dotenv").config({ path: path.join(root, ".env") });
 const { OpenRouterClient } = require("../tools/openrouter");
-const { findChromeExecutable, userIdFromAccessToken } = require("../tools/auth");
+const {
+  findChromeExecutable,
+  systemChromeUserAgent,
+  userIdFromAccessToken,
+} = require("../tools/auth");
 const { PROFILE_DIR: VINTED_PROFILE_DIR } = require("../tools/vinted-auth");
 const {
   normalizeInboxPollMinutes,
@@ -26,6 +30,15 @@ function cookieValue(name) {
     new RegExp(`(?:^|;\\s*)${escaped}=([^;]*)`)
   );
   return match ? match[1] : "";
+}
+
+function accessTokenExpiry(token) {
+  try {
+    const payload = JSON.parse(Buffer.from(String(token || "").split(".")[1], "base64url").toString("utf8"));
+    return Number.isFinite(Number(payload.exp)) ? Number(payload.exp) * 1000 : null;
+  } catch {
+    return null;
+  }
 }
 
 function line(label, ok, detail) {
@@ -124,8 +137,16 @@ function main() {
   const derivedUserId = userIdFromAccessToken(cookieValue("access_token"));
   const userIdOk = hasCookie("user_id") || Boolean(derivedUserId);
   const bearerOk = hasCookie("access_token") || Boolean(process.env.KA_BEARER_TOKEN);
+  const refreshOk = hasCookie("refresh_token");
+  const bearerExpiry = accessTokenExpiry(cookieValue("access_token") || process.env.KA_BEARER_TOKEN);
   const chromeMatch = String(process.env.KA_USER_AGENT || "").match(/\bChrome\/(\d+(?:\.\d+)*)/);
   const browserFingerprintOk = Boolean(chromeMatch);
+  const installedChromeMatch = systemChromeUserAgent().match(/\bChrome\/(\d+(?:\.\d+)*)/);
+  const browserVersionAligned = Boolean(
+    chromeMatch
+    && installedChromeMatch
+    && chromeMatch[1].split(".")[0] === installedChromeMatch[1].split(".")[0]
+  );
   if (kaCookies) {
     line("CSRF", csrfOk, csrfOk ? "vorhanden" : "fehlt");
     line(
@@ -133,11 +154,35 @@ function main() {
       userIdOk,
       hasCookie("user_id") ? "vorhanden" : (derivedUserId ? "aus Bearer abgeleitet" : "fehlt")
     );
-    line("Bearer", bearerOk, bearerOk ? "vorhanden" : "fehlt");
+    line(
+      "Bearer",
+      bearerOk,
+      !bearerOk
+        ? "fehlt"
+        : bearerExpiry && bearerExpiry <= Date.now()
+          ? `abgelaufen seit ${new Date(bearerExpiry).toISOString()}; wird vor dem nächsten privaten Request erneuert`
+          : bearerExpiry
+            ? `gültig bis ${new Date(bearerExpiry).toISOString()}`
+            : "vorhanden"
+    );
+    line(
+      "Session-Refresh",
+      refreshOk,
+      refreshOk
+        ? "Refresh-Kontext vorhanden; Gültigkeit mit npm run smoke:ka prüfen"
+        : "Refresh-Token fehlt — einmal neu anmelden"
+    );
     line(
       "Browser-Fingerabdruck",
       browserFingerprintOk,
       browserFingerprintOk ? `Chrome ${chromeMatch[1]}` : "fehlt — Login oder cURL-Import erneut ausführen"
+    );
+    line(
+      "Chrome-Abgleich",
+      browserVersionAligned,
+      browserVersionAligned
+        ? `gespeicherte und installierte Hauptversion ${chromeMatch[1].split(".")[0]}`
+        : `gespeichert ${chromeMatch?.[1] || "fehlt"}, installiert ${installedChromeMatch?.[1] || "fehlt"} — Sitzung auf diesem Mac neu importieren`
     );
   }
   const chromePath = findChromeExecutable();
@@ -160,7 +205,8 @@ function main() {
   );
 
   const localReady = nodeOk && modeOk && apiKeyOk;
-  const accountReady = localReady && kaCookies && csrfOk && userIdOk && browserFingerprintOk;
+  const accountReady = localReady && kaCookies && csrfOk && userIdOk && bearerOk && refreshOk
+    && browserFingerprintOk && browserVersionAligned;
   const zipCode = String(process.env.KA_DEFAULT_ZIP_CODE || "");
   const locationId = String(process.env.KA_DEFAULT_LOCATION_ID || "").trim();
   const contactName = String(process.env.KA_CONTACT_NAME || "").trim();

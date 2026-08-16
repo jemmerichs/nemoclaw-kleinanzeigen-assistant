@@ -22,10 +22,12 @@ test("category form paths are bounded visible labels, not guessed internal IDs",
 
 test("category browser cookies are derived from the validated API session", () => {
   assert.deepEqual(
-    browserCookiesFromHeader("CSRF-TOKEN=csrf; user_id=42; compound=a=b"),
+    browserCookiesFromHeader("CSRF-TOKEN=csrf; user_id=42; access_token=a.b.c; refresh_token=refresh; compound=a=b"),
     [
       { name: "CSRF-TOKEN", value: "csrf", url: "https://www.kleinanzeigen.de" },
       { name: "user_id", value: "42", url: "https://www.kleinanzeigen.de" },
+      { name: "access_token", value: "a.b.c", url: "https://www.kleinanzeigen.de" },
+      { name: "refresh_token", value: "refresh", url: "https://www.kleinanzeigen.de" },
       { name: "compound", value: "a=b", url: "https://www.kleinanzeigen.de" },
     ]
   );
@@ -53,13 +55,13 @@ test("category inspection reuses a valid imported session when the profile is si
   };
 
   assert.deepEqual(
-    await ensureCategoryBrowserSession(context, "CSRF-TOKEN=fresh; user_id=42"),
+    await ensureCategoryBrowserSession(context, "CSRF-TOKEN=fresh; user_id=42; access_token=a.b.c; refresh_token=refresh"),
     { source: "environment" }
   );
   assert.equal(additions, 1);
   assert.deepEqual(
     stored.map(cookie => cookie.name),
-    ["CSRF-TOKEN", "user_id"]
+    ["CSRF-TOKEN", "user_id", "access_token", "refresh_token"]
   );
 });
 
@@ -70,6 +72,8 @@ test("category inspection leaves an already authenticated profile untouched", as
       return [
         { domain: ".kleinanzeigen.de", name: "CSRF-TOKEN", value: "csrf" },
         { domain: ".kleinanzeigen.de", name: "user_id", value: "42" },
+        { domain: ".kleinanzeigen.de", name: "access_token", value: "a.b.c" },
+        { domain: ".kleinanzeigen.de", name: "refresh_token", value: "refresh" },
       ];
     },
     async addCookies() {

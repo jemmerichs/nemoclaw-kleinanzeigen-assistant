@@ -7,6 +7,9 @@ const { validateCategoryAttributes } = require("./kleinanzeigen-category-contrac
 
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+const OIDC_ISSUER = "https://login.kleinanzeigen.de/";
+const OIDC_HOSTNAME = "login.kleinanzeigen.de";
+const OIDC_TOKEN_PATH = "/oauth/token";
 const USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36";
 const DEFAULT_ACCEPT_LANGUAGE = "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7";
 const PRICE_TYPES = new Set(["FIXED", "NEGOTIABLE", "GIVE_AWAY"]);
@@ -27,6 +30,23 @@ function jwtPayload(token) {
   } catch {
     return null;
   }
+}
+
+function accessTokenMetadata(token) {
+  const payload = jwtPayload(token);
+  if (!payload || payload.iss !== OIDC_ISSUER) return null;
+  const clientId = String(payload.azp || "");
+  if (!/^[A-Za-z0-9_-]{8,200}$/.test(clientId)) return null;
+  const expiresAt = Number(payload.exp);
+  return {
+    clientId,
+    expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
+    userId: Object.entries(payload).find(
+      ([key, value]) =>
+        (key === "user_id" || /\/user_id$/i.test(key)) &&
+        /^\d+$/.test(String(value))
+    )?.[1] || null,
+  };
 }
 
 function safeBrowserHeader(value, fallback, maxLength = 512) {
@@ -221,19 +241,27 @@ class KleinanzeigenClient {
     if (uid) {
       this.userId = uid[1];
     } else if (this.bearerToken) {
-      const claim = Object.entries(jwtPayload(this.bearerToken) || {}).find(
-        ([key, value]) =>
-          (key === "user_id" || /\/user_id$/i.test(key)) &&
-          /^\d+$/.test(String(value))
-      );
-      this.userId = claim ? String(claim[1]) : null;
+      this.userId = String(accessTokenMetadata(this.bearerToken)?.userId || "") || null;
     } else {
       this.userId = null;
     }
   }
 
+  accessTokenExpiresWithin(seconds = 300) {
+    const metadata = accessTokenMetadata(this.bearerToken);
+    if (!metadata?.expiresAt) return false;
+    return metadata.expiresAt <= Math.floor(Date.now() / 1000) + Math.max(0, Number(seconds) || 0);
+  }
+
   _requireCookieSession() {
     if (!this.cookies) throw new Error("KA_COOKIES fehlt. Bitte 'npm run login' ausführen.");
+    if (this.bearerToken && this.accessTokenExpiresWithin(60)) {
+      throw clientError(
+        "KA_SESSION_EXPIRED",
+        "Die private Kleinanzeigen-Sitzung ist abgelaufen und muss vor dem Request erneuert werden.",
+        401
+      );
+    }
     return this.cookies;
   }
 
@@ -377,6 +405,9 @@ class KleinanzeigenClient {
 
   _gatewayRequest(method, path, body = null) {
     if (!this.bearerToken) throw new Error("Bearer token fehlt. Bitte 'node scripts/login.js' ausführen.");
+    if (this.accessTokenExpiresWithin(60)) {
+      throw clientError("KA_BEARER_EXPIRED", "Bearer token abgelaufen (lokale Ablaufprüfung).", 401);
+    }
     return new Promise((resolve, reject) => {
       const data = body ? JSON.stringify(body) : null;
       const options = {
@@ -558,16 +589,94 @@ class KleinanzeigenClient {
     return match ? decodeURIComponent(match[1].trim()) : null;
   }
 
-  async refreshCsrfToken() {
-    const { refreshCookies } = require("./auth");
-    const freshCookies = await refreshCookies();
-    this.cookies = freshCookies;
-    const at = freshCookies.match(/(?:^|;\s*)access_token=([^;]+)/);
-    const rt = freshCookies.match(/(?:^|;\s*)refresh_token=([^;]+)/);
-    this.bearerToken = at ? at[1].trim() : null;
-    this.refreshToken = rt ? rt[1].trim() : null;
+  _oidcTokenRequest(form) {
+    return new Promise((resolve, reject) => {
+      const data = new URLSearchParams(form).toString();
+      const options = {
+        hostname: OIDC_HOSTNAME,
+        path: OIDC_TOKEN_PATH,
+        method: "POST",
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Content-Length": Buffer.byteLength(data),
+          "User-Agent": this.userAgent,
+          "Accept-Language": this.acceptLanguage,
+        },
+      };
+      let req;
+      req = https.request(options, res => this._collectResponse(req, res, resolve, reject));
+      req.setTimeout(this.timeoutMs, () => req.destroy(new Error("POST login.kleinanzeigen.de/oauth/token: Timeout")));
+      req.on("error", reject);
+      req.write(data);
+      req.end();
+    });
+  }
+
+  async refreshAccessToken() {
+    const metadata = accessTokenMetadata(this.bearerToken);
+    if (!metadata?.clientId || !this.refreshToken) {
+      throw clientError(
+        "KA_REFRESH_EXPIRED",
+        "Die Kleinanzeigen-Sitzung enthält keinen nutzbaren OIDC-Refresh-Kontext. Bitte einmal 'npm run login' ausführen.",
+        401
+      );
+    }
+    const previousRefreshToken = this.refreshToken;
+    const response = await this._oidcTokenRequest({
+      grant_type: "refresh_token",
+      client_id: metadata.clientId,
+      refresh_token: this.refreshToken,
+    });
+    if (response.status !== 200) {
+      if (response.status === 403 || response.status === 429) {
+        throw clientError(
+          "KA_ACCESS_DENIED",
+          `Der Kleinanzeigen-Login-Dienst hat den einmaligen Session-Refresh abgelehnt oder gedrosselt (HTTP ${response.status}).`,
+          response.status
+        );
+      }
+      throw clientError(
+        response.status === 400 || response.status === 401 ? "KA_REFRESH_EXPIRED" : "KA_REFRESH_FAILED",
+        response.status === 400 || response.status === 401
+          ? "Der Kleinanzeigen-Refresh-Token wurde abgelehnt. Bitte einmal 'npm run login' ausführen."
+          : `Die Kleinanzeigen-Sitzung konnte nicht erneuert werden (HTTP ${response.status}).`,
+        response.status
+      );
+    }
+    const accessToken = String(response.body?.access_token || "");
+    const refreshedMetadata = accessTokenMetadata(accessToken);
+    if (
+      !refreshedMetadata?.expiresAt
+      || refreshedMetadata.expiresAt <= Math.floor(Date.now() / 1000) + 60
+      || refreshedMetadata.clientId !== metadata.clientId
+      || (metadata.userId && refreshedMetadata.userId && String(refreshedMetadata.userId) !== String(metadata.userId))
+    ) {
+      throw clientError(
+        "KA_REFRESH_EXPIRED",
+        "Kleinanzeigen hat beim Session-Refresh keinen gültigen neuen Access-Token geliefert.",
+        502
+      );
+    }
+    const nextRefreshToken = String(response.body?.refresh_token || this.refreshToken);
+    this.bearerToken = accessToken;
+    this.refreshToken = nextRefreshToken;
+    this.userId = String(refreshedMetadata.userId || this.userId || "") || null;
+    this.cookies = mergeCookieHeader(this.cookies, [
+      `access_token=${accessToken}; Path=/; Secure`,
+      `refresh_token=${nextRefreshToken}; Path=/; Secure`,
+    ]);
+    return {
+      expiresAt: new Date(refreshedMetadata.expiresAt * 1000).toISOString(),
+      refreshTokenRotated: nextRefreshToken !== previousRefreshToken,
+    };
+  }
+
+  async refreshCsrfCookie() {
+    const response = await this._wwwRequest("GET", "/p-anzeige-aufgeben-schritt2.html");
+    this._ensureSuccess("refreshCsrfCookie", response);
     const csrf = this._extractCsrfToken();
-    if (!csrf) throw new Error("CSRF-TOKEN nicht nach Refresh gefunden.");
+    if (!csrf) throw clientError("KA_CSRF_EXPIRED", "CSRF-TOKEN wurde beim Session-Refresh nicht erneuert.", 401);
     return csrf;
   }
 

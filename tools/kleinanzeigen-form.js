@@ -12,7 +12,12 @@ const {
 } = require("./kleinanzeigen-category-contracts");
 
 const FORM_URL = "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html";
+const INSPECTION_IDLE_MS = 2 * 60 * 1000;
+const INSPECTION_REJECTION_BACKOFF_MS = 30 * 60 * 1000;
 let inspectionQueue = Promise.resolve();
+let activeInspectionSession = null;
+let inspectionIdleTimer = null;
+let inspectionBlockedUntil = 0;
 
 function normalizeCategoryPath(value) {
   if (value === undefined || value === null) return [];
@@ -122,7 +127,7 @@ async function openCategoryPicker(page) {
     if (await link.count() === 1) {
       await link.click();
       await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
-      await assertNetworkAccess(page);
+      await assertNetworkAccess(page, null, { authenticated: true });
       if (/login\.kleinanzeigen\.de|m-einloggen/.test(page.url())) {
         throw new Error("Kleinanzeigen-Sitzung fehlt. Bitte zuerst 'npm run login' ausführen.");
       }
@@ -139,16 +144,17 @@ async function openCategoryPicker(page) {
   throw new Error("Das aktuelle Kleinanzeigen-Formular bietet keine erkennbare Kategorieauswahl.");
 }
 
-async function selectCategoryPath(page, categoryPath) {
-  const selectedTokens = [];
-  const selectedLabels = [];
-  for (const label of categoryPath) {
+async function selectCategoryPath(page, categoryPath, progress = {}) {
+  const selectedTokens = [...(progress.selectedTokens || [])];
+  const selectedLabels = [...(progress.selectedLabels || [])];
+  for (const label of categoryPath.slice(selectedLabels.length)) {
     const choices = await readCategoryChoices(page, selectedTokens);
     const matches = choices.filter(choice => choice.label === label);
     if (matches.length !== 1) {
       return {
         complete: false,
         selectedPath: selectedLabels,
+        selectedTokens,
         choices: publicChoices(choices),
         issue: matches.length
           ? `Kategorie "${label}" ist in dieser Ebene nicht eindeutig.`
@@ -165,7 +171,7 @@ async function selectCategoryPath(page, categoryPath) {
 
     const categoryInput = page.locator('input[name="categoryId"]');
     if (await categoryInput.count() === 1 && await categoryInput.inputValue()) {
-      return { complete: true, selectedPath: selectedLabels };
+      return { complete: true, selectedPath: selectedLabels, selectedTokens };
     }
   }
 
@@ -173,18 +179,96 @@ async function selectCategoryPath(page, categoryPath) {
   if (categoryPath.length && await continueButton.count() === 1) {
     await continueButton.click();
     await page.locator('input[name="categoryId"]').waitFor({ state: "attached", timeout: 10_000 });
-    return { complete: true, selectedPath: selectedLabels };
+    return { complete: true, selectedPath: selectedLabels, selectedTokens };
   }
 
   const choices = await readCategoryChoices(page, selectedTokens);
   return {
     complete: false,
     selectedPath: selectedLabels,
+    selectedTokens,
     choices: publicChoices(choices),
     issue: categoryPath.length
       ? "Die Kategorie benötigt noch eine weitere sichtbare Auswahl."
       : "Wähle den sichtbaren Kategoriepfad schrittweise aus.",
   };
+}
+
+async function closeInspectionSession(session = activeInspectionSession) {
+  if (!session || session.closed) return;
+  session.closed = true;
+  if (inspectionIdleTimer) {
+    clearTimeout(inspectionIdleTimer);
+    inspectionIdleTimer = null;
+  }
+  if (activeInspectionSession === session) activeInspectionSession = null;
+  await closeNativeProfile(session.nativeProfile);
+}
+
+function keepInspectionSessionWarm(session) {
+  if (inspectionIdleTimer) clearTimeout(inspectionIdleTimer);
+  inspectionIdleTimer = setTimeout(() => {
+    closeInspectionSession(session).catch(() => {});
+  }, INSPECTION_IDLE_MS);
+}
+
+async function startInspectionSession() {
+  if (Date.now() < inspectionBlockedUntil) {
+    const error = new Error(
+      `Der dedizierte Kategorie-Browser bleibt nach einer Zugriffsablehnung bis ${new Date(inspectionBlockedUntil).toISOString()} pausiert.`
+    );
+    error.code = "KA_BROWSER_BACKOFF";
+    error.retryAfter = new Date(inspectionBlockedUntil).toISOString();
+    throw error;
+  }
+  // Never browse Kleinanzeigen headlessly in the runtime. A visible, dedicated
+  // Chrome profile avoids the HeadlessChrome fingerprint and makes any account
+  // challenge visible instead of hammering the endpoint in the background.
+  const nativeProfile = await openNativeProfile({ headless: false });
+  try {
+    const { context, page } = nativeProfile;
+    const browserSession = await ensureCategoryBrowserSession(context);
+    const response = await page.goto(FORM_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: 60_000,
+    });
+    await assertNetworkAccess(page, response, { authenticated: true });
+    if (/login\.kleinanzeigen\.de|m-einloggen/.test(page.url())) {
+      throw new Error(
+        browserSession.source === "environment"
+          ? "Die gespeicherte Kleinanzeigen-Sitzung wurde vom aktuellen Formular abgelehnt. " +
+            "Bitte einmal 'npm run login' ausführen."
+          : "Kleinanzeigen-Sitzung fehlt. Bitte zuerst 'npm run login' ausführen."
+      );
+    }
+    await openCategoryPicker(page);
+    return {
+      nativeProfile,
+      page,
+      closed: false,
+      selectedLabels: [],
+      selectedTokens: [],
+    };
+  } catch (error) {
+    if (["KA_BROWSER_REJECTED", "KA_ACCESS_DENIED"].includes(error.code)) {
+      inspectionBlockedUntil = Date.now() + INSPECTION_REJECTION_BACKOFF_MS;
+    }
+    await closeNativeProfile(nativeProfile);
+    throw error;
+  }
+}
+
+async function inspectionSessionFor(categoryPath) {
+  const canContinue = activeInspectionSession
+    && activeInspectionSession.selectedLabels.length <= categoryPath.length
+    && activeInspectionSession.selectedLabels.every((label, index) => categoryPath[index] === label);
+  if (!canContinue) await closeInspectionSession();
+  if (!activeInspectionSession) activeInspectionSession = await startInspectionSession();
+  if (inspectionIdleTimer) {
+    clearTimeout(inspectionIdleTimer);
+    inspectionIdleTimer = null;
+  }
+  return activeInspectionSession;
 }
 
 async function inspectBaseAttributes(page) {
@@ -293,31 +377,25 @@ async function inspectComboboxValues(page, field) {
 async function inspectCategoryFormNow({ categoryId, categoryPath } = {}) {
   const expectedCategoryId = categoryIdValue(categoryId);
   const normalizedPath = normalizeCategoryPath(categoryPath);
-  let nativeProfile;
+  let session;
+  let keepSession = false;
   try {
-    nativeProfile = await openNativeProfile({ headless: true });
-    const { context, page } = nativeProfile;
-    const browserSession = await ensureCategoryBrowserSession(context);
-    const response = await page.goto(FORM_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: 60_000,
+    session = await inspectionSessionFor(normalizedPath);
+    const { page } = session;
+    const selection = await selectCategoryPath(page, normalizedPath, {
+      selectedLabels: session.selectedLabels,
+      selectedTokens: session.selectedTokens,
     });
-    await assertNetworkAccess(page, response);
-    if (/login\.kleinanzeigen\.de|m-einloggen/.test(page.url())) {
-      throw new Error(
-        browserSession.source === "environment"
-          ? "Die gespeicherte Kleinanzeigen-Sitzung wurde vom aktuellen Formular abgelehnt. " +
-            "Bitte einmal 'npm run login' ausführen."
-          : "Kleinanzeigen-Sitzung fehlt. Bitte zuerst 'npm run login' ausführen."
-      );
-    }
-    await openCategoryPicker(page);
-    const selection = await selectCategoryPath(page, normalizedPath);
+    session.selectedLabels = [...selection.selectedPath];
+    session.selectedTokens = [...selection.selectedTokens];
     if (!selection.complete) {
+      keepSession = true;
+      keepInspectionSessionWarm(session);
+      const { selectedTokens: _selectedTokens, ...publicSelection } = selection;
       return {
         status: "selection_required",
         expectedCategoryId,
-        ...selection,
+        ...publicSelection,
         instruction:
           "Rufe das Tool erneut mit dem vollständigen exakten categoryPath aus den sichtbaren choices auf.",
       };
@@ -358,8 +436,11 @@ async function inspectCategoryFormNow({ categoryId, categoryPath } = {}) {
       instruction:
         "Verwende nur die gelieferten Werte. Fehlt eine nötige Nutzerentscheidung, frage sie vor dem Posting gezielt ab.",
     };
+  } catch (error) {
+    await closeInspectionSession(session);
+    throw error;
   } finally {
-    await closeNativeProfile(nativeProfile);
+    if (session && !keepSession) await closeInspectionSession(session);
   }
 }
 

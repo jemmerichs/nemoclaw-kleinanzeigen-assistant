@@ -36,6 +36,9 @@ function smokeDiagnosis(errors) {
     codes.has("KA_SESSION_EXPIRED") ||
     codes.has("KA_CSRF_EXPIRED") ||
     codes.has("KA_BEARER_EXPIRED") ||
+    codes.has("KA_BROWSER_REJECTED") ||
+    codes.has("KA_REFRESH_EXPIRED") ||
+    codes.has("KA_REFRESH_FAILED") ||
     codes.has("KA_SESSION_REJECTED") ||
     /\b(?:Session|CSRF|Bearer token) abgelaufen\b|Token-Refresh fehlgeschlagen|access_denied/i.test(messages)
   ) {

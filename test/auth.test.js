@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  assertNetworkAccess,
   classifyAccessProblem,
   extractCookieHeaderFromCurl,
   extractKaCookieString,
@@ -11,6 +12,16 @@ const {
   validatedCookieHeader,
   validatedSessionCookieString,
 } = require("../tools/auth");
+
+function accessPage({ title = "", bodyText = "", url = "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html" } = {}) {
+  return {
+    async title() { return title; },
+    locator() {
+      return { async innerText() { return bodyText; } };
+    },
+    url() { return url; },
+  };
+}
 
 test("auth serializes only Kleinanzeigen cookies and deduplicates names", () => {
   const cookies = [
@@ -35,8 +46,10 @@ test("auth refuses a partial browser session", () => {
     validatedSessionCookieString([
       { domain: ".kleinanzeigen.de", name: "CSRF-TOKEN", value: "csrf" },
       { domain: ".kleinanzeigen.de", name: "user_id", value: "42" },
+      { domain: ".kleinanzeigen.de", name: "access_token", value: "a.b.c" },
+      { domain: ".kleinanzeigen.de", name: "refresh_token", value: "refresh" },
     ]),
-    "CSRF-TOKEN=csrf; user_id=42"
+    "CSRF-TOKEN=csrf; user_id=42; access_token=a.b.c; refresh_token=refresh"
   );
 });
 
@@ -46,8 +59,8 @@ test("auth accepts the current session shape with user identity in the bearer JW
   })).toString("base64url");
   const accessToken = `e30.${payload}.signature`;
   assert.equal(
-    validatedCookieHeader(`CSRF-TOKEN=csrf; access_token=${accessToken}`),
-    `CSRF-TOKEN=csrf; access_token=${accessToken}`
+    validatedCookieHeader(`CSRF-TOKEN=csrf; access_token=${accessToken}; refresh_token=refresh`),
+    `CSRF-TOKEN=csrf; access_token=${accessToken}; refresh_token=refresh`
   );
 });
 
@@ -64,6 +77,46 @@ test("auth recognizes blocked network responses without retrying login", () => {
   );
 });
 
+test("authenticated browser 403 is not mislabeled as an IP block", async () => {
+  const response = { status: () => 403 };
+  await assert.rejects(
+    () => assertNetworkAccess(accessPage(), response, { authenticated: true }),
+    error => {
+      assert.equal(error.code, "KA_BROWSER_REJECTED");
+      assert.equal(error.status, 403);
+      assert.match(error.message, /belegt keine IP-Sperre/);
+      assert.doesNotMatch(error.message, /blockiert diesen Netzwerkpfad/);
+      return true;
+    }
+  );
+});
+
+test("authenticated block page without a response handle stays a private-access failure", async () => {
+  await assert.rejects(
+    () => assertNetworkAccess(accessPage({ bodyText: "Zugriff verweigert." }), null, {
+      authenticated: true,
+    }),
+    error => {
+      assert.equal(error.code, "KA_BROWSER_REJECTED");
+      assert.equal(error.status, undefined);
+      assert.match(error.message, /belegt keine IP-Sperre/);
+      return true;
+    }
+  );
+});
+
+test("public browser 403 remains a network-path access failure", async () => {
+  const response = { status: () => 403 };
+  await assert.rejects(
+    () => assertNetworkAccess(accessPage(), response),
+    error => {
+      assert.equal(error.code, "KA_ACCESS_DENIED");
+      assert.match(error.message, /blockiert diesen Netzwerkpfad/);
+      return true;
+    }
+  );
+});
+
 test("auth imports a Chrome Copy-as-cURL cookie header without executing it", () => {
   const curl = [
     "curl 'https://www.kleinanzeigen.de/m-meine-anzeigen-verwalten.json' \\",
@@ -73,11 +126,11 @@ test("auth imports a Chrome Copy-as-cURL cookie header without executing it", ()
     "  -H 'sec-ch-ua: \"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"150\", \"Google Chrome\";v=\"150\"' \\",
     "  -H 'sec-ch-ua-mobile: ?0' \\",
     "  -H 'sec-ch-ua-platform: \"macOS\"' \\",
-    "  -H 'cookie: foo=bar; user_id=42; CSRF-TOKEN=csrf%20value; access_token=a.b.c'",
+    "  -H 'cookie: foo=bar; user_id=42; CSRF-TOKEN=csrf%20value; access_token=a.b.c; refresh_token=refresh'",
   ].join("\n");
   assert.equal(
     extractCookieHeaderFromCurl(curl),
-    "foo=bar; user_id=42; CSRF-TOKEN=csrf%20value; access_token=a.b.c"
+    "foo=bar; user_id=42; CSRF-TOKEN=csrf%20value; access_token=a.b.c; refresh_token=refresh"
   );
   assert.deepEqual(requestMetadataFromCurl(curl), {
     userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
@@ -90,7 +143,7 @@ test("auth imports a Chrome Copy-as-cURL cookie header without executing it", ()
 
 test("auth rejects clipboard input without a complete session", () => {
   assert.throws(() => extractCookieHeaderFromCurl("curl https://example.com"), /Kein Cookie-Header/);
-  assert.throws(() => validatedCookieHeader("user_id=42"), /CSRF-TOKEN fehlt/);
+  assert.throws(() => validatedCookieHeader("user_id=42"), /CSRF-TOKEN.*fehlt/);
   assert.throws(
     () => extractCookieHeaderFromCurl("curl 'x' -H 'cookie: user_id=42; CSRF-TOKEN=ok\nINJECTED=1'"),
     /Zeilenumbrüche|Kein Cookie-Header/

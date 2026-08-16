@@ -5,6 +5,18 @@ const test = require("node:test");
 
 const KleinanzeigenClient = require("../tools/kleinanzeigen");
 
+function accessToken({ expiresInSeconds = 3600, clientId = "client_id_123", userId = "42" } = {}) {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = Buffer.from(JSON.stringify({
+    iss: "https://login.kleinanzeigen.de/",
+    azp: clientId,
+    exp: now + expiresInSeconds,
+    iat: now,
+    "https://www.kleinanzeigen.de/user_id": userId,
+  })).toString("base64url");
+  return `e30.${payload}.signature`;
+}
+
 class StubClient extends KleinanzeigenClient {
   constructor() {
     super("user_id=42; CSRF-TOKEN=csrf-value", "bearer-token");
@@ -104,6 +116,71 @@ test("HTTP access failures distinguish public blocks from expired credentials", 
   assert.equal(accessResponseError(403, { authenticated: true, transport: "csrf" }).code, "KA_SESSION_REJECTED");
   assert.equal(accessResponseError(429, { authenticated: true, transport: "bearer" }).code, "KA_ACCESS_DENIED");
   assert.equal(accessResponseError(500, { authenticated: false }), null);
+});
+
+test("OIDC refresh rotates tokens in memory without exposing them", async () => {
+  const expired = accessToken({ expiresInSeconds: -60 });
+  const fresh = accessToken({ expiresInSeconds: 3600 });
+  const client = new KleinanzeigenClient(
+    `CSRF-TOKEN=csrf; access_token=${expired}; refresh_token=refresh-old`,
+    null
+  );
+  let submitted;
+  client._oidcTokenRequest = async form => {
+    submitted = form;
+    return {
+      status: 200,
+      body: {
+        access_token: fresh,
+        refresh_token: "refresh-new",
+        token_type: "Bearer",
+        expires_in: 3600,
+      },
+    };
+  };
+
+  const result = await client.refreshAccessToken();
+  assert.deepEqual(submitted, {
+    grant_type: "refresh_token",
+    client_id: "client_id_123",
+    refresh_token: "refresh-old",
+  });
+  assert.equal(client.bearerToken, fresh);
+  assert.equal(client.refreshToken, "refresh-new");
+  assert.match(client.cookies, /access_token=e30\./);
+  assert.match(client.cookies, /refresh_token=refresh-new/);
+  assert.equal(result.refreshTokenRotated, true);
+  assert.equal(client.accessTokenExpiresWithin(), false);
+});
+
+test("expired local access tokens fail before a private web request", async () => {
+  const expired = accessToken({ expiresInSeconds: -60 });
+  const client = new KleinanzeigenClient(`CSRF-TOKEN=csrf; access_token=${expired}; refresh_token=refresh`);
+  let requested = false;
+  client._wwwRequest = async () => {
+    requested = true;
+    return { status: 200, body: { ads: [] } };
+  };
+  await assert.rejects(
+    () => client.getMyAds(),
+    error => error.code === "KA_SESSION_EXPIRED"
+  );
+  assert.equal(requested, false);
+});
+
+test("rejected OIDC refresh requires one manual login and is not retried", async () => {
+  const expired = accessToken({ expiresInSeconds: -60 });
+  const client = new KleinanzeigenClient(`access_token=${expired}; refresh_token=refresh-old`);
+  let calls = 0;
+  client._oidcTokenRequest = async () => {
+    calls++;
+    return { status: 400, body: { error: "invalid_grant" } };
+  };
+  await assert.rejects(
+    () => client.refreshAccessToken(),
+    error => error.code === "KA_REFRESH_EXPIRED" && /npm run login/.test(error.message)
+  );
+  assert.equal(calls, 1);
 });
 
 test("gateway conversation calls validate IDs and map the other party", async () => {

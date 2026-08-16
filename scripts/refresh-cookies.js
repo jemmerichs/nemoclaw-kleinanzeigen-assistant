@@ -1,14 +1,10 @@
 #!/usr/bin/env node
-/**
- * Headless refresh of an existing still-valid browser session.
- * Opens the saved browser profile, visits KA, writes fresh cookies to .env.
- * Run this if CSRF errors appear. A fully expired session still needs `npm run login`.
- */
+/** Standards-based OIDC refresh of an existing still-valid session. */
 
 "use strict";
 
-const { refreshCookies } = require("../tools/auth");
+const { refreshStoredSession } = require("../tools/auth");
 
-refreshCookies()
-  .then(() => console.log("Done."))
+refreshStoredSession()
+  .then(result => console.log(`Session erneuert bis ${result.expiresAt}.`))
   .catch(e => { console.error("Error:", e.message); process.exit(1); });

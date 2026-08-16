@@ -22,6 +22,9 @@ test("smoke diagnosis distinguishes access blocks, session expiry, and timeouts"
   const expired = new Error("Bearer token abgelaufen (401)");
   expired.code = "KA_BEARER_EXPIRED";
   assert.match(smokeDiagnosis([expired]), /Session-Diagnose/);
+  const refresh = new Error("Refresh token abgelaufen (401)");
+  refresh.code = "KA_REFRESH_EXPIRED";
+  assert.match(smokeDiagnosis([refresh]), /Session-Diagnose/);
   assert.match(smokeDiagnosis([new Error("Token-Refresh fehlgeschlagen (401)")]), /Session-Diagnose/);
 
   assert.match(smokeDiagnosis([new Error("GET www.kleinanzeigen.de: Timeout")]), /Netzwerkdiagnose/);
