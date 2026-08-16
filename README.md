@@ -117,6 +117,8 @@ Before unattended Telegram operation, also set a real `KA_DEFAULT_ZIP_CODE`, `KA
 
 `KA_DEFAULT_ZIP_CODE` and `KA_DEFAULT_LOCATION_ID` are one verified pair. The bridge always injects that configured pair into drafts and publications and ignores model-supplied alternatives, so the location is not re-decided for every listing. If Kleinanzeigen rejects the location, re-verify and update the pair itself instead of changing one listing payload.
 
+For a bounded repair on the machine that actually runs the bot, follow [`docs/TARGET_MAC_LISTING_CONFIG_REPAIR.md`](docs/TARGET_MAC_LISTING_CONFIG_REPAIR.md). It includes a copyable prompt for a less capable target-Mac agent and avoids printing `.env` or session secrets.
+
 The tracked `workspace/memory/preferences.md` is loaded automatically. It currently defaults Kleinanzeigen listings to the exact verified “Nur Abholung” option when a category exposes it; an explicit shipping request for the current listing still takes precedence.
 
 ## Target Mac cutover

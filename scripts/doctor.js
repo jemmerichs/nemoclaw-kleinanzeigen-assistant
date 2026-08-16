@@ -3,6 +3,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { kleinanzeigenListingConfig } = require("../tools/listing-config");
 
 const root = path.resolve(__dirname, "..");
 require("dotenv").config({ path: path.join(root, ".env") });
@@ -213,10 +214,8 @@ function main() {
   const localReady = nodeOk && modeOk && apiKeyOk;
   const accountReady = localReady && kaCookies && csrfOk && userIdOk && bearerOk && refreshOk
     && browserFingerprintOk && browserVersionAligned;
-  const zipCode = String(process.env.KA_DEFAULT_ZIP_CODE || "");
-  const locationId = String(process.env.KA_DEFAULT_LOCATION_ID || "").trim();
-  const contactName = String(process.env.KA_CONTACT_NAME || "").trim();
-  const publishReady = /^\d{5}$/.test(zipCode) && zipCode !== "00000" && Boolean(locationId) && Boolean(contactName);
+  const listingConfig = kleinanzeigenListingConfig();
+  const publishReady = listingConfig.ready;
   line("Lokaler Dry-run", localReady, localReady ? "bereit — npm run chat" : "nicht bereit");
   accountLine(
     "Kontoaktionen",
@@ -235,7 +234,7 @@ function main() {
     publishReady,
     publishReady
       ? "PLZ, Orts-ID und Kontaktname gesetzt"
-      : "vor Live-Veröffentlichung KA_DEFAULT_ZIP_CODE, KA_DEFAULT_LOCATION_ID und KA_CONTACT_NAME setzen"
+      : `vor Live-Veröffentlichung korrigieren: ${listingConfig.problems.join(", ")}`
   );
   if (requireTelegram) {
     line(

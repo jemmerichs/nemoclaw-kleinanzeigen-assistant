@@ -204,6 +204,85 @@ test("protected model action is staged exactly and Go is consumed once", async (
   assert.match(sent[2], /keine aktuelle/);
 });
 
+test("ready bridge configuration cannot be hallucinated as unresolved", async () => {
+  const previous = {
+    zipCode: process.env.KA_DEFAULT_ZIP_CODE,
+    locationId: process.env.KA_DEFAULT_LOCATION_ID,
+    contactName: process.env.KA_CONTACT_NAME,
+  };
+  process.env.KA_DEFAULT_ZIP_CODE = "80636";
+  process.env.KA_DEFAULT_LOCATION_ID = "16360";
+  process.env.KA_CONTACT_NAME = "Jannik";
+  const sent = [];
+  let modelCalls = 0;
+  const gateway = { async send(_chatId, text) { sent.push(text); } };
+  const llmClient = {
+    model: "stub",
+    async complete(request) {
+      modelCalls++;
+      if (modelCalls === 1) {
+        assert.match(
+          request.messages[1].content,
+          /Kleinanzeigen-Veröffentlichungskonfiguration: bereit/
+        );
+        return {
+          message: {
+            role: "assistant",
+            content:
+              "Die Veröffentlichung konnte noch nicht vorbereitet werden, da das Standortpaar in der Bridge-Umgebung nicht vollständig aufgelöst ist. KA_DEFAULT_LOCATION_ID muss aktualisiert werden.",
+          },
+        };
+      }
+      assert.match(request.messages.at(-1).content, /Korrektur durch die Bridge/);
+      return {
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "corrected-create",
+            type: "function",
+            function: {
+              name: "ka_create_ad",
+              arguments: JSON.stringify({
+                title: "Möbelerhöher",
+                description: "Sechs unbenutzte Möbelerhöher.",
+                categoryId: 278,
+                price: 6,
+                priceType: "FIXED",
+                imagePaths: [],
+              }),
+            },
+          }],
+        },
+      };
+    },
+  };
+
+  try {
+    const result = await runAgent(
+      "ready-listing-config",
+      "Veröffentliche den fertigen Vorschlag auf Kleinanzeigen.",
+      { llmClient, gateway }
+    );
+    assert.equal(modelCalls, 2);
+    assert.equal(result.answered, true);
+    assert.deepEqual(result.toolCalls, ["ka_create_ad"]);
+    assert.equal(sent.length, 1);
+    assert.doesNotMatch(sent[0], /nicht vollständig aufgelöst|KA_DEFAULT/);
+    assert.equal(getPending("ready-listing-config").args.zipCode, "80636");
+    assert.equal(getPending("ready-listing-config").args.locationId, "16360");
+    assert.equal(getPending("ready-listing-config").args.contactName, "Jannik");
+  } finally {
+    clearPending("ready-listing-config");
+    if (previous.zipCode === undefined) delete process.env.KA_DEFAULT_ZIP_CODE;
+    else process.env.KA_DEFAULT_ZIP_CODE = previous.zipCode;
+    if (previous.locationId === undefined) delete process.env.KA_DEFAULT_LOCATION_ID;
+    else process.env.KA_DEFAULT_LOCATION_ID = previous.locationId;
+    if (previous.contactName === undefined) delete process.env.KA_CONTACT_NAME;
+    else process.env.KA_CONTACT_NAME = previous.contactName;
+  }
+});
+
 test("dry-run still allows an explicitly approved local inventory cleanup", async () => {
   const inserted = store.query({
     sql: "INSERT INTO assets (name,image_paths) VALUES (?,?)",

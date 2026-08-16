@@ -104,6 +104,30 @@ test("known category requirements are enforced while preparing the exact action"
   };
   try {
     assert.throws(
+      () => TOOLS.ka_create_ad.prepare({
+        ...base,
+        attributes: {
+          "haushaltsgeraete.art": "haushaltskleingeraete",
+        },
+      }),
+      /Veröffentlichungskonfiguration.*Standard-PLZ.*Orts-ID.*Profilname/
+    );
+
+    process.env.KA_DEFAULT_ZIP_CODE = "80636";
+    process.env.KA_DEFAULT_LOCATION_ID = "80636";
+    process.env.KA_CONTACT_NAME = "Jannik";
+    assert.throws(
+      () => TOOLS.ka_create_ad.prepare({
+        ...base,
+        attributes: {
+          "haushaltsgeraete.art": "haushaltskleingeraete",
+        },
+      }),
+      /eigenständige Kleinanzeigen-Orts-ID/
+    );
+
+    process.env.KA_DEFAULT_LOCATION_ID = "16360";
+    assert.throws(
       () => TOOLS.ka_create_ad.prepare(base),
       /haushaltsgeraete\.art/
     );
@@ -114,17 +138,6 @@ test("known category requirements are enforced while preparing the exact action"
       },
     });
     assert.equal(prepared.attributes["haushaltsgeraete.versand"], "nein");
-    assert.throws(() => TOOLS.ka_create_ad.prepare({
-      ...base,
-      locationId: base.zipCode,
-      attributes: {
-        "haushaltsgeraete.art": "haushaltskleingeraete",
-      },
-    }), /PLZ .* auch als Location-ID/);
-
-    process.env.KA_DEFAULT_ZIP_CODE = "80636";
-    process.env.KA_DEFAULT_LOCATION_ID = "16360";
-    process.env.KA_CONTACT_NAME = "Jannik";
     const configured = TOOLS.ka_create_ad.prepare({
       ...base,
       zipCode: "10115",
