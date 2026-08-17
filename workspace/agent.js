@@ -223,7 +223,7 @@ const kleinanzeigenCreateSchema = objectSchema({
   price: integer("Preis in ganzen EUR", { minimum: 0 }),
   priceType: string("FIXED, NEGOTIABLE oder GIVE_AWAY", { enum: ["FIXED", "NEGOTIABLE", "GIVE_AWAY"] }),
   zipCode: string("Konfigurierte feste PLZ", { pattern: "^\\d{5}$" }),
-  locationId: string("Konfigurierte feste Orts-ID", { minLength: 1, maxLength: 50 }),
+  locationId: string("Aus dem aktuellen sichtbaren Formular gebundene Orts-ID", { minLength: 1, maxLength: 50 }),
   locationName: string("Sichtbare Ortsbezeichnung", { minLength: 1, maxLength: 200 }),
   contactName: string("Konfigurierter Anzeigename", { minLength: 1, maxLength: 30 }),
   sessionRevision: string("Gebundene Session-Revision", { minLength: 1, maxLength: 128 }),
@@ -646,7 +646,7 @@ function defaultsForListing(args) {
   };
 }
 
-function assertConfiguredListingLocation(args) {
+function assertBoundListingLocation(args) {
   const zipCode = String(args.zipCode || "").trim();
   const locationId = String(args.locationId || "").trim();
   const locationName = String(args.locationName || "").trim();
@@ -740,7 +740,7 @@ function assertMarketplacePublishable(assetId, marketplace) {
 
 function prepareBoundKleinanzeigenListing(rawArgs) {
   const args = prepareListingArgs(rawArgs, { includeContact: true });
-  assertConfiguredListingLocation(args);
+  assertBoundListingLocation(args);
   args.attributes = applyCategoryPreferences(args.categoryId, args.attributes);
   validateCategoryAttributes(args.categoryId, args.attributes, {
     requireRequired: true,
@@ -2097,6 +2097,13 @@ function contradictsReadyListingConfiguration(message) {
   return mentionsConfiguration && claimsUnavailable;
 }
 
+function contradictsFixedListingToolCatalog(message) {
+  const text = String(message || "");
+  const mentionsListingTools = /ka_prepare_listing|ka_publish_prepared_listing|Vorbereitungs-Tools|Tools zum (?:Vorbereiten|Einstellen)/i.test(text);
+  const claimsUnavailable = /nicht zur Verfügung|keine Tools|nur (?:Inbox|Konversations|Memory)|freigeschaltet/i.test(text);
+  return mentionsListingTools && claimsUnavailable;
+}
+
 function multimodalContent(prompt, imagePaths) {
   const validPaths = imagePaths.slice(0, MAX_MODEL_IMAGES).map(assertImagePath);
   if (!validPaths.length) return prompt;
@@ -2804,6 +2811,17 @@ async function runAgent(
             "Die vorige gegenteilige Diagnose darf nicht ausgegeben werden. Nenne keine internen Variablennamen und erfrage keine Standortwerte. " +
             "Wenn Jannik veröffentlichen möchte und alle Angebotsdaten vorliegen, rufe ka_prepare_listing mit sichtbarem Kategoriepfad und fachlicher Versandwahl auf; " +
             "andernfalls antworte nur mit der tatsächlich noch fehlenden Nutzerentscheidung.",
+        });
+        continue;
+      }
+      if (contradictsFixedListingToolCatalog(message)) {
+        messages.push(modelMessage);
+        messages.push({
+          role: "user",
+          content:
+            "Korrektur durch die Bridge: ka_prepare_listing und ka_publish_prepared_listing sind im festen Tool-Katalog dieses Turns vorhanden. " +
+            "Die vorige Verfügbarkeitsbehauptung ist falsch und darf nicht ausgegeben werden. Erwähne keine Freischaltung. " +
+            "Verwende bei einem Veröffentlichungswunsch das passende Tool oder nenne nur die tatsächlich noch fehlende Nutzerentscheidung.",
         });
         continue;
       }

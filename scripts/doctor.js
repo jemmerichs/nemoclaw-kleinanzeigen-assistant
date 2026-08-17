@@ -254,7 +254,7 @@ function main() {
     line(
       "Telegram-Betrieb",
       telegramTokenOk && chatIdsOk,
-      telegramTokenOk && chatIdsOk ? "bereit — npm run launch" : "nicht bereit"
+      telegramTokenOk && chatIdsOk ? "bereit — der geführte Start erfolgt durch npm run onboard" : "nicht bereit"
     );
   } else {
     optionalLine(

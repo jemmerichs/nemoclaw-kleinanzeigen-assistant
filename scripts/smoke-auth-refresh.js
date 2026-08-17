@@ -16,7 +16,16 @@ async function main() {
 
 if (require.main === module) {
   main().catch(error => {
-    console.error(`Auth-Refresh-Smoke-Test fehlgeschlagen: ${error.message}`);
+    const refreshRejected = ["KA_REFRESH_EXPIRED", "KA_REFRESH_FAILED", "KA_ACCESS_DENIED"]
+      .includes(error?.code);
+    const detail = refreshRejected
+      ? "Die vorsorgliche OIDC-Erneuerung ist derzeit nicht verfügbar."
+      : error.message;
+    console.error(`Auth-Refresh-Smoke-Test fehlgeschlagen: ${detail}`);
+    console.error(
+      "Dieser Entwickler-Smoke ist kein Setup-Gate. Meldet 'npm run onboard' bereit, " +
+      "funktioniert die aktuelle private Session und ein sofortiger Login ist nicht nötig."
+    );
     process.exitCode = 1;
   });
 }

@@ -99,11 +99,21 @@ test("acceptance 2: unusual product albums always receive research and preparati
 test("acceptance 3: a follow-up neither asks for tool activation nor sends an unrequested photo", async () => {
   const sent = [];
   const photos = [];
+  let turns = 0;
   const llm = {
     model: "stub",
     async complete(request) {
+      turns++;
       const names = request.tools.map(entry => entry.function.name);
       assert.equal(names.includes("ka_prepare_listing"), true);
+      if (turns === 1) {
+        return {
+          message: {
+            role: "assistant",
+            content: "Die Tools zum Vorbereiten oder Einstellen stehen nicht zur Verfügung und müssen freigeschaltet werden.",
+          },
+        };
+      }
       return { message: { role: "assistant", content: "Ja. Die Einschätzung beruht auf den sichtbaren Angaben." } };
     },
   };
@@ -112,6 +122,7 @@ test("acceptance 3: a follow-up neither asks for tool activation nor sends an un
     async sendPhoto(_chat, value) { photos.push(value); },
   };
   await agent.runAgent("follow-up", "Sicher? Woran liegt es?", { llmClient: llm, gateway });
+  assert.equal(turns, 2);
   assert.equal(photos.length, 0);
   assert.doesNotMatch(sent.join("\n"), /Tool.*freischalt|Foto konnte nicht gesendet/i);
 });

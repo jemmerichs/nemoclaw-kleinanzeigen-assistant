@@ -57,7 +57,7 @@ NEMOCLAW_COMPLEXITY_ROUTING=off
 OPENROUTER_HIGH_MODEL=moonshotai/kimi-k3
 OPENROUTER_HIGH_DAILY_BUDGET_USD=0.25
 
-# Start safe. Change to live only after the smoke tests pass.
+# Start safe. `npm run enable:live` changes this only after guided onboarding and one Telegram dry-run proposal.
 NEMOCLAW_MODE=dry-run
 
 TELEGRAM_BOT_TOKEN=...
