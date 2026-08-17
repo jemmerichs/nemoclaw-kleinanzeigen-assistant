@@ -5,6 +5,7 @@ const test = require("node:test");
 
 const {
   assertOnlyRequestedFormChanges,
+  awaitEditSubmission,
   editFormUrl,
   editTimeoutError,
   normalizeAdEditAction,
@@ -133,4 +134,31 @@ test("edit failures distinguish safe preflight stops from ambiguous saves", () =
 
   assert.equal(editTimeoutError().definitiveNoWrite, true);
   assert.equal(editTimeoutError({ editRequestStarted: true }).code, "KA_EDIT_OUTCOME_UNKNOWN");
+});
+
+test("edit submission chooses the free continuation when Kleinanzeigen opens the promotion dialog", async () => {
+  let resolveResponse;
+  let clicked = false;
+  const response = { status: () => 200 };
+  const responsePromise = new Promise(resolve => { resolveResponse = resolve; });
+  const page = {
+    getByRole(role, options) {
+      assert.equal(role, "button");
+      assert.deepEqual(options, {
+        name: "Ohne Hochschieben weiter",
+        exact: true,
+      });
+      return {
+        async waitFor({ state }) { assert.equal(state, "visible"); },
+        async count() { return 1; },
+        async click() {
+          clicked = true;
+          resolveResponse(response);
+        },
+      };
+    },
+  };
+
+  assert.equal(await awaitEditSubmission(page, responsePromise), response);
+  assert.equal(clicked, true);
 });

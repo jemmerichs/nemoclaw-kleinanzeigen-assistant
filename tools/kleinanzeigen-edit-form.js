@@ -195,6 +195,42 @@ async function parseResponseBody(response) {
   try { return JSON.parse(text); } catch { return text.slice(0, 20_000); }
 }
 
+async function awaitEditSubmission(page, responsePromise, {
+  promotionTimeoutMs = 5_000,
+} = {}) {
+  const responseOutcome = Promise.resolve(responsePromise).then(response => ({
+    kind: "response",
+    response,
+  }));
+  const promotionOutcome = (async () => {
+    const withoutPromotion = page.getByRole("button", {
+      name: "Ohne Hochschieben weiter",
+      exact: true,
+    });
+    try {
+      await withoutPromotion.waitFor({
+        state: "visible",
+        timeout: Math.max(1, Number(promotionTimeoutMs) || 1),
+      });
+    } catch {
+      return { kind: "no_promotion" };
+    }
+    if (await withoutPromotion.count() !== 1) {
+      throw new Error("Der kostenlose Abschluss der Titeländerung ist nicht eindeutig auswählbar.");
+    }
+    return { kind: "promotion", withoutPromotion };
+  })();
+
+  const first = await Promise.race([responseOutcome, promotionOutcome]);
+  if (first.kind === "response") return first.response;
+  if (first.kind === "promotion") {
+    // This is the explicit free opt-out shown after clicking “Anzeige speichern”.
+    // Never select the paid “Hochschieben” alternative automatically.
+    await first.withoutPromotion.click();
+  }
+  return responsePromise;
+}
+
 async function editAdViaForm(rawArgs, {
   cookieHeader,
   onPhase = null,
@@ -289,7 +325,7 @@ async function editAdViaForm(rawArgs, {
         throw new Error("Die Bearbeitungsmaske enthält keinen eindeutigen Speichern-Knopf.");
       }
       await saveButton.click();
-      response = await responsePromise;
+      response = await awaitEditSubmission(page, responsePromise);
     } finally {
       page.off("request", onRequest);
     }
@@ -332,6 +368,7 @@ async function editAdViaForm(rawArgs, {
 module.exports = {
   EDIT_FORM_PATH,
   assertOnlyRequestedFormChanges,
+  awaitEditSubmission,
   editAdViaForm,
   editFormUrl,
   editTimeoutError,

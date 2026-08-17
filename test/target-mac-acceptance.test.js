@@ -338,6 +338,24 @@ test("a transient reconciliation read stays retryable without replaying the writ
   assert.equal(broker.getOperation(prepared.id).status, "reconcile_required");
 });
 
+test("a reconciliation blocked by an expired login stays retryable after a new login", async () => {
+  const prepared = operation({ chatId: "auth-reconcile", payload: { text: "read-after-login" } });
+  broker.claimApproval(prepared.id, { currentMode: "live" });
+  broker.markOperationPhase(prepared.id, "commit");
+  broker.failOperation(prepared.id, Object.assign(new Error("refresh rejected"), {
+    code: "KA_EDIT_OUTCOME_UNKNOWN",
+  }));
+
+  const retryable = await broker.reconcileOperation(prepared.id, async () => {
+    const error = new Error("Refresh-Token wurde abgelehnt.");
+    error.code = "KA_REFRESH_EXPIRED";
+    throw error;
+  });
+
+  assert.equal(retryable.status, "reconcile_required");
+  assert.equal(retryable.phase, "reconcile");
+});
+
 test("Kleinanzeigen reconciliation requires the exact current ad shape", async () => {
   const listing = {
     title: "6x Möbelerhöher / Betterhöher",

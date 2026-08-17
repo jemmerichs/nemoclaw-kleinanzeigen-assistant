@@ -14,6 +14,7 @@ const {
   closeNativeProfile,
   extractCookieHeaderFromCurl,
   extractKaCookieString,
+  navigateWithAccessRetry,
   requestMetadataFromCurl,
   validatedCookieHeader,
   validatedFreshSessionCookieString,
@@ -209,7 +210,7 @@ test("native profile cleanup kills Chrome when the CDP close call hangs", async 
   assert.deepEqual(signals, ["SIGTERM"]);
 });
 
-test("auth recognizes blocked network responses without retrying login", () => {
+test("auth classifies blocked network responses", () => {
   assert.equal(classifyAccessProblem({ status: 403 }), "HTTP 403");
   assert.equal(classifyAccessProblem({ status: 429 }), "HTTP 429");
   assert.equal(
@@ -261,6 +262,32 @@ test("public browser 403 remains a network-path access failure", async () => {
       return true;
     }
   );
+});
+
+test("login navigation retries one transient blocked response", async () => {
+  let navigations = 0;
+  const page = {
+    async goto() {
+      navigations++;
+      return { status: () => navigations === 1 ? 403 : 200 };
+    },
+    async title() { return navigations === 1 ? "Access denied" : "Bei Kleinanzeigen einloggen"; },
+    locator() {
+      return {
+        async innerText() { return navigations === 1 ? "Request blocked" : "Sicher einloggen"; },
+      };
+    },
+    url() { return "https://www.kleinanzeigen.de/m-einloggen.html"; },
+  };
+
+  const response = await navigateWithAccessRetry(
+    page,
+    "https://www.kleinanzeigen.de/m-einloggen.html",
+    { retryDelayMs: 0 }
+  );
+
+  assert.equal(response.status(), 200);
+  assert.equal(navigations, 2);
 });
 
 test("auth imports a Chrome Copy-as-cURL cookie header without executing it", () => {

@@ -31,6 +31,7 @@ const {
   appendHistory,
   clearPending,
   contextStats,
+  createScheduledErrorReporter,
   describeListingValidationFailure,
   executeTool,
   getHistory,
@@ -38,6 +39,7 @@ const {
   normalizeHistoryEntry,
   observedKaSearchCategoryIds,
   prepareBoundKleinanzeigenListing,
+  reconcileKleinanzeigenEditOperation,
   runAgent,
   stagePending,
   verifiedCategoryInspectionFailureMessage,
@@ -73,6 +75,27 @@ function semanticListingArgs(overrides = {}) {
 test.after(() => {
   store.close();
   fs.rmSync(directory, { recursive: true, force: true });
+});
+
+test("scheduled Kleinanzeigen checks log one session failure per cooldown", () => {
+  const written = [];
+  let now = 1_000;
+  const report = createScheduledErrorReporter({
+    cooldownMs: 60_000,
+    now: () => now,
+    write: message => written.push(message),
+  });
+  const error = Object.assign(new Error("Refresh-Token wurde abgelehnt."), {
+    code: "KA_REFRESH_EXPIRED",
+  });
+
+  assert.equal(report("heartbeat", error, "session-a"), true);
+  now += 20_000;
+  assert.equal(report("listing-heartbeat", error, "session-a"), false);
+  assert.deepEqual(written, ["[heartbeat] Refresh-Token wurde abgelehnt."]);
+
+  assert.equal(report("listing-heartbeat", error, "session-b"), true);
+  assert.equal(written.length, 2);
 });
 
 test("agent process lock blocks a second instance and recovers a stale PID", () => {
@@ -1134,6 +1157,40 @@ test("live-ad title and description edits stage one exact action and execute onl
     process.env.NEMOCLAW_MODE = previousMode;
     clearPending("edit-live-ad");
   }
+});
+
+test("read-only reconciliation resolves an ambiguous title edit without replaying it", async () => {
+  const recorded = [];
+  const operation = {
+    args: {
+      adId: "3487180022",
+      previousTitle: "Alter Titel",
+      title: "Neuer Titel",
+    },
+  };
+
+  const completed = await reconcileKleinanzeigenEditOperation(operation, {
+    getMyAds: async () => [{ id: "3487180022", title: "Neuer Titel" }],
+    recordEdit: (adId, changes) => recorded.push({ adId, changes }),
+  });
+  assert.equal(completed.status, "completed");
+  assert.deepEqual(recorded, [{
+    adId: "3487180022",
+    changes: { title: "Neuer Titel" },
+  }]);
+
+  const unchanged = await reconcileKleinanzeigenEditOperation(operation, {
+    getMyAds: async () => [{ id: "3487180022", title: "Alter Titel" }],
+  });
+  assert.equal(unchanged.status, "confirmed_no_write");
+
+  await assert.rejects(
+    () => reconcileKleinanzeigenEditOperation(operation, {
+      getMyAds: async () => [{ id: "3487180022", title: "Alter Titel" }],
+      deferUnchanged: true,
+    }),
+    error => error.code === "KA_RECONCILIATION_PENDING"
+  );
 });
 
 test("any non-cancel command invalidates an older approval", async () => {

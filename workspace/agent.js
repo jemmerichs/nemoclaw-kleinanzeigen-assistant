@@ -108,6 +108,7 @@ const MAX_MODEL_IMAGES = 12;
 const MAX_MODEL_IMAGE_BYTES = 12 * 1024 * 1024;
 const PENDING_TTL_MS = 30 * 60 * 1000;
 const AUTH_REFRESH_FAILURE_COOLDOWN_MS = 60 * 1000;
+const SCHEDULED_FAILURE_LOG_COOLDOWN_MS = 60 * 1000;
 
 let ka = null;
 let kaAuthenticated = false;
@@ -137,6 +138,31 @@ async function waitWhileRunning(delayMs, isStopped, sliceMs = 250) {
       Math.min(Math.max(1, Number(sliceMs) || 250), deadline - Date.now())
     ));
   }
+}
+
+function createScheduledErrorReporter({
+  cooldownMs = SCHEDULED_FAILURE_LOG_COOLDOWN_MS,
+  now = Date.now,
+  write = message => console.error(message),
+} = {}) {
+  let last = null;
+  return (scope, error, sessionFingerprint = "") => {
+    const signature = [
+      String(error?.code || ""),
+      String(error?.message || error || "Unbekannter Fehler"),
+      String(sessionFingerprint || ""),
+    ].join("\0");
+    const timestamp = Number(now());
+    if (
+      last?.signature === signature
+      && timestamp - last.at < Math.max(0, Number(cooldownMs) || 0)
+    ) {
+      return false;
+    }
+    last = { signature, at: timestamp };
+    write(`[${scope}] ${String(error?.message || error || "Unbekannter Fehler")}`);
+    return true;
+  };
 }
 
 function readProcessLock(filePath) {
@@ -2126,8 +2152,8 @@ function describeAmbiguousActionFailure(action, error, marketplace) {
     `Aktion ${action.id} konnte nicht sicher als abgeschlossen bestätigt werden.`,
     problem,
     "Sie wird nicht automatisch wiederholt. Prüfe zuerst den aktuellen Stand auf dem Marktplatz.",
-    "Derselbe unveränderte Versuch bleibt gesperrt; für einen neuen Vorschlag müssen fehlerhafte " +
-      "Formularwerte korrigiert werden.",
+    "Derselbe unveränderte Versuch bleibt bis zu einer eindeutigen read-only Nachprüfung gesperrt; " +
+      "Formularwerte werden nicht auf Verdacht geändert.",
   ].join("\n");
 }
 
@@ -2390,8 +2416,24 @@ async function handleApproval(chatId, gateway) {
       replacement = stagePending(chatId, action.tool, { preparationId, ...snapshot });
     }
     const ambiguousExternalFailure = failed?.error?.writeCertainty === "ambiguous";
+    let immediateReconciliation = null;
+    if (
+      ambiguousExternalFailure
+      && claimed?.tool === "ka_edit_ad"
+      && claimed.args?.description === undefined
+    ) {
+      try {
+        [immediateReconciliation] = await reconcileExternalOperations({
+          operationIds: [claimed.id],
+          deferUnchangedEdits: true,
+        });
+      } catch (reconciliationError) {
+        console.error(`[agent] Sofortige read-only Nachprüfung fehlgeschlagen: ${reconciliationError.message}`);
+      }
+    }
+    const reconciliationMessage = reconciliationNotice(immediateReconciliation);
     const marketplace = action.tool.startsWith("vinted_") ? "Vinted" : "Kleinanzeigen";
-    const message = categoryValidation
+    const message = reconciliationMessage || (categoryValidation
       ? describeListingValidationFailure(action, error, {
         categoryContractInvalidated: invalidatedCategory?.invalidated === true,
       })
@@ -2406,10 +2448,12 @@ async function handleApproval(chatId, gateway) {
       : ambiguousExternalFailure
       ? describeAmbiguousActionFailure(action, error, marketplace)
       : `${failed.error.safeMessage || "Die Aktion wurde sicher vor einer externen Änderung beendet."} ` +
-        `Fehlercode: ${failed.error.code}.`;
+        `Fehlercode: ${failed.error.code}.`);
     appendHistory(
       chatId,
-      categoryValidation
+      reconciliationMessage
+        ? `System: ${reconciliationMessage}`
+        : categoryValidation
         ? "System: Kleinanzeigen-Formularvertrag veraltet oder unvollständig. " +
           `${invalidatedCategory?.invalidated ? "Die Bridge hat den abgelehnten Kategorievertrag gesperrt. " : ""}` +
           `Kategorie ${error.categoryId || action.args?.listing?.categoryId || action.args?.categoryId || "unbekannt"} vor einem neuen Vorschlag ` +
@@ -3122,6 +3166,55 @@ function matchesPublishedKleinanzeigenAd(ad, listing, remoteId = null) {
   );
 }
 
+async function reconcileKleinanzeigenEditOperation(operation, {
+  getMyAds = () => executeTool("ka_get_my_ads", { limit: 100 }),
+  recordEdit = recordListingEdit,
+  deferUnchanged = false,
+} = {}) {
+  const ads = await getMyAds();
+  const remote = ads.find(ad => String(ad.id) === String(operation.args.adId));
+  if (!remote) {
+    return { status: "manual_resolution", evidence: { read: "own_ads", found: false } };
+  }
+  const remoteTitle = String(remote.title || "").trim();
+  if (operation.args.description !== undefined) {
+    return {
+      status: "manual_resolution",
+      remoteId: operation.args.adId,
+      evidence: {
+        read: "own_ads",
+        titleMatches: remoteTitle === String(operation.args.title || "").trim(),
+        descriptionReadUnavailable: true,
+      },
+    };
+  }
+  if (remoteTitle === String(operation.args.title || "").trim()) {
+    recordEdit(operation.args.adId, { title: operation.args.title });
+    return {
+      status: "completed",
+      remoteId: operation.args.adId,
+      evidence: { read: "own_ads", exactTitleMatch: true },
+    };
+  }
+  if (remoteTitle === String(operation.args.previousTitle || "").trim()) {
+    if (deferUnchanged) {
+      const error = new Error("Die Titeländerung ist in der unmittelbaren Nachprüfung noch nicht sichtbar.");
+      error.code = "KA_RECONCILIATION_PENDING";
+      throw error;
+    }
+    return {
+      status: "confirmed_no_write",
+      remoteId: operation.args.adId,
+      evidence: { read: "own_ads", unchangedTitle: true },
+    };
+  }
+  return {
+    status: "manual_resolution",
+    remoteId: operation.args.adId,
+    evidence: { read: "own_ads", unexpectedTitle: true },
+  };
+}
+
 function reconciliationNotice(operation) {
   if (operation?.provider !== "kleinanzeigen") return "";
   if (operation?.tool === "ka_edit_ad") {
@@ -3167,8 +3260,15 @@ async function notifyReconciledOperations(operations, gateway) {
   return notices;
 }
 
-async function reconcileExternalOperations() {
-  const unresolved = marketplaceBroker.unresolvedOperations();
+async function reconcileExternalOperations({
+  operationIds = null,
+  deferUnchangedEdits = false,
+} = {}) {
+  const selectedIds = operationIds === null
+    ? null
+    : new Set((operationIds || []).map(String));
+  const unresolved = marketplaceBroker.unresolvedOperations()
+    .filter(operation => selectedIds === null || selectedIds.has(String(operation.id)));
   const reconciled = [];
   for (const operation of unresolved) {
     if (operation.provider === "kleinanzeigen" && !kaAuthenticated && !loadKleinanzeigenSession()) continue;
@@ -3249,43 +3349,9 @@ async function reconcileExternalOperations() {
         return { status: "completed", remoteId: String(remote.id), link: remote.link || null, evidence: { read: "own_ads", exactMatch: true } };
       }
       if (current.tool === "ka_edit_ad") {
-        const ads = await client.getMyAds({ limit: 100 });
-        const remote = ads.find(ad => String(ad.id) === String(current.args.adId));
-        if (!remote) {
-          return { status: "manual_resolution", evidence: { read: "own_ads", found: false } };
-        }
-        const remoteTitle = String(remote.title || "").trim();
-        if (current.args.description !== undefined) {
-          return {
-            status: "manual_resolution",
-            remoteId: current.args.adId,
-            evidence: {
-              read: "own_ads",
-              titleMatches: remoteTitle === String(current.args.title || "").trim(),
-              descriptionReadUnavailable: true,
-            },
-          };
-        }
-        if (remoteTitle === String(current.args.title || "").trim()) {
-          recordListingEdit(current.args.adId, { title: current.args.title });
-          return {
-            status: "completed",
-            remoteId: current.args.adId,
-            evidence: { read: "own_ads", exactTitleMatch: true },
-          };
-        }
-        if (remoteTitle === String(current.args.previousTitle || "").trim()) {
-          return {
-            status: "confirmed_no_write",
-            remoteId: current.args.adId,
-            evidence: { read: "own_ads", unchangedTitle: true },
-          };
-        }
-        return {
-          status: "manual_resolution",
-          remoteId: current.args.adId,
-          evidence: { read: "own_ads", unexpectedTitle: true },
-        };
+        return reconcileKleinanzeigenEditOperation(current, {
+          deferUnchanged: deferUnchangedEdits,
+        });
       }
       if (current.tool === "ka_send_message") {
         const messages = await client.getMessages(current.args.conversationId, { limit: 100 });
@@ -3577,6 +3643,7 @@ async function main() {
   let heartbeatTimer = null;
   let listingTimer = null;
   let consecutiveErrors = 0;
+  const reportScheduledKaError = createScheduledErrorReporter();
   const heartbeatSeen = state.heartbeatSeen && typeof state.heartbeatSeen === "object"
     ? state.heartbeatSeen
     : {};
@@ -3625,7 +3692,11 @@ async function main() {
     );
     heartbeatTimer = setTimeout(() => {
       if (stopped) return;
-      heartbeat().catch(error => console.error(`[heartbeat] ${error.message}`)).finally(scheduleHeartbeat);
+      heartbeat().catch(error => reportScheduledKaError(
+        "heartbeat",
+        error,
+        sessionAuthFingerprint(readStoredKleinanzeigenCookies())
+      )).finally(scheduleHeartbeat);
     }, delay);
   }
   if (inboxPollMinutes === 0) console.log("[agent] Automatische Inbox-Checks sind deaktiviert.");
@@ -3642,7 +3713,11 @@ async function main() {
     listingTimer = setTimeout(() => {
       if (stopped) return;
       listingHeartbeat()
-        .catch(error => console.error(`[listing-heartbeat] ${error.message}`))
+        .catch(error => reportScheduledKaError(
+          "listing-heartbeat",
+          error,
+          sessionAuthFingerprint(readStoredKleinanzeigenCookies())
+        ))
         .finally(scheduleListingHeartbeat);
     }, delay);
   }
@@ -3712,6 +3787,7 @@ module.exports = {
   clearPending,
   completeModelTurn,
   contextStats,
+  createScheduledErrorReporter,
   createLlmClientFromEnv,
   clientForRoute,
   waitWhileRunning,
@@ -3736,6 +3812,7 @@ module.exports = {
   processTelegramUpdates,
   prepareBoundKleinanzeigenListing,
   reconcileExternalOperations,
+  reconcileKleinanzeigenEditOperation,
   reconciliationNotice,
   recordPublishedListing,
   recordRemovedListing,

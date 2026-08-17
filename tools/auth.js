@@ -17,6 +17,8 @@ const LOGIN_URL   = "https://www.kleinanzeigen.de/m-einloggen.html";
 const CSRF_URL    = "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html";
 const DEVTOOLS_ACTIVE_PORT_FILE = path.join(PROFILE_DIR, "DevToolsActivePort");
 const LOGIN_TIMEOUT_MS = 300_000;
+const TRANSIENT_ACCESS_RETRY_ATTEMPTS = 2;
+const TRANSIENT_ACCESS_RETRY_DELAY_MS = 2_000;
 
 const ACCESS_BLOCK_MARKERS = [
   "ip-bereich ist gesperrt",
@@ -45,7 +47,7 @@ function classifyAccessProblem({ status, url = "", title = "", bodyText = "" } =
 function blockedNetworkError(signal) {
   const error = new Error(
     `Kleinanzeigen blockiert diesen Netzwerkpfad (${signal}). ` +
-    "Der Login wurde ohne automatische Wiederholung beendet. " +
+    "Der Login wurde beendet. " +
     "Bitte VPN/Proxy/iCloud Private Relay deaktivieren und später über eine stabile, normale Heim- oder Mobilfunkverbindung erneut versuchen."
   );
   error.code = "KA_ACCESS_DENIED";
@@ -77,6 +79,43 @@ async function assertNetworkAccess(page, response = null, { authenticated = fals
     throw rejectedPrivateBrowserError(status);
   }
   throw blockedNetworkError(problem);
+}
+
+function isTransientNavigationFailure(error) {
+  return ["KA_ACCESS_DENIED", "KA_BROWSER_REJECTED", "EAI_AGAIN", "ENOTFOUND", "ETIMEDOUT"]
+    .includes(String(error?.code || ""))
+    || /(?:ERR_NAME_NOT_RESOLVED|ERR_CONNECTION_(?:CLOSED|RESET|TIMED_OUT)|getaddrinfo|\bDNS\b)/i.test(
+      String(error?.message || "")
+    );
+}
+
+async function navigateWithAccessRetry(page, url, {
+  authenticated = false,
+  timeoutMs = 60_000,
+  attempts = TRANSIENT_ACCESS_RETRY_ATTEMPTS,
+  retryDelayMs = TRANSIENT_ACCESS_RETRY_DELAY_MS,
+} = {}) {
+  const normalizedAttempts = Math.max(1, Math.min(3, Number(attempts) || 1));
+  let lastError;
+  for (let attempt = 1; attempt <= normalizedAttempts; attempt++) {
+    try {
+      const response = await page.goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: timeoutMs,
+      });
+      await assertNetworkAccess(page, response, { authenticated });
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (!isTransientNavigationFailure(error) || attempt >= normalizedAttempts) throw error;
+      console.warn(
+        `[auth] Temporärer Kleinanzeigen-Zugriff (${String(error.code || "Netzwerkfehler")}); ` +
+        "die schreibgeschützte Seitennavigation wird einmal kurz wiederholt."
+      );
+      await delay(Math.max(0, Number(retryDelayMs) || 0));
+    }
+  }
+  throw lastError;
 }
 
 async function waitForCompletedLogin(page, timeoutMs = LOGIN_TIMEOUT_MS) {
@@ -532,12 +571,13 @@ async function waitForValidatedNativeSession(context, page, timeoutMs = LOGIN_TI
 async function validateNativeMarketplaceSession(context, page, {
   url = CSRF_URL,
   timeoutMs = 60_000,
+  retryDelayMs = TRANSIENT_ACCESS_RETRY_DELAY_MS,
 } = {}) {
-  const response = await page.goto(url, {
-    waitUntil: "domcontentloaded",
-    timeout: timeoutMs,
+  await navigateWithAccessRetry(page, url, {
+    authenticated: true,
+    timeoutMs,
+    retryDelayMs,
   });
-  await assertNetworkAccess(page, response, { authenticated: true });
   if (/login\.kleinanzeigen\.de|m-einloggen/.test(page.url())) {
     throw new Error("Die sichtbare Sitzung ist im privaten Anzeigenbereich nicht angemeldet.");
   }
@@ -718,10 +758,11 @@ async function inspectProfileSession() {
 async function loginWithSystemChrome() {
   let nativeProfile;
   nativeProfile = await openNativeProfile({ url: LOGIN_URL });
-  console.log("[auth] Das dedizierte NemoClaw-Chrome-Fenster wurde geöffnet.");
-  console.log("[auth] Bitte manuell einloggen und 2FA/CAPTCHA selbst abschließen.");
-  console.log("[auth] Die Sitzung wird im selben Fenster automatisch validiert; nichts absenden.");
   try {
+    await navigateWithAccessRetry(nativeProfile.page, LOGIN_URL);
+    console.log("[auth] Das dedizierte NemoClaw-Chrome-Fenster wurde geöffnet.");
+    console.log("[auth] Bitte manuell einloggen und 2FA/CAPTCHA selbst abschließen.");
+    console.log("[auth] Die Sitzung wird im selben Fenster automatisch validiert; nichts absenden.");
     await waitForValidatedNativeSession(
       nativeProfile.context,
       nativeProfile.page
@@ -751,12 +792,10 @@ async function login() {
   const context = await launchProfile(false);
   try {
     const page = context.pages()[0] || await context.newPage();
-    const loginResponse = await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
-    await assertNetworkAccess(page, loginResponse);
+    await navigateWithAccessRetry(page, LOGIN_URL);
     await waitForCompletedLogin(page);
 
-    const csrfResponse = await page.goto(CSRF_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
-    await assertNetworkAccess(page, csrfResponse, { authenticated: true });
+    await navigateWithAccessRetry(page, CSRF_URL, { authenticated: true });
 
     const cookies = await context.cookies("https://www.kleinanzeigen.de");
     const cs = validatedSessionCookieString(cookies);
@@ -813,6 +852,7 @@ module.exports = {
   inspectProfileSession,
   login,
   loginWithSystemChrome,
+  navigateWithAccessRetry,
   openNativeProfile,
   requestMetadataFromCurl,
   refreshStoredSession,
