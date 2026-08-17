@@ -2,6 +2,7 @@
 "use strict";
 
 const readline = require("readline");
+const { importLocalMedia } = require("../tools/media-store");
 const {
   createLlmClientFromEnv,
   loadKleinanzeigenSession,
@@ -17,15 +18,15 @@ async function main() {
     async send(_chatId, text) {
       process.stdout.write(`\nnemoclaw> ${text}\n\n`);
     },
-    async sendPhoto(_chatId, filePath, caption = "") {
-      process.stdout.write(`\nnemoclaw> [Foto: ${filePath}]${caption ? ` ${caption}` : ""}\n\n`);
+    async sendPhoto(_chatId, _filePath, caption = "") {
+      process.stdout.write(`\nnemoclaw> [Foto-Vorschau]${caption ? ` ${caption}` : ""}\n\n`);
     },
   };
 
   process.stdout.write(
     `nemoclaw console | ${llmClient.model} | Kleinanzeigen-Session: ${hasKaSession ? "geladen" : "fehlt"}\n` +
     "Schreibe /help für Hilfe oder /quit zum Beenden.\n" +
-    "Für Fotos: /compose, FOTO-Zeilen + Caption einfügen, danach /send.\n\n"
+    "Für Fotos: /compose, je Bild /photo ABSOLUTER_PFAD, Caption, danach /send.\n\n"
   );
   const input = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
   let composing = false;
@@ -64,14 +65,26 @@ async function main() {
         input.prompt();
         continue;
       }
+      const photoCommand = raw.match(/^\/photo\s+(.+)$/i);
+      if (photoCommand) {
+        try {
+          const media = importLocalMedia(photoCommand[1], { source: "console" });
+          composition.push(`[MEDIA id:${media.mediaId}]`);
+          process.stdout.write("Foto importiert.\n");
+        } catch (error) {
+          process.stdout.write(`Foto konnte nicht importiert werden: ${error.message}\n`);
+        }
+        input.prompt();
+        continue;
+      }
       composition.push(raw);
       input.prompt();
       continue;
     }
 
-    if (command === "/compose" || /^\s*\[FOTO path:[^\]]+\]/.test(raw)) {
+    if (command === "/compose") {
       composing = true;
-      composition = command === "/compose" ? [] : [raw];
+      composition = [];
       input.setPrompt("foto> ");
       process.stdout.write("Foto-Eingabe aktiv. Mit /send absenden, mit /cancel-compose verwerfen.\n");
       input.prompt();

@@ -1,7 +1,6 @@
 "use strict";
 
 const fs = require("fs");
-const crypto = require("crypto");
 const path = require("path");
 
 function isExplicitApproval(message) {
@@ -14,14 +13,6 @@ function stableJson(value) {
     return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
   }
   return JSON.stringify(value);
-}
-
-function actionFingerprint(tool, args) {
-  return crypto
-    .createHash("sha256")
-    .update(`${String(tool)}\n${stableJson(args || {})}`)
-    .digest("hex")
-    .slice(0, 12);
 }
 
 function parseToolArguments(value) {
@@ -124,16 +115,6 @@ function validateSchema(value, schema, field = "Argumente") {
   return value;
 }
 
-function extractImagePaths(message, maxImages = 6) {
-  const paths = [];
-  const regex = /\[FOTO path:([^\]]+)\]/g;
-  let match;
-  while ((match = regex.exec(String(message || ""))) !== null && paths.length < maxImages) {
-    paths.push(match[1]);
-  }
-  return [...new Set(paths)];
-}
-
 function normalizeMode(value) {
   const mode = String(value || "dry-run").trim().toLowerCase();
   if (!["dry-run", "live"].includes(mode)) {
@@ -203,7 +184,7 @@ function selectModelRoute(message, routingMode = "auto") {
 
   let score = 0;
   const reasons = [];
-  const photoCount = (original.match(/\[FOTO path:[^\]]+\]/g) || []).length;
+  const photoCount = (original.match(/\[MEDIA id:[a-f0-9]{24}\]/g) || []).length;
   if (photoCount >= 10) {
     score += 3;
     reasons.push("many-photos");
@@ -284,11 +265,9 @@ function createSerialExecutor() {
 }
 
 module.exports = {
-  actionFingerprint,
   atomicWriteJson,
   boundedJson,
   createSerialExecutor,
-  extractImagePaths,
   isExplicitApproval,
   normalizeComplexityRouting,
   normalizeInboxPollMinutes,

@@ -7,7 +7,7 @@ const path = require("path");
 const test = require("node:test");
 const Database = require("better-sqlite3");
 
-test("existing v2 inventory upgrades in place without losing listing history", () => {
+test("existing v2 inventory upgrades in place without losing listing history", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-migration-"));
   const dbPath = path.join(directory, "legacy.db");
   const legacy = new Database(dbPath);
@@ -88,6 +88,24 @@ test("existing v2 inventory upgrades in place without losing listing history", (
     assert.equal(upgraded.listings[0].last_seen_at, "2026-07-28T10:00:00.000Z");
     assert.equal(upgraded.listings[0].performance.current_views, 8);
     assert.equal(upgraded.listings[0].performance.view_delta, 1);
+
+    const migrated = store.databaseForHostState();
+    const tables = migrated.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('media_assets','external_operations') ORDER BY name"
+    ).all().map(row => row.name);
+    assert.deepEqual(tables, ["external_operations", "media_assets"]);
+    const assetImageColumns = migrated.prepare("PRAGMA table_info(asset_images)").all();
+    assert.equal(assetImageColumns.some(column => column.name === "media_id"), true);
+
+    const backupPath = path.join(directory, "rollback-backup.db");
+    await migrated.backup(backupPath);
+    const backup = new Database(backupPath, { readonly: true });
+    try {
+      assert.equal(backup.prepare("SELECT name FROM assets WHERE id=1").get().name, "Legacy item");
+      assert.equal(backup.prepare("PRAGMA integrity_check").pluck().get(), "ok");
+    } finally {
+      backup.close();
+    }
   } finally {
     store.close();
     delete require.cache[modulePath];

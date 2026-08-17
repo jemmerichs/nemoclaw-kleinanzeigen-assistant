@@ -34,4 +34,4 @@ if [ "$(uname -s)" = "Darwin" ]; then
 fi
 
 echo "[setup] Fertig. Ziel-Mac-Reihenfolge: docs/TARGET_MAC_RUNBOOK.md"
-echo "[setup] Jetzt .env im Dry-run konfigurieren; danach Ziel-Mac-Sitzung importieren und die dokumentierten Smoke-Gates ausführen."
+echo "[setup] Jetzt .env vervollständigen und anschließend npm run onboard ausführen."

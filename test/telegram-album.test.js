@@ -9,8 +9,8 @@ const test = require("node:test");
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-album-"));
 process.env.NEMOCLAW_IMAGE_DIR = path.join(temporary, "images");
 process.env.NEMOCLAW_SESSION_FILE = path.join(temporary, "sessions.json");
-process.env.NEMOCLAW_PENDING_FILE = path.join(temporary, "pending.json");
 process.env.NEMOCLAW_STATE_FILE = path.join(temporary, "state.json");
+process.env.NEMOCLAW_READINESS_FILE = path.join(temporary, "readiness.json");
 process.env.NEMOCLAW_DB_PATH = path.join(temporary, "ads.db");
 process.env.NEMOCLAW_KA_CATEGORY_CACHE_FILE = path.join(temporary, "category-contracts.json");
 process.env.NEMOCLAW_MODE = "dry-run";
@@ -25,16 +25,18 @@ const {
   TOOLS,
   clearPending,
   getPending,
+  prepareBoundKleinanzeigenListing,
   processTelegramUpdates,
 } = require("../workspace/agent");
 const listingPreparations = require("../tools/kleinanzeigen-listing-preparation");
 const { createSerialExecutor } = require("../workspace/runtime");
+const { withBoundKleinanzeigenForm } = require("./test-helpers");
 
 function preparedListingId(listing) {
   return listingPreparations.storeListingPreparation({
     category: "Testkategorie",
     delivery: "pickup_only",
-    listing: TOOLS.ka_create_ad.prepare(listing),
+    listing: prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm(listing)),
   });
 }
 
@@ -138,7 +140,8 @@ test("large Telegram album is visually reviewed in bounded batches before the an
   assert.equal(modelCalls.length, 2);
   const firstContent = modelCalls[0].messages[1].content;
   assert.equal(firstContent.filter(part => part.type === "image_url").length, 12);
-  assert.equal((firstContent[0].text.match(/\[FOTO path:/g) || []).length >= 13, true);
+  assert.equal((firstContent[0].text.match(/\[MEDIA id:[a-f0-9]{24}\]/g) || []).length >= 13, true);
+  assert.doesNotMatch(firstContent[0].text, /\[FOTO path:/);
   assert.match(firstContent[0].text, /Ein Artikel aus vielen Perspektiven/);
   const secondContent = modelCalls[1].messages.at(-1).content;
   assert.equal(secondContent.filter(part => part.type === "image_url").length, 1);
@@ -148,15 +151,15 @@ test("large Telegram album is visually reviewed in bounded batches before the an
 
 test("a listing tool call is deferred until the remaining album batch was visible", async () => {
   let callCount = 0;
-  let imagePaths = [];
+  let mediaIds = [];
   const sent = [];
   const llmClient = {
     model: "stub",
     async complete(request) {
       callCount++;
-      if (!imagePaths.length) {
-        imagePaths = [...request.messages[1].content[0].text.matchAll(
-          /\[FOTO path:([^\]]+)\]/g
+      if (!mediaIds.length) {
+        mediaIds = [...request.messages[1].content[0].text.matchAll(
+          /\[MEDIA id:([a-f0-9]{24})\]/g
         )].map(match => match[1]);
       }
       return {
@@ -175,7 +178,7 @@ test("a listing tool call is deferred until the remaining album batch was visibl
                   categoryId: 278,
                   price: 20,
                   priceType: "FIXED",
-                  imagePaths,
+                  mediaIds,
                 }),
               }),
             },
@@ -209,9 +212,9 @@ test("a listing tool call is deferred until the remaining album batch was visibl
 
   try {
     assert.equal(callCount, 2);
-    assert.equal(imagePaths.length, 13);
+    assert.equal(mediaIds.length, 13);
     assert.equal(getPending("43").tool, "ka_publish_prepared_listing");
-    assert.deepEqual(getPending("43").args.listing.imagePaths, imagePaths);
+    assert.deepEqual(getPending("43").args.listing.mediaIds, mediaIds);
     assert.equal(sent.length, 1);
     assert.match(sent[0], /Album-Testartikel/);
   } finally {

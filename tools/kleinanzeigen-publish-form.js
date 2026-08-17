@@ -16,6 +16,10 @@ const {
   openCategoryPicker,
   selectCategoryPath,
 } = require("./kleinanzeigen-form");
+const {
+  assertBoundFormState,
+  captureVisibleFormState,
+} = require("./kleinanzeigen-form-state");
 
 const FORM_TIMEOUT_MS = 60_000;
 const PRICE_TYPE_LABELS = {
@@ -296,7 +300,7 @@ async function parseResponseBody(response) {
   try { return JSON.parse(text); } catch { return text.slice(0, 20_000); }
 }
 
-async function publishListingViaForm(args, { cookieHeader } = {}) {
+async function publishListingViaForm(args, { cookieHeader, onPhase = null } = {}) {
   const contract = getCategoryRequirements(args.categoryId);
   if (!contract.verified) {
     const error = new Error(`Kategorie ${args.categoryId} ist nicht aktuell verifiziert.`);
@@ -336,16 +340,11 @@ async function publishListingViaForm(args, { cookieHeader } = {}) {
       );
     }
 
-    const zipCode = await page.locator('input[name="zipCode"]').inputValue();
-    const locationId = await page.locator('input[name="locationId"]').inputValue();
-    if (zipCode !== String(args.zipCode) || locationId !== String(args.locationId)) {
-      const error = new Error(
-        "Das sichtbare Formular verwendet nicht das konfigurierte PLZ-/Orts-ID-Paar. " +
-        "Die Veröffentlichung wurde vor dem Absenden blockiert."
-      );
-      error.code = "KA_FORM_LOCATION_MISMATCH";
-      throw error;
-    }
+    const currentFormState = await captureVisibleFormState(page, {
+      cookieHeader,
+      userAgent: process.env.KA_USER_AGENT || "",
+    });
+    assertBoundFormState(args, currentFormState);
 
     await page.locator('input[name="title"]').fill(String(args.title));
     await page.locator('textarea[name="description"]').fill(String(args.description));
@@ -367,6 +366,7 @@ async function publishListingViaForm(args, { cookieHeader } = {}) {
 
     assertListingFormContract(await formEntries(page), args, contract);
     const submissionPath = await inspectSubmissionPath(page);
+    if (typeof onPhase === "function") await onPhase("upload");
     await uploadImagesInForm(page, args.imagePaths || []);
     assertListingFormContract(await formEntries(page), args, contract);
     const matchesSubmission = request => {
@@ -383,6 +383,7 @@ async function publishListingViaForm(args, { cookieHeader } = {}) {
     page.on("request", onRequest);
     let response;
     try {
+      if (typeof onPhase === "function") await onPhase("commit");
       const responsePromise = page.waitForResponse(
         candidate => matchesSubmission(candidate.request()),
         { timeout: FORM_TIMEOUT_MS }

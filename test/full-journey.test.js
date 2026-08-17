@@ -8,8 +8,8 @@ const test = require("node:test");
 
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-full-journey-"));
 process.env.NEMOCLAW_SESSION_FILE = path.join(temporary, "sessions.json");
-process.env.NEMOCLAW_PENDING_FILE = path.join(temporary, "pending.json");
 process.env.NEMOCLAW_STATE_FILE = path.join(temporary, "state.json");
+process.env.NEMOCLAW_READINESS_FILE = path.join(temporary, "readiness.json");
 process.env.NEMOCLAW_DB_PATH = path.join(temporary, "ads.db");
 process.env.NEMOCLAW_IMAGE_DIR = path.join(temporary, "images");
 process.env.NEMOCLAW_COMPLEXITY_ROUTING = "manual";
@@ -20,12 +20,13 @@ const store = require("../tools/adstore");
 const kleinanzeigenPublishForm = require("../tools/kleinanzeigen-publish-form");
 const listingPreparations = require("../tools/kleinanzeigen-listing-preparation");
 const { createSerialExecutor } = require("../workspace/runtime");
+const { withBoundKleinanzeigenForm } = require("./test-helpers");
 
 function preparedListingId(listing) {
   return listingPreparations.storeListingPreparation({
     category: "Haus & Garten > Lampen & Licht",
     delivery: "pickup_only",
-    listing: agent.TOOLS.ka_create_ad.prepare(listing),
+    listing: agent.prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm(listing)),
   });
 }
 
@@ -71,15 +72,15 @@ test("album, publish, relist, and buyer reply form one exact-approval journey", 
     async send(_chatId, text) { sent.push(text); },
     async sendPhoto() {},
   };
-  const albumPaths = [];
+  const albumMediaIds = [];
   let listingStep = 0;
   const listingLlm = {
     model: "stub",
     async complete(request) {
       listingStep++;
-      if (!albumPaths.length) {
+      if (!albumMediaIds.length) {
         const text = request.messages[1].content[0].text;
-        albumPaths.push(...[...text.matchAll(/\[FOTO path:([^\]]+)\]/g)].map(match => match[1]));
+        albumMediaIds.push(...[...text.matchAll(/\[MEDIA id:([a-f0-9]{24})\]/g)].map(match => match[1]));
       }
       if (listingStep === 1) {
         return {
@@ -114,7 +115,7 @@ test("album, publish, relist, and buyer reply form one exact-approval journey", 
                   categoryId: 82,
                   price: 12,
                   priceType: "NEGOTIABLE",
-                  imagePaths: albumPaths,
+                  mediaIds: albumMediaIds,
                   attributes: {
                     "lampen_licht.versand": "nein",
                   },
@@ -167,7 +168,7 @@ test("album, publish, relist, and buyer reply form one exact-approval journey", 
     );
     await new Promise(resolve => setTimeout(resolve, 100));
 
-    assert.equal(albumPaths.length, 2);
+    assert.equal(albumMediaIds.length, 2);
     assert.equal(agent.getPending("77").tool, "ka_publish_prepared_listing");
     assert.match(sent.at(-1), /Lackabplatzer/);
     assert.match(sent.at(-1), /Fotos: 2/);
@@ -182,10 +183,10 @@ test("album, publish, relist, and buyer reply form one exact-approval journey", 
     const firstBundle = store.getAssetBundleByKaId("9100000001");
     const assetId = firstBundle.asset.id;
     assert.equal(firstBundle.asset.has_active_listing, 1);
-    assert.deepEqual(firstBundle.asset.image_paths, albumPaths);
+    assert.deepEqual(firstBundle.asset.last_listing_payload.mediaIds, albumMediaIds);
     assert.deepEqual(
-      firstBundle.images.map(image => image.image_path),
-      albumPaths
+      firstBundle.images.map(image => image.media_id),
+      albumMediaIds
     );
     assert.equal(firstBundle.listings.length, 1);
 
@@ -246,7 +247,7 @@ test("album, publish, relist, and buyer reply form one exact-approval journey", 
     const relistPending = agent.getPending("lifecycle-77");
     assert.equal(relistPending.tool, "ka_publish_prepared_listing");
     assert.equal(relistPending.args.listing.assetId, assetId);
-    assert.deepEqual(relistPending.args.listing.imagePaths, albumPaths);
+    assert.deepEqual(relistPending.args.listing.mediaIds, albumMediaIds);
     await agent.runAgent("lifecycle-77", "Go", { llmClient: relistLlm, gateway });
 
     assert.equal(created.length, 2);
@@ -254,7 +255,7 @@ test("album, publish, relist, and buyer reply form one exact-approval journey", 
     const relistedBundle = store.getAssetBundleByKaId("9100000002");
     assert.equal(relistedBundle.asset.id, assetId);
     assert.equal(relistedBundle.listings.length, 2);
-    assert.deepEqual(relistedBundle.asset.image_paths, albumPaths);
+    assert.deepEqual(relistedBundle.asset.last_listing_payload.mediaIds, albumMediaIds);
 
     const buyerLlm = {
       model: "stub",

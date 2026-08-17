@@ -6,6 +6,7 @@ node_modules/
 .sessions.json
 .state.json
 .pending-actions.json
+workspace/readiness.json
 .openrouter-usage.json
 .ka-category-contracts.json
 workspace/memory/*

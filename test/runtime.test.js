@@ -10,7 +10,6 @@ const {
   atomicWriteJson,
   boundedJson,
   createSerialExecutor,
-  extractImagePaths,
   isExplicitApproval,
   normalizeInboxPollMinutes,
   normalizeListingPollMinutes,
@@ -29,15 +28,11 @@ test("approval only accepts a standalone Go", () => {
   for (const value of ["go ahead", "Bitte go sagen", "Go und dann löschen", "no go", ""]) assert.equal(isExplicitApproval(value), false);
 });
 
-test("native tool arguments and photo tokens are parsed defensively", () => {
+test("native tool arguments are parsed defensively", () => {
   assert.deepEqual(parseToolArguments('{"price":42}'), { price: 42 });
   assert.deepEqual(parseToolArguments({ price: 42 }), { price: 42 });
   assert.throws(() => parseToolArguments("[]"), /JSON-Objekt/);
   assert.throws(() => parseToolArguments("{"), /gültiges JSON/);
-  assert.deepEqual(
-    extractImagePaths("[FOTO path:/tmp/a.jpg]\n[FOTO path:/tmp/b.jpg]\n[FOTO path:/tmp/a.jpg]"),
-    ["/tmp/a.jpg", "/tmp/b.jpg"]
-  );
 });
 
 test("tool arguments are validated independently of the model provider", () => {

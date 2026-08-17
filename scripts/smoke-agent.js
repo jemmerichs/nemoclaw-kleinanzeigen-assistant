@@ -129,8 +129,9 @@ async function main() {
   process.env.NEMOCLAW_MODE = "dry-run";
   process.env.NEMOCLAW_COMPLEXITY_ROUTING = "manual";
   process.env.NEMOCLAW_SESSION_FILE = path.join(temporary, "sessions.json");
-  process.env.NEMOCLAW_PENDING_FILE = path.join(temporary, "pending.json");
   process.env.NEMOCLAW_STATE_FILE = path.join(temporary, "state.json");
+  process.env.NEMOCLAW_DB_PATH = path.join(temporary, "ads.db");
+  process.env.NEMOCLAW_IMAGE_DIR = path.join(temporary, "images");
 
   const {
     clearPending,
@@ -140,6 +141,14 @@ async function main() {
     validateConfig,
   } = require("../workspace/agent");
   const { readProvenance } = require("../tools/image");
+  const { importLocalMedia, resolveMediaAsset } = require("../tools/media-store");
+  const imported = images.map(image => {
+    const media = importLocalMedia(image, { source: "agent-smoke" });
+    return { image, media, managedPath: resolveMediaAsset(media.mediaId).managedPath };
+  });
+  const originalByManagedPath = new Map(
+    imported.map(item => [path.resolve(item.managedPath), path.resolve(item.image)])
+  );
 
   const sent = [];
   const gateway = {
@@ -152,7 +161,7 @@ async function main() {
     loadKleinanzeigenSession();
     const llmClient = createLlmClientFromEnv();
     const prompt = [
-      ...images.map(image => `[FOTO path:${image}]`),
+      ...imported.map(item => `[MEDIA id:${item.media.mediaId}]`),
       context || "Nur ein Dry-run-Test: Erkenne den Artikel, recherchiere vergleichbare aktuelle Angebote und bereite eine vollständige ehrliche Verkaufsanzeige vor. Nichts ausführen.",
       "Bereite den fertigen Vorschlag mit ka_prepare_listing vor und rufe bei ready sofort ka_publish_prepared_listing nur mit der preparationId auf. Die Bridge darf ihn ausschließlich als blockierte Dry-run-Aktion vormerken.",
     ].join("\n");
@@ -165,7 +174,10 @@ async function main() {
       expectedModel: llmClient.model,
       proposal: sent.at(-1),
       requiredFacts,
-      imageSourceResolver: imagePath => readProvenance(imagePath).sourcePath,
+      imageSourceResolver: imagePath => {
+        const sourcePath = path.resolve(readProvenance(imagePath).sourcePath);
+        return originalByManagedPath.get(sourcePath) || sourcePath;
+      },
     });
     console.log([
       "Agent-Smoke OK",

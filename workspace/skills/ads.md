@@ -6,7 +6,7 @@
 - Alle Anzeigen-Bundles inklusive pausierter: `ka_get_ad_bundles`
 - Entwürfe: `ka_get_drafts`
 - Lokales Inventar: `inventory_list`
-- Entwurf speichern: vollständigen Vorschlag zeigen, dann `ka_save_draft` vormerken
+- Entwurf speichern: mit `ka_prepare_listing` sichtbar verifizieren, vollständigen Vorschlag zeigen, dann `ka_save_prepared_draft` vormerken
 - Entwurf löschen: ID und Titel zeigen, dann `ka_delete_draft` vormerken
 - Anzeige löschen: ID und Titel zeigen, dann `ka_delete_ad` vormerken
 

@@ -8,19 +8,19 @@ const test = require("node:test");
 
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-listing-facade-"));
 process.env.NEMOCLAW_SESSION_FILE = path.join(temporary, "sessions.json");
-process.env.NEMOCLAW_PENDING_FILE = path.join(temporary, "pending.json");
 process.env.NEMOCLAW_STATE_FILE = path.join(temporary, "state.json");
+process.env.NEMOCLAW_READINESS_FILE = path.join(temporary, "readiness.json");
 process.env.NEMOCLAW_DB_PATH = path.join(temporary, "ads.db");
 process.env.NEMOCLAW_KA_CATEGORY_CACHE_FILE = path.join(temporary, "category-contracts.json");
 process.env.NEMOCLAW_MODE = "dry-run";
 process.env.KA_DEFAULT_ZIP_CODE = "80636";
-process.env.KA_DEFAULT_LOCATION_ID = "16360";
 process.env.KA_CONTACT_NAME = "Jannik";
 process.env.KA_COOKIES = "csrf-token=facade-test; registered_user=true";
 
 const categoryContracts = require("../tools/kleinanzeigen-category-contracts");
 const listingPreparations = require("../tools/kleinanzeigen-listing-preparation");
 const agent = require("../workspace/agent");
+const { normalizeFormState } = require("../tools/kleinanzeigen-form-state");
 agent.TOOLS.ka_prepare_listing.ensureSession = async () => {};
 
 const inspectedContract = {
@@ -36,6 +36,14 @@ const inspectedContract = {
       { value: "nein", label: "Nur Abholung" },
     ],
   }],
+  formState: normalizeFormState({
+    categoryId: 987,
+    zipCode: "80636",
+    locationId: "16360",
+    locationName: "München-Neuhausen",
+    contactName: "Jannik",
+    sessionRevision: "facade-session",
+  }),
 };
 
 test.after(() => {
@@ -121,8 +129,10 @@ test("semantic preparation stages an opaque, revalidated Go action without expos
     assert.equal(pending.args.listing.categoryId, 987);
     assert.equal(pending.args.listing.attributes["sonstiges.versand"], "nein");
     assert.equal(pending.args.listing.locationId, "16360");
+    assert.equal(pending.args.listing.locationName, "München-Neuhausen");
     assert.match(sent[0], /Kategorie: Haus & Garten > Weiteres Haus & Garten/);
     assert.match(sent[0], /Versand: Nur Abholung/);
+    assert.match(sent[0], /Ort: München-Neuhausen/);
     assert.doesNotMatch(sent[0], /Kategorie-ID|Location-ID|Attribute|sonstiges\.versand/);
 
     await agent.runAgent("facade-flow", "Go", {

@@ -9,8 +9,8 @@ A German-language selling assistant for Kleinanzeigen and Vinted. It analyzes an
 - A standalone `Go` can execute only the currently staged payload, once, within 30 minutes.
 - Any intervening user message invalidates the old approval.
 - Images are not uploaded while preparing a proposal. Upload and publication happen together only after approval.
-- The model prepares Kleinanzeigen listings with a visible category path and a semantic delivery choice (`pickup_only` or `shipping_available`). The bridge resolves category IDs, location, contact details, required form fields, and provider values itself; those internals are not part of the model-facing publish contract.
-- Every preparation checks the current signed-in posting form. It returns `ready`, `needs_input` with visible choices, or `technical_failure` with a bounded developer diagnostic. A `ready` preparation is bound to an opaque token and then staged through the existing exact `Go` approval. The confirmed browser submission checks the live form again and fails closed if it changed.
+- The model prepares Kleinanzeigen listings and explicitly requested drafts with a visible category path and a semantic delivery choice (`pickup_only` or `shipping_available`). The bridge resolves category IDs, location, contact details, required form fields, and provider values itself; those internals are not part of the model-facing write contract.
+- Every preparation checks the current signed-in posting form. It returns `ready`, `needs_input` with visible choices, or a safely classified `technical_failure`; raw diagnostics stay internal and the user receives only impact, next step and incident ID. A `ready` preparation is bound to an opaque token and then staged through the existing exact `Go` approval. The confirmed browser submission checks the live form again and fails closed if it changed.
 - Category contracts may be cached for diagnostics and performance, but the cache is not the authority for a new preparation. A server-side validation rejection discards the preparation and is never reported as a successful publication.
 - Original photos are immutable. Edited derivatives store source/output hashes and exact operations; no generative retouching is available.
 - Every saved draft or published listing stores a canonical relist payload plus ordered image provenance.
@@ -22,7 +22,9 @@ A German-language selling assistant for Kleinanzeigen and Vinted. It analyzes an
 - Telegram accepts only configured owner chat IDs.
 - Telegram replies use compact plain text; Markdown headings, separator rules, code fences, and backticks are removed before delivery.
 - OpenRouter spend is capped locally per day (`$1` by default) and cumulatively for this app (`$3` by default). Before each call, its maximum configured output is reserved against those caps; concurrent calls share the same ledger lock, and ambiguous post-send failures reserve their projected cost.
-- Model history is limited to the latest 7 entries from the last 24 hours, with a 4,000-character total cap and 1,500 characters per entry, independently from durable inventory and pending approvals. Raw tool results stay only in the current turn instead of displacing conversation messages. Routine turns load only the skills and tools needed for Kleinanzeigen research and posting; inbox, management, and Vinted context is added only when the request needs it, while ambiguous requests retain the full tool set. Normal output is capped at 1,536 tokens with minimal reasoning so a complete listing payload still fits. Legacy history entries without timestamps expire during migration. An output-limit response is discarded and retried exactly once with minimal reasoning and a compact response contract; provider JSON is never dumped into chat.
+- Model history is limited to the latest 7 entries from the last 24 hours, with a 4,000-character total cap and 1,500 characters per entry, independently from durable inventory and pending approvals. Raw tool results stay only in the current turn instead of displacing conversation messages. Every turn receives the same fixed, typed sales-tool catalog; intent heuristics never hide normal research or preparation capabilities. Normal output is capped at 1,536 tokens with minimal reasoning so a complete listing payload still fits. Legacy history entries without timestamps expire during migration. An output-limit response is discarded and retried exactly once with minimal reasoning and a compact response contract; provider JSON is never dumped into chat.
+- Incoming photos are atomically copied into the managed media store and referenced to the model only by opaque media ID and SHA-256. Free model text can never request a photo send by embedding a path.
+- Approvals and external-write phases live in SQLite. Restart recovery never replays an already-started marketplace commit; it requires read-only reconciliation when the outcome is uncertain.
 - Secrets, browser state, sessions, pending actions, images, usage records, and the SQLite database are ignored by Git.
 
 ## Requirements
@@ -64,20 +66,19 @@ NEMOCLAW_INBOX_POLL_MINUTES=45
 NEMOCLAW_LISTING_POLL_MINUTES=360
 
 KA_DEFAULT_ZIP_CODE=00000
-# KA_DEFAULT_LOCATION_ID=
 # KA_CONTACT_NAME=
 ```
 
-Then:
+For the normal target-Mac path, then run:
 
 ```bash
-npm run doctor
-npm run smoke:openrouter
-npm run login
-npm run smoke:ka
-npm run login:vinted
-npm run smoke:vinted
+npm run onboard
+# Complete the manual login in the Chrome profile if it opens.
+# Send one representative Telegram album and inspect its complete dry-run proposal.
+npm run enable:live
 ```
+
+`onboard` leaves the machine in dry-run, performs one Telegram check, one current private read and one visible form preparation, and starts the user service. Its single final status is `bereit`, `bereit mit Refresh-Warnung`, or `blockiert`. A working private read remains usable when a proactive refresh diagnostic fails; that condition is `degraded`, not an immediate login requirement.
 
 `npm run login` opens a native Chrome window with a dedicated persistent profile and navigates to the current listing flow. Log in manually and complete any CAPTCHA or 2FA yourself; do not submit a listing. The script observes only that dedicated local Chrome process, waits until `user_id`/Bearer identity and CSRF are genuinely present, stores the resulting cookie string plus matching Chrome request identity in the ignored `.env`, and then closes the window automatically. It does not rely on an ENTER prompt or reopen the profile headlessly after login. Keeping the request identity aligned matters because Kleinanzeigen's session-protection cookies can reject a request whose browser version does not match the login.
 
@@ -103,7 +104,7 @@ If Kleinanzeigen blocks only the isolated Chrome profile while a normal Chrome p
 4. Run `npm run login:clipboard`.
 5. Copy any harmless text afterwards to replace the sensitive clipboard contents.
 
-The command reads the clipboard only when invoked, never prints its contents, extracts the Cookie, User-Agent, and language headers without executing the cURL command, validates CSRF, identity, access token, and refresh token, and writes the same ignored session metadata used by the native-profile flow. This is a one-time bootstrap method, not a separate runtime. Run `npm run smoke:auth-refresh` immediately afterwards; a successful result proves that token rotation works before the background agent starts.
+The command reads the clipboard only when invoked, never prints its contents, extracts the Cookie, User-Agent, and language headers without executing the cURL command, validates CSRF, identity, access token, and refresh token, and writes the same ignored session metadata used by the native-profile flow. This is a one-time bootstrap method, not a separate runtime. `npm run smoke:auth-refresh` remains an optional developer diagnostic; it is not an onboarding gate.
 
 The minimum configuration for local operation is:
 
@@ -115,9 +116,7 @@ Telegram is optional: `npm run chat` works without a bot token or chat ID. Set t
 
 Codex and its in-app browser are development aids only. They are not runtime dependencies. The production Mac needs Node.js, this repository, Chrome, the OpenRouter key, and its own successful dedicated-profile login for each enabled marketplace.
 
-Before unattended Telegram operation, also set a real `KA_DEFAULT_ZIP_CODE`, `KA_DEFAULT_LOCATION_ID`, and `KA_CONTACT_NAME`, then run `npm run doctor:account`. Routine `npm start` checks the runtime and Telegram configuration, but an unavailable marketplace session no longer prevents the bot itself from starting; affected account tools remain fail-closed.
-
-`KA_DEFAULT_ZIP_CODE` and `KA_DEFAULT_LOCATION_ID` are one verified pair. The bridge always injects that configured pair into drafts and publications and ignores model-supplied alternatives, so the location is not re-decided for every listing. If Kleinanzeigen rejects the location, re-verify and update the pair itself instead of changing one listing payload.
+Before unattended Telegram operation, set a real `KA_DEFAULT_ZIP_CODE` and `KA_CONTACT_NAME`. There is no manual `KA_DEFAULT_LOCATION_ID`: preparation captures the current visible place name and internal form value, binds them to the session/form fingerprint, and shows only the place name in the proposal. A change before submit consumes the old approval without writing and creates a fresh proposal.
 
 For a bounded repair on the machine that actually runs the bot, follow [`docs/TARGET_MAC_LISTING_CONFIG_REPAIR.md`](docs/TARGET_MAC_LISTING_CONFIG_REPAIR.md). It includes a copyable prompt for a less capable target-Mac agent and avoids printing `.env` or session secrets.
 
@@ -127,39 +126,18 @@ The tracked `workspace/memory/preferences.md` is loaded automatically. It curren
 
 The canonical, agent-readable deployment and migration procedure is [docs/TARGET_MAC_RUNBOOK.md](docs/TARGET_MAC_RUNBOOK.md). It includes the required manual browser handoff, forbidden session/profile transfers, dry-run acceptance gate, and service lifecycle.
 
-The minimum Kleinanzeigen sequence on the Mac that will actually run the bot is:
+The complete operator sequence on the Mac that will actually run the bot is:
 
 ```bash
 git clone <repository-url>
 cd nemoclaw-kleinanzeigen
 npm run setup
-# Fill .env: OpenRouter, Telegram owner/token, listing defaults; keep dry-run.
-# In ordinary Chrome on this Mac, copy an authenticated "Meine Anzeigen" request as cURL.
-npm run login:clipboard
-npm run smoke:auth-refresh
-npm run smoke:ka
-npm run doctor:account
+npm run onboard
+# Complete a representative Telegram album proposal in dry-run.
+npm run enable:live
 ```
 
-`npm run setup` includes `npm ci`. Do not continue after a failed command, and do not copy marketplace cookies, tokens, or browser profiles from another Mac. If Vinted is enabled, also run `npm run login:vinted` and `npm run smoke:vinted` before the dry-run acceptance test.
-
-Then exercise one Telegram photo album in `NEMOCLAW_MODE=dry-run`; the full proposal should appear and `Go` must remain blocked. Only after that succeeds, set `NEMOCLAW_MODE=live` and start:
-
-```bash
-npm run launch
-```
-
-`npm run launch` is deliberately a foreground process and is best for the first live session. Inbox and listing checks run only while that process is alive and the Mac is awake with working network access.
-
-After that foreground session is stable, install the included standard macOS user service:
-
-```bash
-npm run service:install
-npm run service:status
-npm run service:restart
-```
-
-The installer reruns the strict Telegram/account doctor, writes no secrets into the plist, embeds the current Node/project paths, starts the existing `scripts/start.sh`, and stores private logs under `workspace/logs`. It runs only in the signed-in macOS user session; the Mac must remain awake and online. A PID lock prevents a second bot process from using the same Telegram account and local state.
+`npm run setup` includes `npm ci`. `onboard` installs the Dry-run service after its checks. Do not copy marketplace cookies, tokens, or browser profiles from another Mac. The guided live command validates current Doctor evidence, the Telegram Dry-run evidence and unresolved operations before changing mode; a failed restart restores Dry-run.
 
 `scripts/start.sh` wraps the agent in `caffeinate -i -s`, so while the bot runs the Mac will not idle-sleep or system-sleep on AC power. This keeps the bot alive instead of stopping after a short idle timeout. The `caffeinate` process ends together with the agent, so it does not keep the Mac awake when the bot is stopped. Note that closing the lid or a manual sleep still suspends the Mac; for unattended 24/7 operation set Energy Saver to prevent sleep on AC power.
 
@@ -191,11 +169,11 @@ Zeige mein lokales Inventar.
 /fast Formuliere diesen Titel kürzer.
 ```
 
-Photo flow in the local console can be tested by passing a normal Telegram-style token:
+The local console accepts an explicit host-only photo command for development. It immediately copies the file into managed storage and passes only an opaque media ID to the agent:
 
 ```text
 /compose
-[FOTO path:/absolute/path/inside/workspace/images/raw/item.jpg]
+/photo /absolute/path/to/item.jpg
 Das Gerät funktioniert, hat aber einen Kratzer links.
 /send
 ```
@@ -224,16 +202,10 @@ This command forces Flash/manual routing and dry-run, requires current public pr
 
 ## Start Telegram operation
 
-After `npm run doctor`, `npm run smoke:openrouter`, and the read-only account checks succeed:
-
-```dotenv
-NEMOCLAW_MODE=live
-```
-
-Then:
+For normal operation, use the guided gate rather than editing the mode manually:
 
 ```bash
-npm run launch
+npm run enable:live
 ```
 
 The bot supports:
@@ -258,11 +230,13 @@ For an active but weak listing, ask the bot to analyze the asset. It reads the r
 
 | Command | Purpose |
 |---|---|
+| `npm run onboard` | Guided target-Mac setup; force Dry-run, verify Telegram/private read/form once, start service |
+| `npm run enable:live` | Validate fresh evidence and the Telegram Dry-run proposal, then deliberately enable Live |
 | `npm run doctor` | Secret-safe local configuration diagnosis |
 | `npm run doctor:telegram` | Startup check including Telegram credentials; marketplace sessions are diagnostic only |
 | `npm run doctor:account` | Strict installation gate including Telegram and Kleinanzeigen account readiness |
 | `npm run smoke:openrouter` | One inexpensive live model/tool-calling check |
-| `npm run smoke:auth-refresh` | Refresh the dedicated Chrome session, persist it, then verify a private message read |
+| `npm run smoke:auth-refresh` | Developer diagnostic: try a proactive refresh and verify a private read; not an onboarding gate |
 | `npm run smoke:ka` | Read-only public + authenticated Kleinanzeigen API checks |
 | `npm run smoke:vinted` | One minimal read-only Vinted profile check (`--full` adds items and inbox) |
 | `npm run smoke:agent -- --image …` | Flash vision → research → staged-listing dry-run |
@@ -293,8 +267,6 @@ For an active but weak listing, ask the bot to analyze the asset. It reads the r
 
 `npm run smoke:ka` distinguishes a broken system DNS, a public Kleinanzeigen network/IP block, a rejected private browser session, an expired token, and a plain timeout. A private `403` while public search still succeeds is treated as a session/fingerprint problem, not mislabeled as a general IP block. In particular, a browser may still work through Secure DNS while Node cannot resolve the host; that is not a reason to repeat the account login.
 
-The legacy scripts `scripts/test-post.js` and `scripts/test-draft-images.js` mutate the real account and are intentionally excluded from `npm test`. They now require both live mode and a conspicuous command-line opt-in flag. Prefer the bot’s exact-action flow.
-
 ## Runtime layout
 
 ```text
@@ -307,6 +279,9 @@ tools/
   telegram.js         Telegram transport and long polling
   auth.js             Dedicated native-Chrome login and profile refresh
   image.js            Immutable originals, bounded edits and provenance
+  media-store.js      Opaque media IDs, atomic persistence and hash verification
+  marketplace-broker.js  Durable approval/write journal and reconciliation
+  session-readiness.js   Session-bound ready/degraded/unavailable evidence
   adstore.js          Guarded SQLite inventory and listing reconciliation
 workspace/
   agent.js            tools, approval contract, orchestration, heartbeat
@@ -322,7 +297,7 @@ workspace/
 - The listing monitor checks once 30 seconds after startup, then every configured interval with ±15% jitter (six hours by default). `0` disables it. Network/API errors do not count as a missing listing.
 - A lifecycle alert is deduplicated; if the listing reappears, its missing counter and alert state reset. View/price snapshots remain available for later listing analysis.
 - Telegram media groups are processed as one item so the model sees the whole photo set together.
-- Photo and listing records are durable local state under `workspace/images` and `workspace/ads.db`. Existing databases are migrated in place on first use. Back them up before moving versions, and copy these ignored paths together with `.env` when intentionally migrating the running instance; do not commit them.
+- Photo, operation and listing records are durable local state under `workspace/images` and `workspace/ads.db`. Existing databases are migrated in place on first use. Back up the database with its WAL/SHM files and the image directory while the bot is stopped. Migrate only non-session `.env` values; never move marketplace cookies or browser profiles between Macs.
 - OpenRouter receives the current task text and attached selling photos. It never receives Telegram tokens, marketplace cookies, or login credentials.
 - The model can read inventory through narrow tools. It cannot self-edit code or skill files.
 - Kleinanzeigen private endpoints and the Vinted web UI may change. Run the corresponding minimal read-only smoke check after login and after a site change before enabling live mode.

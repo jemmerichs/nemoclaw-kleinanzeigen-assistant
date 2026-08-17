@@ -14,8 +14,7 @@ async function main() {
   process.env.NEMOCLAW_MODE = "dry-run";
   process.env.NEMOCLAW_COMPLEXITY_ROUTING = "manual";
   process.env.NEMOCLAW_SESSION_FILE = path.join(temporary, "sessions.json");
-  process.env.NEMOCLAW_PENDING_FILE = path.join(temporary, "pending.json");
-  process.env.NEMOCLAW_STATE_FILE = path.join(temporary, "state.json");
+process.env.NEMOCLAW_STATE_FILE = path.join(temporary, "state.json");
   process.env.NEMOCLAW_DB_PATH = path.join(temporary, "ads.db");
   process.env.NEMOCLAW_IMAGE_DIR = path.join(temporary, "images");
 

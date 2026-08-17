@@ -13,6 +13,7 @@ const {
 const {
   shouldPreferStoredSession,
 } = require("./kleinanzeigen-session");
+const { captureVisibleFormState } = require("./kleinanzeigen-form-state");
 
 const FORM_URL = "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html";
 const INSPECTION_IDLE_MS = 2 * 60 * 1000;
@@ -431,7 +432,7 @@ async function inspectComboboxValues(page, field) {
   };
 }
 
-async function inspectCategoryFormNow({ categoryId, categoryPath } = {}) {
+async function inspectCategoryFormNow({ categoryId, categoryPath, onSessionObserved = null } = {}) {
   const expectedCategoryId = categoryIdValue(categoryId);
   const normalizedPath = normalizeCategoryPath(categoryPath);
   let session;
@@ -439,6 +440,10 @@ async function inspectCategoryFormNow({ categoryId, categoryPath } = {}) {
   try {
     session = await inspectionSessionFor(normalizedPath);
     const { page } = session;
+    const observedCookieHeader = validatedSessionCookieString(
+      await session.nativeProfile.context.cookies("https://www.kleinanzeigen.de")
+    );
+    if (typeof onSessionObserved === "function") await onSessionObserved(observedCookieHeader);
     const selection = await selectCategoryPath(page, normalizedPath, {
       selectedLabels: session.selectedLabels,
       selectedTokens: session.selectedTokens,
@@ -485,11 +490,19 @@ async function inspectCategoryFormNow({ categoryId, categoryPath } = {}) {
       category: normalizedPath.join(" > "),
       requiredAttributes,
     });
+    const cookieHeader = validatedSessionCookieString(
+      await session.nativeProfile.context.cookies("https://www.kleinanzeigen.de")
+    );
+    const formState = await captureVisibleFormState(page, {
+      cookieHeader,
+      userAgent: process.env.KA_USER_AGENT || "",
+    });
     return {
       status: "ready",
       verified: true,
       ...contract,
       attributes,
+      formState,
       instruction:
         "Verwende nur die gelieferten Werte. Fehlt eine nötige Nutzerentscheidung, frage sie vor dem Posting gezielt ab.",
     };

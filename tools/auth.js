@@ -107,6 +107,23 @@ function saveToEnv(updates) {
   fs.renameSync(tempFile, ENV_FILE);
 }
 
+function adoptNewerObservedSession(cookieHeader) {
+  const observed = validatedCookieHeader(cookieHeader);
+  const current = String(process.env.KA_COOKIES || "");
+  const { shouldPreferStoredSession } = require("./kleinanzeigen-session");
+  if (current && !shouldPreferStoredSession(current, observed)) return false;
+  const userAgent = systemChromeUserAgent();
+  saveToEnv({
+    KA_COOKIES: observed,
+    KA_BEARER_TOKEN: null,
+    KA_USER_AGENT: userAgent,
+  });
+  process.env.KA_COOKIES = observed;
+  process.env.KA_USER_AGENT = userAgent;
+  delete process.env.KA_BEARER_TOKEN;
+  return true;
+}
+
 function extractKaCookieString(cookies) {
   const values = new Map();
   for (const cookie of cookies || []) {
@@ -669,6 +686,7 @@ async function refreshStoredSession() {
 }
 
 module.exports = {
+  adoptNewerObservedSession,
   assertNetworkAccess,
   classifyAccessProblem,
   closeNativeProfile,

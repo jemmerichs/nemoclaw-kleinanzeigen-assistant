@@ -127,6 +127,51 @@ function writePrivate(filePath, content) {
   fs.chmodSync(filePath, 0o600);
 }
 
+function waitBriefly(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function expectedAgentProcess(pid, paths, {
+  psPath = "/bin/ps",
+  lsofPath = "/usr/sbin/lsof",
+} = {}) {
+  const ps = spawnSync(psPath, ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+  if (ps.status !== 0 || !/(?:^|\s)(?:[^\s]*node\s+)?workspace\/agent\.js(?:\s|$)/.test(ps.stdout.trim())) {
+    return false;
+  }
+  const cwd = spawnSync(lsofPath, ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], {
+    encoding: "utf8",
+  });
+  return cwd.status === 0 && cwd.stdout.split(/\r?\n/).includes(`n${paths.root}`);
+}
+
+function stopRunningAgent(paths) {
+  let pid;
+  try {
+    pid = Number(fs.readFileSync(paths.agentPidPath, "utf8").trim());
+    if (!Number.isInteger(pid) || pid <= 1) return false;
+    process.kill(pid, 0);
+  } catch (error) {
+    if (["ENOENT", "ESRCH"].includes(error?.code)) return false;
+    throw error;
+  }
+  if (!expectedAgentProcess(pid, paths)) {
+    throw new Error("Der PID-Lock gehört nicht eindeutig zum Agenten in diesem Checkout; Neustart wurde sicher abgebrochen.");
+  }
+  process.kill(pid, "SIGTERM");
+  const deadline = Date.now() + 35_000;
+  while (Date.now() < deadline) {
+    try {
+      if (!fs.existsSync(paths.agentPidPath)
+        || Number(fs.readFileSync(paths.agentPidPath, "utf8").trim()) !== pid) return true;
+    } catch {
+      return true;
+    }
+    waitBriefly(250);
+  }
+  throw new Error("Der laufende Agent hat den sicheren Neustart nicht rechtzeitig bestätigt.");
+}
+
 function install() {
   assertMac();
   const paths = servicePaths();
@@ -168,21 +213,7 @@ function status() {
 function restart() {
   assertMac();
   const paths = servicePaths();
-  try {
-    const pid = Number(fs.readFileSync(paths.agentPidPath, "utf8").trim());
-    if (Number.isInteger(pid) && pid > 1) {
-      process.kill(pid, 0);
-      console.log(`○ Der Agent läuft bereits sichtbar (PID ${pid}). Schließe zuerst sein Terminal-Fenster und starte ihn dann neu.`);
-      process.exitCode = 1;
-      return;
-    }
-  } catch (error) {
-    if (error?.code === "EPERM") {
-      console.log("○ Der Agent läuft bereits, kann von diesem Benutzer aber nicht geprüft werden.");
-      process.exitCode = 1;
-      return;
-    }
-  }
+  stopRunningAgent(paths);
   const domain = `gui/${process.getuid()}`;
   const loaded = launchctl(["print", `${domain}/${LABEL}`], { tolerateFailure: true, inherit: false });
   if (loaded.status !== 0) {
@@ -218,4 +249,11 @@ if (require.main === module) {
   }
 }
 
-module.exports = { LABEL, buildPlist, main, servicePaths };
+module.exports = {
+  LABEL,
+  buildPlist,
+  expectedAgentProcess,
+  main,
+  servicePaths,
+  stopRunningAgent,
+};

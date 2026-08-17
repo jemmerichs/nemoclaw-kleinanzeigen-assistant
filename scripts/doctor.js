@@ -4,6 +4,11 @@
 const fs = require("fs");
 const path = require("path");
 const { kleinanzeigenListingConfig } = require("../tools/listing-config");
+const {
+  evidenceIsFresh,
+  readOperationalState,
+  sessionRevision,
+} = require("../tools/session-readiness");
 
 const root = path.resolve(__dirname, "..");
 require("dotenv").config({ path: path.join(root, ".env") });
@@ -172,12 +177,12 @@ function main() {
             ? `gültig bis ${new Date(bearerExpiry).toISOString()}`
             : "vorhanden"
     );
-    accountLine(
+    optionalLine(
       "Session-Refresh",
       refreshOk,
       refreshOk
-        ? "Refresh-Kontext vorhanden; Gültigkeit mit npm run smoke:ka prüfen"
-        : "Refresh-Token fehlt — einmal neu anmelden"
+        ? "Refresh-Kontext vorhanden"
+        : "nicht belegt; ein funktionierender privater Read bleibt im Dry-run nutzbar"
     );
     accountLine(
       "Browser-Fingerabdruck",
@@ -212,15 +217,24 @@ function main() {
   );
 
   const localReady = nodeOk && modeOk && apiKeyOk;
-  const accountReady = localReady && kaCookies && csrfOk && userIdOk && bearerOk && refreshOk
-    && browserFingerprintOk && browserVersionAligned;
+  const currentRevision = sessionRevision(process.env.KA_COOKIES || "", {
+    userAgent: process.env.KA_USER_AGENT || "",
+  });
+  const doctorEvidence = readOperationalState().doctorEvidence;
+  const currentEvidence = evidenceIsFresh(doctorEvidence, {
+    sessionRevision: currentRevision,
+  });
+  const accountReady = localReady && kaCookies && csrfOk && userIdOk && bearerOk
+    && browserFingerprintOk && browserVersionAligned && currentEvidence;
   const listingConfig = kleinanzeigenListingConfig();
   const publishReady = listingConfig.ready;
   line("Lokaler Dry-run", localReady, localReady ? "bereit — npm run chat" : "nicht bereit");
   accountLine(
     "Kontoaktionen",
     accountReady,
-    accountReady ? "Basis-Session bereit — mit npm run smoke:ka verifizieren" : "nicht bereit; Bot und öffentliche Suche können trotzdem starten"
+    accountReady
+      ? `aktuelle Evidenz: ${doctorEvidence.state}`
+      : "nicht bereit; npm run onboard prüft die aktuelle Session einmal"
   );
   optionalLine(
     "Vinted-Kontoaktionen",
@@ -233,7 +247,7 @@ function main() {
     "Anzeigen-Veröffentlichung",
     publishReady,
     publishReady
-      ? "PLZ, Orts-ID und Kontaktname gesetzt"
+      ? "PLZ und Kontaktname gesetzt; der Ort wird aus dem sichtbaren Formular gebunden"
       : `vor Live-Veröffentlichung korrigieren: ${listingConfig.problems.join(", ")}`
   );
   if (requireTelegram) {

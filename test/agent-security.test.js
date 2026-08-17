@@ -7,18 +7,27 @@ const {
   TOOLS,
   describeAction,
   loadContext,
+  prepareBoundKleinanzeigenListing,
   toolDefinitions,
   toolRequiresApproval,
   validateConfig,
 } = require("../workspace/agent");
-const { actionFingerprint } = require("../workspace/runtime");
+const { redactUnsafeText } = require("../tools/safe-error");
+const { withBoundKleinanzeigenForm } = require("./test-helpers");
+
+test("safe errors redact credentials and absolute paths", () => {
+  const redacted = redactUnsafeText(
+    "Cookie: secret-cookie\n{\"access_token\":\"secret-token\"} /Users/example/private/photo.jpg"
+  );
+  assert.doesNotMatch(redacted, /secret-cookie|secret-token|\/Users\/example/);
+  assert.match(redacted, /Cookie \[geschützt\]|access_token \[geschützt\]/);
+});
 
 test("every externally destructive bridge tool requires approval", () => {
   for (const name of [
     "ka_send_message",
     "ka_publish_prepared_listing",
-    "ka_create_ad",
-    "ka_save_draft",
+    "ka_save_prepared_draft",
     "ka_delete_draft",
     "ka_delete_ad",
     "vinted_create_item",
@@ -39,7 +48,9 @@ test("model only sees narrow tools and cannot call raw SQL", () => {
   assert.equal(names.includes("db_query"), false);
   assert.equal(names.includes("ka_prepare_listing"), true);
   assert.equal(names.includes("ka_publish_prepared_listing"), true);
+  assert.equal(names.includes("ka_save_prepared_draft"), true);
   assert.equal(names.includes("ka_create_ad"), false);
+  assert.equal(names.includes("ka_save_draft"), false);
   assert.equal(names.includes("ka_get_category_requirements"), false);
   assert.equal(names.includes("ka_delete_ad"), true);
   assert.equal(names.includes("vinted_create_item"), true);
@@ -47,7 +58,7 @@ test("model only sees narrow tools and cannot call raw SQL", () => {
   assert.equal(names.includes("updateSkillFile"), false);
 });
 
-test("Kleinanzeigen publication exposes only semantic preparation and an opaque publish token", () => {
+test("Kleinanzeigen writes expose only semantic preparation and opaque action tokens", () => {
   const definitions = new Map(
     toolDefinitions().map(tool => [tool.function.name, tool.function.parameters])
   );
@@ -59,6 +70,10 @@ test("Kleinanzeigen publication exposes only semantic preparation and an opaque 
   }
   assert.deepEqual(
     Object.keys(definitions.get("ka_publish_prepared_listing").properties),
+    ["preparationId"]
+  );
+  assert.deepEqual(
+    Object.keys(definitions.get("ka_save_prepared_draft").properties),
     ["preparationId"]
   );
 });
@@ -86,18 +101,13 @@ test("agent context treats buyer content as data and includes negotiation handof
   assert.match(context, /Standardmäßig kein Versand, sondern nur Abholung/i);
 });
 
-test("pending action identity binds tool and exact arguments", () => {
-  const first = actionFingerprint("ka_send_message", { conversationId: "c1", text: "Hallo" });
-  const reordered = actionFingerprint("ka_send_message", { text: "Hallo", conversationId: "c1" });
-  const changed = actionFingerprint("ka_send_message", { conversationId: "c1", text: "Andere Nachricht" });
-  assert.equal(first, reordered);
-  assert.notEqual(first, changed);
+test("pending action descriptions hide provider identifiers", () => {
   const description = describeAction({
-    id: first,
+    id: "a".repeat(32),
     tool: "ka_send_message",
     args: { conversationId: "c1", text: "Hallo" },
   });
-  assert.match(description, /c1/);
+  assert.doesNotMatch(description, /c1/);
   assert.match(description, /Hallo/);
   assert.equal(toolRequiresApproval(TOOLS.ka_send_message, {}), true);
 });
@@ -105,11 +115,9 @@ test("pending action identity binds tool and exact arguments", () => {
 test("known category requirements are enforced while preparing the exact action", () => {
   const previousLocation = {
     zipCode: process.env.KA_DEFAULT_ZIP_CODE,
-    locationId: process.env.KA_DEFAULT_LOCATION_ID,
     contactName: process.env.KA_CONTACT_NAME,
   };
   delete process.env.KA_DEFAULT_ZIP_CODE;
-  delete process.env.KA_DEFAULT_LOCATION_ID;
   delete process.env.KA_CONTACT_NAME;
   const base = {
     title: "Heißluftfritteuse",
@@ -119,46 +127,36 @@ test("known category requirements are enforced while preparing the exact action"
     priceType: "FIXED",
     zipCode: "80636",
     locationId: "16360",
+    locationName: "München-Neuhausen",
     contactName: "Jannik",
+    sessionRevision: "security-session",
     imagePaths: [],
   };
   try {
     assert.throws(
-      () => TOOLS.ka_create_ad.prepare({
+      () => prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm({
         ...base,
         attributes: {
           "haushaltsgeraete.art": "haushaltskleingeraete",
         },
-      }),
-      /Veröffentlichungskonfiguration.*Standard-PLZ.*Orts-ID.*Profilname/
+      })),
+      /Veröffentlichungskonfiguration.*Standard-PLZ.*Profilname/
     );
 
     process.env.KA_DEFAULT_ZIP_CODE = "80636";
-    process.env.KA_DEFAULT_LOCATION_ID = "80636";
     process.env.KA_CONTACT_NAME = "Jannik";
     assert.throws(
-      () => TOOLS.ka_create_ad.prepare({
-        ...base,
-        attributes: {
-          "haushaltsgeraete.art": "haushaltskleingeraete",
-        },
-      }),
-      /eigenständige Kleinanzeigen-Orts-ID/
-    );
-
-    process.env.KA_DEFAULT_LOCATION_ID = "16360";
-    assert.throws(
-      () => TOOLS.ka_create_ad.prepare(base),
+      () => prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm(base)),
       /haushaltsgeraete\.art/
     );
-    const prepared = TOOLS.ka_create_ad.prepare({
+    const prepared = prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm({
       ...base,
       attributes: {
         "haushaltsgeraete.art": "haushaltskleingeraete",
       },
-    });
+    }));
     assert.equal(prepared.attributes["haushaltsgeraete.versand"], "nein");
-    const configured = TOOLS.ka_create_ad.prepare({
+    const configured = prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm({
       ...base,
       zipCode: "10115",
       locationId: "6488",
@@ -166,16 +164,14 @@ test("known category requirements are enforced while preparing the exact action"
       attributes: {
         "haushaltsgeraete.art": "haushaltskleingeraete",
       },
-    });
+    }));
     assert.equal(configured.zipCode, "80636");
-    assert.equal(configured.locationId, "16360");
+    assert.equal(configured.locationId, "6488");
     assert.equal(configured.contactName, "Jannik");
     assert.equal(TOOLS.ka_get_category_requirements.requiresApproval, undefined);
   } finally {
     if (previousLocation.zipCode === undefined) delete process.env.KA_DEFAULT_ZIP_CODE;
     else process.env.KA_DEFAULT_ZIP_CODE = previousLocation.zipCode;
-    if (previousLocation.locationId === undefined) delete process.env.KA_DEFAULT_LOCATION_ID;
-    else process.env.KA_DEFAULT_LOCATION_ID = previousLocation.locationId;
     if (previousLocation.contactName === undefined) delete process.env.KA_CONTACT_NAME;
     else process.env.KA_CONTACT_NAME = previousLocation.contactName;
   }

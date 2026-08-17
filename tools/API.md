@@ -26,10 +26,17 @@ Do not scrape credentials from an ordinary browser profile. Prefer `npm run logi
 | Read ad bundles | gateway private bundles API | bearer |
 
 The model-facing listing contract is deliberately smaller than the browser form. `ka_prepare_listing`
-accepts the visible category path, listing content, images, price, and the semantic delivery choice.
+accepts the visible category path, listing content, opaque media IDs, price, and the semantic delivery choice.
 It returns an opaque preparation ID after resolving current provider fields. Only
-`ka_publish_prepared_listing(preparationId)` can stage that snapshot for `Go`; category IDs,
+`ka_publish_prepared_listing(preparationId)` or, when a draft was explicitly requested,
+`ka_save_prepared_draft(preparationId)` can stage that snapshot for `Go`; category IDs,
 `attributeMap` keys, location IDs, and the form action stay inside the bridge.
+
+Incoming media is copied atomically into the managed store. Host code resolves its local path
+and verifies the stored SHA-256 immediately before upload; paths never cross the model boundary.
+Every approved mutation is journaled in `external_operations` before any possible side effect.
+An interrupted or ambiguous operation is reconciled with read-only evidence and is never
+automatically replayed.
 
 ## Verification status
 

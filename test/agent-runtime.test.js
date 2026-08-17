@@ -10,8 +10,8 @@ const sharp = require("sharp");
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-agent-"));
 process.env.NEMOCLAW_SESSION_FILE = path.join(directory, "sessions.json");
-process.env.NEMOCLAW_PENDING_FILE = path.join(directory, "pending.json");
 process.env.NEMOCLAW_STATE_FILE = path.join(directory, "state.json");
+process.env.NEMOCLAW_READINESS_FILE = path.join(directory, "readiness.json");
 process.env.NEMOCLAW_DB_PATH = path.join(directory, "ads.db");
 process.env.NEMOCLAW_IMAGE_DIR = path.join(directory, "images");
 process.env.NEMOCLAW_KA_CATEGORY_CACHE_FILE = path.join(directory, "category-contracts.json");
@@ -36,12 +36,13 @@ const {
   getHistory,
   getPending,
   normalizeHistoryEntry,
+  prepareBoundKleinanzeigenListing,
   runAgent,
-  selectTurnScope,
   stagePending,
   verifiedCategoryInspectionFailureMessage,
   verifiedKaAccessFailureMessage,
 } = require("../workspace/agent");
+const { withBoundKleinanzeigenForm } = require("./test-helpers");
 
 function preparedListingId(listing, {
   category = "Testkategorie",
@@ -50,7 +51,7 @@ function preparedListingId(listing, {
   return listingPreparations.storeListingPreparation({
     category,
     delivery,
-    listing: TOOLS.ka_create_ad.prepare(listing),
+    listing: prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm(listing)),
   });
 }
 
@@ -289,11 +290,9 @@ test("protected model action is staged exactly and Go is consumed once", async (
 test("ready bridge configuration cannot be hallucinated as unresolved", async () => {
   const previous = {
     zipCode: process.env.KA_DEFAULT_ZIP_CODE,
-    locationId: process.env.KA_DEFAULT_LOCATION_ID,
     contactName: process.env.KA_CONTACT_NAME,
   };
   process.env.KA_DEFAULT_ZIP_CODE = "80636";
-  process.env.KA_DEFAULT_LOCATION_ID = "16360";
   process.env.KA_CONTACT_NAME = "Jannik";
   const sent = [];
   let modelCalls = 0;
@@ -360,8 +359,6 @@ test("ready bridge configuration cannot be hallucinated as unresolved", async ()
     clearPending("ready-listing-config");
     if (previous.zipCode === undefined) delete process.env.KA_DEFAULT_ZIP_CODE;
     else process.env.KA_DEFAULT_ZIP_CODE = previous.zipCode;
-    if (previous.locationId === undefined) delete process.env.KA_DEFAULT_LOCATION_ID;
-    else process.env.KA_DEFAULT_LOCATION_ID = previous.locationId;
     if (previous.contactName === undefined) delete process.env.KA_CONTACT_NAME;
     else process.env.KA_CONTACT_NAME = previous.contactName;
   }
@@ -371,12 +368,10 @@ test("server-rejected category contract blocks a repeated empty-attribute propos
   const previous = {
     mode: process.env.NEMOCLAW_MODE,
     zipCode: process.env.KA_DEFAULT_ZIP_CODE,
-    locationId: process.env.KA_DEFAULT_LOCATION_ID,
     contactName: process.env.KA_CONTACT_NAME,
   };
   process.env.NEMOCLAW_MODE = "live";
   process.env.KA_DEFAULT_ZIP_CODE = "80636";
-  process.env.KA_DEFAULT_LOCATION_ID = "16360";
   process.env.KA_CONTACT_NAME = "Jannik";
   categoryContracts.rememberCategoryRequirements({
     categoryId: 654,
@@ -470,8 +465,6 @@ test("server-rejected category contract blocks a repeated empty-attribute propos
     else process.env.NEMOCLAW_MODE = previous.mode;
     if (previous.zipCode === undefined) delete process.env.KA_DEFAULT_ZIP_CODE;
     else process.env.KA_DEFAULT_ZIP_CODE = previous.zipCode;
-    if (previous.locationId === undefined) delete process.env.KA_DEFAULT_LOCATION_ID;
-    else process.env.KA_DEFAULT_LOCATION_ID = previous.locationId;
     if (previous.contactName === undefined) delete process.env.KA_CONTACT_NAME;
     else process.env.KA_CONTACT_NAME = previous.contactName;
   }
@@ -481,12 +474,10 @@ test("a browser pre-submit gate failure is definitive and never reported as an u
   const previous = {
     mode: process.env.NEMOCLAW_MODE,
     zipCode: process.env.KA_DEFAULT_ZIP_CODE,
-    locationId: process.env.KA_DEFAULT_LOCATION_ID,
     contactName: process.env.KA_CONTACT_NAME,
   };
   process.env.NEMOCLAW_MODE = "live";
   process.env.KA_DEFAULT_ZIP_CODE = "80636";
-  process.env.KA_DEFAULT_LOCATION_ID = "16360";
   process.env.KA_CONTACT_NAME = "Jannik";
   categoryContracts.rememberCategoryRequirements({
     categoryId: 655,
@@ -536,8 +527,8 @@ test("a browser pre-submit gate failure is definitive and never reported as an u
     await runAgent("browser-pre-submit", "Bereite die Anzeige vor.", { llmClient, gateway });
     await runAgent("browser-pre-submit", "Go", { llmClient: null, gateway });
     assert.equal(getPending("browser-pre-submit"), null);
-    assert.match(sent[1], /vor der externen Ausführung blockiert/);
-    assert.match(sent[1], /nicht ausgeführt/);
+    assert.match(sent[1], /sicher vor einer externen Änderung beendet/);
+    assert.match(sent[1], /Incident/);
     assert.doesNotMatch(sent[1], /Ausgang.*unklar|nicht automatisch wiederholen/i);
   } finally {
     TOOLS.ka_publish_prepared_listing.fn = originalCreate;
@@ -546,8 +537,6 @@ test("a browser pre-submit gate failure is definitive and never reported as an u
     else process.env.NEMOCLAW_MODE = previous.mode;
     if (previous.zipCode === undefined) delete process.env.KA_DEFAULT_ZIP_CODE;
     else process.env.KA_DEFAULT_ZIP_CODE = previous.zipCode;
-    if (previous.locationId === undefined) delete process.env.KA_DEFAULT_LOCATION_ID;
-    else process.env.KA_DEFAULT_LOCATION_ID = previous.locationId;
     if (previous.contactName === undefined) delete process.env.KA_CONTACT_NAME;
     else process.env.KA_CONTACT_NAME = previous.contactName;
   }
@@ -778,7 +767,7 @@ test("/context reports bounded transient history and separate durable state with
   assert.equal(stats.historyCharLimit, 4000);
   assert.equal(stats.perEntryCharLimit, 1500);
   assert.equal(stats.retentionHours, 24);
-  assert.ok(stats.approximateFixedInputTokens < 6500);
+  assert.ok(stats.approximateFixedInputTokens < 15000);
   assert.match(sent.at(-1), /Context-Management/);
   assert.match(sent.at(-1), /letzten 24 Stunden/);
   assert.match(sent.at(-1), /Schlanker Standardkontext/);
@@ -800,44 +789,23 @@ test("conversation history keeps at most 7 entries from the last 24 hours", () =
   );
 });
 
-test("routine listing turns omit unrelated tools and skills to reduce fixed input tokens", () => {
-  const scope = selectTurnScope("Recherchiere den Preis und erstelle eine Kleinanzeigen-Anzeige.");
-  const names = require("../workspace/agent")
-    .toolDefinitions({ include: scope.tools })
-    .map(tool => tool.function.name);
-  const leanContext = require("../workspace/agent").loadContext({
-    includeTools: scope.tools,
-    includeSkills: scope.skills,
-  });
-  const fullContext = require("../workspace/agent").loadContext();
-  const leanFixedChars = leanContext.length + JSON.stringify(
-    require("../workspace/agent").toolDefinitions({ include: scope.tools })
-  ).length;
-  const fullFixedChars = fullContext.length + JSON.stringify(
-    require("../workspace/agent").toolDefinitions()
-  ).length;
-
-  assert.equal(scope.name, "kleinanzeigen-listing");
+test("every user turn receives the same fixed typed sales catalog", () => {
+  const definitions = require("../workspace/agent").toolDefinitions();
+  const names = definitions.map(tool => tool.function.name);
   assert.equal(names.includes("ka_search_ads"), true);
   assert.equal(names.includes("ka_prepare_listing"), true);
   assert.equal(names.includes("ka_publish_prepared_listing"), true);
   assert.equal(names.includes("ka_create_ad"), false);
-  assert.equal(names.includes("vinted_search_items"), false);
-  assert.equal(names.includes("ka_get_messages"), false);
-  assert.doesNotMatch(leanContext, /Skill: Inbox/);
-  assert.ok(leanFixedChars < fullFixedChars * 0.6);
-
-  const fallbackScope = selectTurnScope("Hilf mir bei dieser gemischten Aufgabe.");
-  assert.equal(fallbackScope.name, "vollstaendig");
-  assert.equal(
-    require("../workspace/agent").toolDefinitions({ include: fallbackScope.tools }).length,
-    require("../workspace/agent").toolDefinitions().length
-  );
+  assert.equal(names.includes("vinted_search_items"), true);
+  assert.equal(names.includes("ka_get_messages"), true);
+  assert.match(require("../workspace/agent").loadContext(), /Skill: Inbox/);
 });
 
-test("an out-of-scope tool gets a neutral scope error instead of buyer-specific context", async () => {
+test("an unusual turn can use any fixed-catalog sales tool without scope activation", async () => {
   const sent = [];
   let step = 0;
+  const original = TOOLS.vinted_get_account.fn;
+  TOOLS.vinted_get_account.fn = async () => ({ account: "available" });
   const llmClient = {
     model: "stub",
     async complete(request) {
@@ -859,8 +827,7 @@ test("an out-of-scope tool gets a neutral scope error instead of buyer-specific 
         };
       }
       const result = JSON.parse(request.messages.at(-1).content);
-      assert.match(result.error, /aktuellen Arbeitskontext nicht verfügbar/);
-      assert.doesNotMatch(result.error, /Käuferverlauf|Thread/);
+      assert.equal(result.account, "available");
       return {
         message: {
           role: "assistant",
@@ -870,17 +837,20 @@ test("an out-of-scope tool gets a neutral scope error instead of buyer-specific 
     },
   };
 
-  const result = await runAgent(
-    "neutral-scope-error",
-    "Recherchiere den Preis und erstelle eine Kleinanzeigen-Anzeige.",
-    {
-      llmClient,
-      gateway: { async send(_chatId, text) { sent.push(text); } },
-    }
-  );
-
-  assert.deepEqual(result.toolCalls, ["vinted_get_account"]);
-  assert.deepEqual(sent, ["Ich bleibe bei der angefragten Kleinanzeigen-Aufgabe."]);
+  try {
+    const result = await runAgent(
+      "neutral-scope-error",
+      "Sicher? Woran liegt es?",
+      {
+        llmClient,
+        gateway: { async send(_chatId, text) { sent.push(text); } },
+      }
+    );
+    assert.deepEqual(result.toolCalls, ["vinted_get_account"]);
+    assert.deepEqual(sent, ["Ich bleibe bei der angefragten Kleinanzeigen-Aufgabe."]);
+  } finally {
+    TOOLS.vinted_get_account.fn = original;
+  }
 });
 
 test("listing validation errors are translated for Telegram without leaking backend field names", () => {
@@ -906,7 +876,7 @@ test("listing validation errors are translated for Telegram without leaking back
   assert.doesNotMatch(message, /attributeMap|versand_s|ka_get_category_requirements/);
 });
 
-test("photo tokens in a final answer are delivered as Telegram photos instead of path text", async () => {
+test("free-text photo tokens never trigger an outbound photo send", async () => {
   const { saveTemp } = require("../tools/image");
   const imagePath = saveTemp(await sharp({
     create: {
@@ -937,11 +907,11 @@ test("photo tokens in a final answer are delivered as Telegram photos instead of
   await runAgent("return-photo", "Schick mir das Bild zurück.", { llmClient, gateway });
 
   assert.deepEqual(sent, ["Hier ist das verwendete Bild:"]);
-  assert.deepEqual(photos, [imagePath]);
+  assert.deepEqual(photos, []);
   assert.doesNotMatch(sent.join("\n"), /FOTO path|workspace\/images/);
 });
 
-test("invalid photo tokens are blocked without exposing the local path", async () => {
+test("invalid free-text photo tokens are removed without exposing or sending the path", async () => {
   const sent = [];
   const gateway = {
     async send(_chatId, text) { sent.push(text); },
@@ -962,7 +932,7 @@ test("invalid photo tokens are blocked without exposing the local path", async (
   await runAgent("invalid-return-photo", "Schick mir das Bild zurück.", { llmClient, gateway });
 
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /konnte nicht gesendet werden/);
+  assert.equal(sent[0], "Hier ist das Bild:");
   assert.doesNotMatch(sent[0], /private|passwd|FOTO path/);
 });
 
@@ -1268,15 +1238,15 @@ test("inbox heartbeat isolates conversations and marks only successful notificat
   assert.equal(persisted, 2);
 });
 
-test("preloaded inbox turn exposes no redundant read tools and keeps exact buyer evidence", async () => {
+test("preloaded inbox turn keeps the fixed catalog and exact buyer evidence", async () => {
   const sent = [];
   const gateway = { async send(_chatId, text) { sent.push(text); } };
   const llmClient = {
     model: "stub",
     async complete(request) {
       const names = request.tools.map(tool => tool.function.name);
-      assert.equal(names.includes("ka_get_conversations"), false);
-      assert.equal(names.includes("ka_get_messages"), false);
+      assert.equal(names.includes("ka_get_conversations"), true);
+      assert.equal(names.includes("ka_get_messages"), true);
       assert.equal(names.includes("ka_send_message"), true);
       assert.match(
         request.messages[1].content,
@@ -1392,6 +1362,8 @@ test("agent selectively edits one image, previews it, researches, and stages the
     },
   }).jpeg().toBuffer();
   const originalPath = saveTemp(sourceBuffer);
+  const mediaStore = require("../tools/media-store");
+  const originalMediaId = mediaStore.registerManagedMedia(originalPath, { source: "agent-test" }).mediaId;
   const sent = [];
   const previews = [];
   const gateway = {
@@ -1406,6 +1378,7 @@ test("agent selectively edits one image, previews it, researches, and stages the
     categoryId: 278,
   }];
   let editedPath;
+  let editedMediaId;
   let step = 0;
   const llmClient = {
     model: "stub",
@@ -1422,7 +1395,7 @@ test("agent selectively edits one image, previews it, researches, and stages the
               function: {
                 name: "image_edit",
                 arguments: JSON.stringify({
-                  inputPath: originalPath,
+                  inputMediaId: originalMediaId,
                   reason: "Das Titelbild ist leicht dunkel.",
                   operations: { brightness: 1.08, contrast: 1.03, maxLongEdge: 1600 },
                 }),
@@ -1435,8 +1408,9 @@ test("agent selectively edits one image, previews it, researches, and stages the
         const editResult = request.messages
           .filter(message => message.role === "tool")
           .map(message => JSON.parse(message.content))
-          .find(result => result.outputPath);
-        editedPath = editResult.outputPath;
+          .find(result => result.outputMediaId);
+        editedMediaId = editResult.outputMediaId;
+        editedPath = mediaStore.resolveMediaAsset(editedMediaId).managedPath;
         assert.equal(fs.existsSync(editedPath), true);
         assert.equal(Array.isArray(request.messages.at(-1).content), true);
         return {
@@ -1470,7 +1444,7 @@ test("agent selectively edits one image, previews it, researches, and stages the
                   categoryId: 278,
                   price: 25,
                   priceType: "NEGOTIABLE",
-                  imagePaths: [editedPath],
+                  mediaIds: [editedMediaId],
                 }),
               }),
             },
@@ -1483,7 +1457,7 @@ test("agent selectively edits one image, previews it, researches, and stages the
   try {
     const result = await runAgent(
       "image-flow",
-      `[FOTO path:${originalPath}]\nErstelle daraus eine Anzeige.`,
+      `[MEDIA id:${originalMediaId}]\nErstelle daraus eine Anzeige.`,
       { llmClient, gateway }
     );
     assert.deepEqual(result.toolCalls, ["image_edit", "ka_search_ads", "ka_publish_prepared_listing"]);
@@ -1491,6 +1465,7 @@ test("agent selectively edits one image, previews it, researches, and stages the
     assert.equal(previews[0].filePath, editedPath);
     assert.match(previews[0].caption, /Original bleibt unverändert/);
     assert.deepEqual(getPending("image-flow").args.listing.imagePaths, [editedPath]);
+    assert.deepEqual(getPending("image-flow").args.listing.mediaIds, [editedMediaId]);
     assert.match(sent[0], /Testartikel in gutem Zustand/);
     assert.equal(fs.existsSync(`${editedPath}.provenance.json`), true);
   } finally {
@@ -1785,11 +1760,11 @@ test("sold or already-active assets are blocked from duplicate publication", () 
   };
 
   assert.throws(
-    () => require("../workspace/agent").TOOLS.ka_create_ad.prepare({ ...base, assetId: soldId }),
+    () => prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm({ ...base, assetId: soldId })),
     /als verkauft markiert/
   );
   assert.throws(
-    () => require("../workspace/agent").TOOLS.ka_create_ad.prepare({ ...base, assetId: activeId }),
+    () => prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm({ ...base, assetId: activeId })),
     /bereits eine aktive Anzeige/
   );
 
@@ -1802,7 +1777,7 @@ test("sold or already-active assets are blocked from duplicate publication", () 
     params: [pausedId, "paused-duplicate-1", "paused"],
   });
   assert.throws(
-    () => require("../workspace/agent").TOOLS.ka_create_ad.prepare({ ...base, assetId: pausedId }),
+    () => prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm({ ...base, assetId: pausedId })),
     /pausierte Anzeige/
   );
 });
@@ -1871,7 +1846,7 @@ test("a relist with a missing source photo is blocked instead of silently changi
   fs.rmSync(imagePath);
 
   assert.throws(
-    () => agent.TOOLS.ka_create_ad.prepare({ ...payload, assetId }),
+    () => agent.prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm({ ...payload, assetId })),
     /Bild nicht gefunden/
   );
   assert.equal(getPending("missing-photo-relist"), null);
@@ -1895,7 +1870,7 @@ test("a corrupt edited-image provenance record blocks staging before any upload"
   }));
 
   assert.throws(
-    () => agent.TOOLS.ka_create_ad.prepare({
+    () => agent.prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm({
       title: "Ungültige Provenienz",
       description: "Darf nicht vorgemerkt werden.",
       categoryId: 278,
@@ -1905,7 +1880,7 @@ test("a corrupt edited-image provenance record blocks staging before any upload"
       locationId: "16360",
       contactName: "Jannik",
       imagePaths: [edited.outputPath],
-    }),
+    })),
     /Bildprovenienz ist ungültig/
   );
 });
@@ -2138,11 +2113,13 @@ test("Go rejects a pending payload changed after its fingerprint was created", a
     assetId: 999,
     soldPriceEur: 1,
   });
-  action.args.soldPriceEur = 100;
+  store.databaseForHostState().prepare(`
+    UPDATE external_operations SET canonical_payload_json=? WHERE operation_id=?
+  `).run(JSON.stringify({ assetId: 999, soldPriceEur: 100 }), action.id);
 
   await runAgent("tampered", "Go", { llmClient: null, gateway });
   assert.equal(getPending("tampered"), null);
-  assert.match(sent[0], /seit der Anzeige verändert/);
+  assert.match(sent[0], /seit der Vorschau verändert/);
   assert.equal(store.query({ sql: "SELECT COUNT(*) AS count FROM assets" })[0].count, assetCountBefore);
 });
 
@@ -2289,8 +2266,8 @@ test("pending approval survives a fresh Node process with the exact fingerprint"
     encoding: "utf8",
     env: {
       NEMOCLAW_SESSION_FILE: process.env.NEMOCLAW_SESSION_FILE,
-      NEMOCLAW_PENDING_FILE: process.env.NEMOCLAW_PENDING_FILE,
       NEMOCLAW_STATE_FILE: process.env.NEMOCLAW_STATE_FILE,
+      NEMOCLAW_READINESS_FILE: process.env.NEMOCLAW_READINESS_FILE,
       NEMOCLAW_DB_PATH: process.env.NEMOCLAW_DB_PATH,
       NEMOCLAW_IMAGE_DIR: process.env.NEMOCLAW_IMAGE_DIR,
       NEMOCLAW_MODE: "dry-run",

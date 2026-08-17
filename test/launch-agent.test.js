@@ -7,7 +7,12 @@ const os = require("os");
 const { spawnSync } = require("child_process");
 const test = require("node:test");
 
-const { LABEL, buildPlist, servicePaths } = require("../scripts/launch-agent");
+const {
+  LABEL,
+  buildPlist,
+  expectedAgentProcess,
+  servicePaths,
+} = require("../scripts/launch-agent");
 
 test("launchd plist is portable, private, and contains no secrets", () => {
   const root = "/Users/test/Nemo & Claw";
@@ -54,6 +59,23 @@ test("foreground launcher ties caffeinate to the visible agent process", () => {
   assert.match(startScript, /keinen gültigen PID-Lock übernommen/);
   assert.doesNotMatch(startScript, /pgrep -f/);
   assert.doesNotMatch(startScript, /osascript[^\n]*\|\| true/);
+});
+
+test("service restart may signal only the expected agent in the same checkout", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-process-guard-"));
+  const ps = path.join(directory, "ps");
+  const matchingLsof = path.join(directory, "lsof-match");
+  const otherLsof = path.join(directory, "lsof-other");
+  fs.writeFileSync(ps, "#!/bin/sh\nprintf '%s\\n' 'node workspace/agent.js'\n", { mode: 0o755 });
+  fs.writeFileSync(matchingLsof, `#!/bin/sh\nprintf '%s\\n' 'p123' 'n${directory}'\n`, { mode: 0o755 });
+  fs.writeFileSync(otherLsof, "#!/bin/sh\nprintf '%s\\n' 'p123' 'n/another/checkout'\n", { mode: 0o755 });
+  try {
+    const paths = { root: directory };
+    assert.equal(expectedAgentProcess(123, paths, { psPath: ps, lsofPath: matchingLsof }), true);
+    assert.equal(expectedAgentProcess(123, paths, { psPath: ps, lsofPath: otherLsof }), false);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("launchd startup fails when Terminal cannot be opened", () => {

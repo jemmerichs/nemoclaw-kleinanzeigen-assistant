@@ -89,8 +89,51 @@ function getDb() {
       input_sha256  TEXT,
       output_sha256 TEXT NOT NULL,
       operations_json TEXT,
+      media_id       TEXT REFERENCES media_assets(media_id),
       created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
       UNIQUE(asset_id, position)
+    );
+
+    -- Host-local, opaque media identity. managed_path is deliberately never
+    -- exposed through an agent-facing tool result.
+    CREATE TABLE IF NOT EXISTS media_assets (
+      media_id       TEXT PRIMARY KEY,
+      managed_path   TEXT NOT NULL UNIQUE,
+      sha256         TEXT NOT NULL,
+      byte_size      INTEGER NOT NULL,
+      mime_type      TEXT NOT NULL,
+      source         TEXT NOT NULL,
+      availability   TEXT NOT NULL DEFAULT 'available',
+      created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+      checked_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    );
+
+    -- The marketplace broker is the only module allowed to mutate this
+    -- journal. It is intentionally domain-specific rather than a task runner.
+    CREATE TABLE IF NOT EXISTS external_operations (
+      operation_id          TEXT PRIMARY KEY,
+      chat_id               TEXT NOT NULL,
+      payload_fingerprint   TEXT NOT NULL,
+      provider              TEXT NOT NULL,
+      action                TEXT NOT NULL,
+      account               TEXT NOT NULL,
+      policy_mode           TEXT NOT NULL,
+      status                TEXT NOT NULL,
+      phase                 TEXT NOT NULL,
+      write_certainty       TEXT NOT NULL,
+      canonical_payload_json TEXT NOT NULL,
+      media_hashes_json     TEXT NOT NULL,
+      preparation_version   INTEGER NOT NULL,
+      session_revision      TEXT NOT NULL,
+      form_fingerprint      TEXT NOT NULL,
+      remote_id             TEXT,
+      reconciliation_json   TEXT,
+      cancel_reason         TEXT,
+      expires_at            TEXT NOT NULL,
+      request_started_at    TEXT,
+      completed_at          TEXT,
+      created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     );
 
     -- Price and view snapshots over a listing's lifetime.
@@ -109,6 +152,11 @@ function getDb() {
     CREATE INDEX IF NOT EXISTS idx_ka_listings_ka_id  ON ka_listings(ka_id);
     CREATE INDEX IF NOT EXISTS idx_ka_snapshots_listing ON ka_snapshots(listing_id);
     CREATE INDEX IF NOT EXISTS idx_asset_images_asset ON asset_images(asset_id);
+    CREATE INDEX IF NOT EXISTS idx_media_assets_sha256 ON media_assets(sha256);
+    CREATE INDEX IF NOT EXISTS idx_external_operations_chat_status
+      ON external_operations(chat_id,status);
+    CREATE INDEX IF NOT EXISTS idx_external_operations_fingerprint
+      ON external_operations(payload_fingerprint,status);
   `);
   // Inspect the schema explicitly so only genuinely missing columns are added.
   // Unexpected SQLite errors must abort startup instead of leaving a partial schema hidden.
@@ -128,6 +176,9 @@ function getDb() {
       pending_event_json: "TEXT",
       marketplace: "TEXT NOT NULL DEFAULT 'kleinanzeigen'",
       external_id: "TEXT",
+    });
+    addMissingColumns(_db, "asset_images", {
+      media_id: "TEXT REFERENCES media_assets(media_id)",
     });
   });
   migrateColumns();
@@ -224,10 +275,12 @@ function replaceAssetImages(assetId, imagePaths) {
   const id = Number(assetId);
   if (!Number.isInteger(id) || id < 1) throw new Error("assetId ist ungültig.");
   if (!Array.isArray(imagePaths)) throw new Error("imagePaths muss eine Liste sein.");
-  const provenance = imagePaths.map((imagePath, position) => ({
-    position,
-    ...readProvenance(imagePath),
-  }));
+  const mediaStore = require("./media-store");
+  const provenance = imagePaths.map((imagePath, position) => {
+    const details = readProvenance(imagePath);
+    const media = mediaStore.registerManagedMedia(details.outputPath, { source: "asset-image" });
+    return { position, mediaId: media.mediaId, ...details };
+  });
   const db = getDb();
   return db.transaction(() => {
     if (!db.prepare("SELECT id FROM assets WHERE id=?").get(id)) {
@@ -237,8 +290,8 @@ function replaceAssetImages(assetId, imagePaths) {
     const insert = db.prepare(`
       INSERT INTO asset_images (
         asset_id, position, image_path, source_path, kind,
-        input_sha256, output_sha256, operations_json
-      ) VALUES (?,?,?,?,?,?,?,?)
+        input_sha256, output_sha256, operations_json, media_id
+      ) VALUES (?,?,?,?,?,?,?,?,?)
     `);
     for (const item of provenance) {
       insert.run(
@@ -249,7 +302,8 @@ function replaceAssetImages(assetId, imagePaths) {
         item.kind,
         item.inputSha256 || null,
         item.outputSha256,
-        item.operations ? JSON.stringify(item.operations) : null
+        item.operations ? JSON.stringify(item.operations) : null,
+        item.mediaId
       );
     }
     return provenance;
@@ -329,7 +383,7 @@ function getAssetBundle(assetId) {
   `).get(id);
   if (!asset) throw new Error(`Asset ${id} nicht gefunden.`);
   const images = db.prepare(`
-    SELECT position,image_path,source_path,kind,input_sha256,output_sha256,
+    SELECT position,image_path,source_path,kind,input_sha256,output_sha256,media_id,
            operations_json,created_at
     FROM asset_images WHERE asset_id=? ORDER BY position
   `).all(id).map(row => ({
@@ -669,8 +723,16 @@ function close() {
   _db = null;
 }
 
+// Host-state modules use the same WAL connection so a media rename/database
+// insert or operation-state transition can be coordinated without a second
+// schema implementation. Agent-facing SQL cannot write either table.
+function databaseForHostState() {
+  return getDb();
+}
+
 module.exports = {
   close,
+  databaseForHostState,
   acknowledgeLifecycleEvent,
   deleteUnlinkedAsset,
   getAssetBundle,
