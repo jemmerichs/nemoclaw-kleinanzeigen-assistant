@@ -10,6 +10,7 @@ const {
   normalizeCategoryPath,
   preparedFormSessionMatches,
   selectCategoryPath,
+  waitForCategoryLinks,
 } = require("../tools/kleinanzeigen-form");
 
 test("category form paths are bounded visible labels, not guessed internal IDs", () => {
@@ -227,6 +228,30 @@ test("category browser cookies are derived from the validated API session", () =
     () => browserCookiesFromHeader("CSRF-TOKEN=csrf"),
     /user_id oder ableitbare access_token-Identität fehlt/
   );
+});
+
+test("category picker waits for client-rendered category links", async () => {
+  let attached = false;
+  const locator = {
+    first() {
+      return {
+        async waitFor(options) {
+          assert.deepEqual(options, { state: "attached", timeout: 250 });
+          attached = true;
+        },
+      };
+    },
+    async count() { return attached ? 15 : 0; },
+  };
+  const page = {
+    locator(selector) {
+      assert.equal(selector, 'main a[href^="#?path="]');
+      return locator;
+    },
+  };
+
+  const result = await waitForCategoryLinks(page, 250);
+  assert.equal(await result.count(), 15);
 });
 
 test("category inspection reuses a valid imported session when the profile is signed out", async () => {

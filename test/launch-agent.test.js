@@ -12,6 +12,7 @@ const {
   buildPlist,
   expectedAgentProcess,
   servicePaths,
+  waitForProcessExit,
 } = require("../scripts/launch-agent");
 
 test("launchd plist is portable, private, and contains no secrets", () => {
@@ -76,6 +77,27 @@ test("service restart may signal only the expected agent in the same checkout", 
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("service restart waits for the process itself instead of only its PID lock", () => {
+  let checks = 0;
+  let waits = 0;
+  const exited = waitForProcessExit(123, {
+    isRunning(pid) {
+      assert.equal(pid, 123);
+      checks++;
+      return checks < 3;
+    },
+    wait(milliseconds) {
+      assert.equal(milliseconds, 250);
+      waits++;
+    },
+    timeoutMs: 1000,
+  });
+
+  assert.equal(exited, true);
+  assert.equal(checks, 3);
+  assert.equal(waits, 2);
 });
 
 test("launchd startup fails when Terminal cannot be opened", () => {

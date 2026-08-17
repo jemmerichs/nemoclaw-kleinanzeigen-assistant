@@ -15,6 +15,7 @@
     "doctor:telegram": "node scripts/doctor.js --telegram",
     "doctor:account": "node scripts/doctor.js --telegram --account",
     "login": "node scripts/login.js",
+    "login:fresh": "node scripts/login.js --fresh-profile",
     "login:vinted": "node scripts/login-vinted.js",
     "login:vinted:inspect": "node scripts/login-vinted.js --inspect-only",
     "login:vinted:import": "node scripts/login-vinted.js --import-only",

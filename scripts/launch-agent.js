@@ -145,6 +145,27 @@ function expectedAgentProcess(pid, paths, {
   return cwd.status === 0 && cwd.stdout.split(/\r?\n/).includes(`n${paths.root}`);
 }
 
+function waitForProcessExit(pid, {
+  isRunning = candidatePid => {
+    try {
+      process.kill(candidatePid, 0);
+      return true;
+    } catch (error) {
+      if (error?.code === "ESRCH") return false;
+      throw error;
+    }
+  },
+  wait = waitBriefly,
+  timeoutMs = 35_000,
+} = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isRunning(pid)) return true;
+    wait(250);
+  }
+  return !isRunning(pid);
+}
+
 function stopRunningAgent(paths) {
   let pid;
   try {
@@ -159,16 +180,7 @@ function stopRunningAgent(paths) {
     throw new Error("Der PID-Lock gehört nicht eindeutig zum Agenten in diesem Checkout; Neustart wurde sicher abgebrochen.");
   }
   process.kill(pid, "SIGTERM");
-  const deadline = Date.now() + 35_000;
-  while (Date.now() < deadline) {
-    try {
-      if (!fs.existsSync(paths.agentPidPath)
-        || Number(fs.readFileSync(paths.agentPidPath, "utf8").trim()) !== pid) return true;
-    } catch {
-      return true;
-    }
-    waitBriefly(250);
-  }
+  if (waitForProcessExit(pid)) return true;
   throw new Error("Der laufende Agent hat den sicheren Neustart nicht rechtzeitig bestätigt.");
 }
 
@@ -256,4 +268,5 @@ module.exports = {
   main,
   servicePaths,
   stopRunningAgent,
+  waitForProcessExit,
 };

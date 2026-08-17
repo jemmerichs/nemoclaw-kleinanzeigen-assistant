@@ -422,6 +422,26 @@ function delay(timeoutMs) {
   return new Promise(resolve => setTimeout(resolve, timeoutMs));
 }
 
+function armClosingDeadline(close, timeoutMs) {
+  if (typeof close !== "function") throw new Error("Deadline-Cleanup fehlt.");
+  const normalizedTimeout = Math.max(1, Math.min(10 * 60_000, Number(timeoutMs) || 1));
+  let expired = false;
+  let cancelled = false;
+  const timer = setTimeout(() => {
+    if (cancelled) return;
+    expired = true;
+    Promise.resolve().then(close).catch(() => {});
+  }, normalizedTimeout);
+  timer.unref?.();
+  return {
+    cancel() {
+      cancelled = true;
+      clearTimeout(timer);
+    },
+    expired() { return expired; },
+  };
+}
+
 function reserveLoopbackPort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -458,7 +478,11 @@ function devToolsEndpointReady(endpoint) {
   });
 }
 
-async function waitForDevToolsEndpoint(child, { port = 0, timeoutMs = 15_000 } = {}) {
+async function waitForDevToolsEndpoint(child, {
+  port = 0,
+  timeoutMs = 15_000,
+  activePortFile = DEVTOOLS_ACTIVE_PORT_FILE,
+} = {}) {
   const deadline = Date.now() + timeoutMs;
   const fixedEndpoint = Number.isInteger(port) && port > 0
     ? `http://127.0.0.1:${port}`
@@ -471,7 +495,7 @@ async function waitForDevToolsEndpoint(child, { port = 0, timeoutMs = 15_000 } =
       if (await devToolsEndpointReady(fixedEndpoint)) return fixedEndpoint;
     } else {
       try {
-        const [activePort] = fs.readFileSync(DEVTOOLS_ACTIVE_PORT_FILE, "utf8").trim().split(/\r?\n/);
+        const [activePort] = fs.readFileSync(activePortFile, "utf8").trim().split(/\r?\n/);
         if (/^\d{2,5}$/.test(activePort) && Number(activePort) <= 65_535) {
           return `http://127.0.0.1:${activePort}`;
         }
@@ -505,6 +529,25 @@ async function waitForValidatedNativeSession(context, page, timeoutMs = LOGIN_TI
   throw new Error(`Login-Zeitlimit erreicht: ${lastError.message}`);
 }
 
+async function validateNativeMarketplaceSession(context, page, {
+  url = CSRF_URL,
+  timeoutMs = 60_000,
+} = {}) {
+  const response = await page.goto(url, {
+    waitUntil: "domcontentloaded",
+    timeout: timeoutMs,
+  });
+  await assertNetworkAccess(page, response, { authenticated: true });
+  if (/login\.kleinanzeigen\.de|m-einloggen/.test(page.url())) {
+    throw new Error("Die sichtbare Sitzung ist im privaten Anzeigenbereich nicht angemeldet.");
+  }
+  const cookies = await context.cookies("https://www.kleinanzeigen.de");
+  return {
+    cookies,
+    cookieString: validatedFreshSessionCookieString(cookies),
+  };
+}
+
 function profileInUseError(error) {
   if (!/singleton|profile.*(?:in use|locked)|browser.*closed/i.test(String(error?.message || error))) {
     return null;
@@ -515,7 +558,11 @@ function profileInUseError(error) {
   );
 }
 
-async function openNativeProfile({ headless = false, url = "about:blank" } = {}) {
+async function openNativeProfile({
+  headless = false,
+  url = "about:blank",
+  profileDir = PROFILE_DIR,
+} = {}) {
   const executablePath = findChromeExecutable();
   if (!executablePath) throw new Error("Google Chrome/Chromium wurde nicht gefunden.");
   // Port 0 marks Chrome as WebDriver-controlled. A reserved non-zero loopback
@@ -523,12 +570,14 @@ async function openNativeProfile({ headless = false, url = "about:blank" } = {})
   // Canvas, WebGL, UA, or navigator-property spoofing.
   const debugPort = headless ? 0 : await reserveLoopbackPort();
 
-  fs.mkdirSync(PROFILE_DIR, { recursive: true, mode: 0o700 });
-  fs.chmodSync(PROFILE_DIR, 0o700);
-  try { fs.unlinkSync(DEVTOOLS_ACTIVE_PORT_FILE); } catch {}
+  const resolvedProfileDir = path.resolve(profileDir);
+  const activePortFile = path.join(resolvedProfileDir, "DevToolsActivePort");
+  fs.mkdirSync(resolvedProfileDir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(resolvedProfileDir, 0o700);
+  try { fs.unlinkSync(activePortFile); } catch {}
 
   const args = [
-    `--user-data-dir=${PROFILE_DIR}`,
+    `--user-data-dir=${resolvedProfileDir}`,
     "--remote-debugging-address=127.0.0.1",
     `--remote-debugging-port=${debugPort}`,
     "--no-first-run",
@@ -545,14 +594,14 @@ async function openNativeProfile({ headless = false, url = "about:blank" } = {})
   });
 
   try {
-    const endpoint = await waitForDevToolsEndpoint(child, { port: debugPort });
+    const endpoint = await waitForDevToolsEndpoint(child, { port: debugPort, activePortFile });
     browser = await chromium.connectOverCDP(endpoint);
     const context = browser.contexts()[0];
     if (!context) throw new Error("Das dedizierte Chrome-Profil konnte nicht geöffnet werden.");
     const pages = context.pages();
     const page = pages.find(candidate => candidate.url().includes("kleinanzeigen.de")) || pages[0];
     if (!page) throw new Error("Das dedizierte Chrome-Tab wurde nicht gefunden.");
-    return { browser, child, context, page };
+    return { browser, child, context, page, activePortFile, profileDir: resolvedProfileDir };
   } catch (error) {
     if (browser) await browser.close().catch(() => {});
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
@@ -563,18 +612,63 @@ async function openNativeProfile({ headless = false, url = "about:blank" } = {})
   }
 }
 
-async function closeNativeProfile(nativeProfile) {
+async function closeNativeProfile(nativeProfile, {
+  browserCloseTimeoutMs = 3_000,
+  childExitTimeoutMs = 5_000,
+} = {}) {
   if (!nativeProfile) return;
-  const { browser, child } = nativeProfile;
-  if (browser) await browser.close().catch(() => {});
+  if (nativeProfile.closePromise) return nativeProfile.closePromise;
+  nativeProfile.closePromise = (async () => {
+    const { browser, child } = nativeProfile;
+    if (browser) {
+      await Promise.race([
+        browser.close().catch(() => {}),
+        delay(Math.max(1, Number(browserCloseTimeoutMs) || 3_000)),
+      ]);
+    }
+    try {
+      await waitForChildExit(child, Math.max(1, Number(childExitTimeoutMs) || 5_000));
+    } catch {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+      await waitForChildExit(child, Math.max(1, Number(childExitTimeoutMs) || 5_000)).catch(() => {});
+    } finally {
+      try { fs.unlinkSync(nativeProfile.activePortFile || DEVTOOLS_ACTIVE_PORT_FILE); } catch {}
+    }
+  })();
+  return nativeProfile.closePromise;
+}
+
+async function archiveNativeProfile({
+  profileDir = PROFILE_DIR,
+  now = Date.now(),
+  endpointReady = devToolsEndpointReady,
+} = {}) {
+  if (!fs.existsSync(profileDir)) return null;
+  const activePortFile = path.join(profileDir, "DevToolsActivePort");
+  let activePort = "";
   try {
-    await waitForChildExit(child, 5_000);
-  } catch {
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
-    await waitForChildExit(child).catch(() => {});
-  } finally {
-    try { fs.unlinkSync(DEVTOOLS_ACTIVE_PORT_FILE); } catch {}
+    [activePort] = fs.readFileSync(activePortFile, "utf8").trim().split(/\r?\n/);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
   }
+  if (/^\d{2,5}$/.test(activePort) && Number(activePort) <= 65_535) {
+    const active = await endpointReady(`http://127.0.0.1:${activePort}`);
+    if (active) {
+      throw new Error(
+        "Das dedizierte NemoClaw-Chrome-Profil ist noch geöffnet und kann nicht sicher erneuert werden."
+      );
+    }
+  }
+  const timestamp = new Date(now).toISOString().replace(/[:.]/g, "-");
+  const backupRoot = path.join(path.dirname(profileDir), "profile-backups");
+  fs.mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
+  fs.chmodSync(backupRoot, 0o700);
+  let backupPath = path.join(backupRoot, `${path.basename(profileDir)}-${timestamp}`);
+  for (let suffix = 2; fs.existsSync(backupPath); suffix++) {
+    backupPath = path.join(backupRoot, `${path.basename(profileDir)}-${timestamp}-${suffix}`);
+  }
+  fs.renameSync(profileDir, backupPath);
+  return backupPath;
 }
 
 async function importSessionFromProfile() {
@@ -628,7 +722,11 @@ async function loginWithSystemChrome() {
   console.log("[auth] Bitte manuell einloggen und 2FA/CAPTCHA selbst abschließen.");
   console.log("[auth] Die Sitzung wird im selben Fenster automatisch validiert; nichts absenden.");
   try {
-    const { cookieString } = await waitForValidatedNativeSession(
+    await waitForValidatedNativeSession(
+      nativeProfile.context,
+      nativeProfile.page
+    );
+    const { cookieString } = await validateNativeMarketplaceSession(
       nativeProfile.context,
       nativeProfile.page
     );
@@ -700,6 +798,8 @@ async function refreshStoredSession() {
 
 module.exports = {
   adoptNewerObservedSession,
+  armClosingDeadline,
+  archiveNativeProfile,
   assertNetworkAccess,
   classifyAccessProblem,
   closeNativeProfile,
@@ -722,6 +822,7 @@ module.exports = {
   validatedAcceptLanguage,
   validatedCookieHeader,
   validatedFreshSessionCookieString,
+  validateNativeMarketplaceSession,
   validatedSessionCookieString,
   validatedUserAgent,
 };

@@ -42,6 +42,7 @@ const {
   stagePending,
   verifiedCategoryInspectionFailureMessage,
   verifiedKaAccessFailureMessage,
+  waitWhileRunning,
 } = require("../workspace/agent");
 const { withBoundKleinanzeigenForm } = require("./test-helpers");
 
@@ -94,6 +95,16 @@ test("agent process lock blocks a second instance and recovers a stale PID", () 
   });
   assert.equal(fs.readFileSync(lockFile, "utf8"), "4343\n");
   releaseRecovered();
+});
+
+test("shutdown-aware retry wait exits promptly after stop", async () => {
+  let stopped = false;
+  const startedAt = Date.now();
+  setTimeout(() => { stopped = true; }, 20);
+
+  await waitWhileRunning(1000, () => stopped, 5);
+
+  assert.ok(Date.now() - startedAt < 250);
 });
 
 test("private Kleinanzeigen access failures produce an evidence-bounded diagnosis", () => {

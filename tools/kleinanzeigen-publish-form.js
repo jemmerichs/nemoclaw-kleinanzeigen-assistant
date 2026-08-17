@@ -1,6 +1,7 @@
 "use strict";
 
 const {
+  armClosingDeadline,
   assertNetworkAccess,
   closeNativeProfile,
   openNativeProfile,
@@ -21,13 +22,24 @@ const {
   assertBoundFormState,
   captureVisibleFormState,
 } = require("./kleinanzeigen-form-state");
+const { redactUnsafeText } = require("./safe-error");
 
 const FORM_TIMEOUT_MS = 60_000;
+const FORM_OPERATION_TIMEOUT_MS = 90_000;
 const PRICE_TYPE_LABELS = {
   FIXED: "Festpreis",
   NEGOTIABLE: "VB",
   GIVE_AWAY: "Zu verschenken",
 };
+const PRECHECK_STEP_LABELS = Object.freeze({
+  acquire_form: "vorbereitete Maske übernehmen",
+  verify_category: "Kategorie prüfen",
+  verify_binding: "Ort und Sitzung prüfen",
+  fill_listing: "Grundfelder ausfüllen",
+  fill_attributes: "Kategorieangaben ausfüllen",
+  verify_form: "ausgefüllte Maske prüfen",
+  inspect_submission: "Publish-Ziel prüfen",
+});
 
 function categoryPathFromContract(contract) {
   const categoryPath = String(contract?.category || "")
@@ -104,18 +116,64 @@ function incompleteFormError(message) {
   return error;
 }
 
-function normalizePublishError(error, { publishRequestStarted = false } = {}) {
+async function fillEditableOrAssertFixedValue(locator, expectedValue, {
+  fieldLabel = "Formularfeld",
+} = {}) {
+  if (await locator.count() !== 1) {
+    throw incompleteFormError(`${fieldLabel} fehlt im aktuellen Anzeigenformular.`);
+  }
+  const expected = String(expectedValue);
+  if (await locator.isEditable()) {
+    await locator.fill(expected);
+    return "filled";
+  }
+  const actual = await locator.inputValue();
+  if (actual !== expected) {
+    throw incompleteFormError(
+      `${fieldLabel} ist schreibgeschützt und stimmt nicht mit der geprüften Vorbereitung überein.`
+    );
+  }
+  return "verified";
+}
+
+function publishTimeoutError({ publishRequestStarted = false } = {}) {
+  const error = new Error("Die Anzeigenmaske hat das sichere Gesamtzeitlimit überschritten.");
+  if (publishRequestStarted) {
+    error.code = "KA_PUBLISH_OUTCOME_UNKNOWN";
+    error.safeMessage =
+      "Die Anzeigenmaske wurde nach dem Absenden wegen des sicheren Zeitlimits beendet. " +
+      "Der Ausgang ist nicht eindeutig; nicht erneut veröffentlichen, bevor die eigenen Anzeigen geprüft wurden.";
+    return error;
+  }
+  error.code = "KA_FORM_TIMEOUT";
+  error.definitiveNoWrite = true;
+  error.safeMessage =
+    "Die Anzeigenmaske wurde vor dem Absenden nach dem sicheren Zeitlimit beendet. Es wurde nichts veröffentlicht; " +
+    "Bilder und Angaben bleiben erhalten und müssen nicht erneut gesendet werden.";
+  return error;
+}
+
+function normalizePublishError(error, {
+  publishRequestStarted = false,
+  precheckStep = null,
+} = {}) {
   const normalized = error instanceof Error
     ? error
     : new Error("Der Browser hat einen unbekannten Fehler gemeldet.");
   if (!publishRequestStarted) {
     normalized.definitiveNoWrite = true;
     if (!normalized.code) {
-      normalized.code = "KA_PUBLISH_PRECHECK_FAILED";
-      normalized.safeMessage =
-        "Die bereits geprüfte Anzeigenmaske konnte vor dem Veröffentlichen nicht sicher wieder aufgenommen werden. " +
-        "Es wurde nichts veröffentlicht. Bilder und Angaben bleiben erhalten; denselben Vorschlag einmal neu vorbereiten, " +
-        "ohne sie erneut zu senden.";
+      const step = String(precheckStep || "").trim();
+      normalized.code = step && PRECHECK_STEP_LABELS[step]
+        ? `KA_PUBLISH_PRECHECK_${step.toUpperCase()}`
+        : "KA_PUBLISH_PRECHECK_FAILED";
+      normalized.safeMessage = step && PRECHECK_STEP_LABELS[step]
+        ? `Die bereits geprüfte Anzeigenmaske scheiterte beim Schritt „${PRECHECK_STEP_LABELS[step]}“. ` +
+          `Grund: ${redactUnsafeText(normalized.message).slice(0, 300)} ` +
+          "Es wurde nichts veröffentlicht; Bilder und Angaben bleiben erhalten."
+        : "Die bereits geprüfte Anzeigenmaske konnte vor dem Veröffentlichen nicht sicher wieder aufgenommen werden. " +
+          "Es wurde nichts veröffentlicht. Bilder und Angaben bleiben erhalten; denselben Vorschlag einmal neu vorbereiten, " +
+          "ohne sie erneut zu senden.";
     }
   } else if (!normalized.code) {
     normalized.code = "KA_PUBLISH_OUTCOME_UNKNOWN";
@@ -323,7 +381,11 @@ async function parseResponseBody(response) {
   try { return JSON.parse(text); } catch { return text.slice(0, 20_000); }
 }
 
-async function publishListingViaForm(args, { cookieHeader, onPhase = null } = {}) {
+async function publishListingViaForm(args, {
+  cookieHeader,
+  onPhase = null,
+  preflightOnly = false,
+} = {}) {
   const contract = getCategoryRequirements(args.categoryId);
   if (!contract.verified) {
     const error = new Error(`Kategorie ${args.categoryId} ist nicht aktuell verifiziert.`);
@@ -339,6 +401,8 @@ async function publishListingViaForm(args, { cookieHeader, onPhase = null } = {}
   const categoryPath = categoryPathFromContract(contract);
   let nativeProfile;
   let publishRequestStarted = false;
+  let precheckStep = "acquire_form";
+  let operationDeadline;
   try {
     nativeProfile = await takePreparedFormSession({
       categoryId: args.categoryId,
@@ -347,6 +411,10 @@ async function publishListingViaForm(args, { cookieHeader, onPhase = null } = {}
       sessionRevision: args.sessionRevision,
     });
     nativeProfile ||= await openNativeProfile({ headless: false });
+    operationDeadline = armClosingDeadline(
+      () => closeNativeProfile(nativeProfile),
+      FORM_OPERATION_TIMEOUT_MS
+    );
     const { context, page } = nativeProfile;
     if (!nativeProfile.reusedPreparedForm) {
       await ensureCategoryBrowserSession(context, cookieHeader);
@@ -364,6 +432,7 @@ async function publishListingViaForm(args, { cookieHeader, onPhase = null } = {}
         throw new Error("Der verifizierte Kategoriepfad ist im aktuellen Formular nicht mehr vollständig verfügbar.");
       }
     }
+    precheckStep = "verify_category";
     const actualCategoryId = await page.locator('input[name="categoryId"]').inputValue();
     if (actualCategoryId !== String(args.categoryId)) {
       throw new Error(
@@ -371,12 +440,14 @@ async function publishListingViaForm(args, { cookieHeader, onPhase = null } = {}
       );
     }
 
+    precheckStep = "verify_binding";
     const currentFormState = await captureVisibleFormState(page, {
       cookieHeader,
       userAgent: process.env.KA_USER_AGENT || "",
     });
     assertBoundFormState(args, currentFormState);
 
+    precheckStep = "fill_listing";
     await page.locator('input[name="title"]').fill(String(args.title));
     await page.locator('textarea[name="description"]').fill(String(args.description));
     await selectPriceType(page, args.priceType);
@@ -385,18 +456,31 @@ async function publishListingViaForm(args, { cookieHeader, onPhase = null } = {}
       if (await priceInput.count() !== 1) throw new Error("Das Preisfeld fehlt im aktuellen Anzeigenformular.");
       await priceInput.fill(String(args.price));
     }
-    const contactName = page.locator('input[name="contactName"]');
-    if (await contactName.count() !== 1) throw new Error("Das Kontaktfeld fehlt im aktuellen Anzeigenformular.");
-    await contactName.fill(String(args.contactName));
+    await fillEditableOrAssertFixedValue(
+      page.locator('input[name="contactName"]'),
+      args.contactName,
+      { fieldLabel: "Das Kontaktfeld" }
+    );
 
+    precheckStep = "fill_attributes";
     for (const [key, value] of Object.entries(args.attributes || {})) {
       const field = (contract.requiredAttributes || []).find(candidate => candidate.key === key);
       if (!field) throw new Error(`Attribut "${key}" ist nicht Teil des verifizierten Pflichtvertrags.`);
       await selectVerifiedAttribute(page, field, value);
     }
 
+    precheckStep = "verify_form";
     assertListingFormContract(await formEntries(page), args, contract);
+    precheckStep = "inspect_submission";
     const submissionPath = await inspectSubmissionPath(page);
+    if (preflightOnly) {
+      if (operationDeadline.expired()) throw publishTimeoutError();
+      return {
+        preflight: true,
+        categoryId: Number(actualCategoryId),
+        submissionPath,
+      };
+    }
     if (typeof onPhase === "function") await onPhase("upload");
     await uploadImagesInForm(page, args.imagePaths || []);
     assertListingFormContract(await formEntries(page), args, contract);
@@ -418,7 +502,14 @@ async function publishListingViaForm(args, { cookieHeader, onPhase = null } = {}
       const responsePromise = page.waitForResponse(
         candidate => matchesSubmission(candidate.request()),
         { timeout: FORM_TIMEOUT_MS }
-      );
+      ).then(value => ({ kind: "response", value }));
+      const navigationPromise = page.waitForURL(
+        url => url.pathname !== new URL(FORM_URL).pathname,
+        { timeout: FORM_TIMEOUT_MS }
+      ).then(() => ({ kind: "navigation" }));
+      // From this boundary onward the click may already have caused the external write,
+      // even if the browser misses the matching response event.
+      publishRequestStarted = true;
       await page.getByRole("button", { name: "Anzeige aufgeben", exact: true }).click();
       if (!(args.imagePaths || []).length) {
         const withoutImage = page.getByRole("button", { name: "Ohne Bild veröffentlichen", exact: true });
@@ -427,7 +518,22 @@ async function publishListingViaForm(args, { cookieHeader, onPhase = null } = {}
           await withoutImage.click();
         } catch {}
       }
-      response = await responsePromise;
+      const outcome = await Promise.any([responsePromise, navigationPromise]);
+      if (outcome.kind === "navigation") {
+        await page.waitForURL(url => Boolean(listingIdFromValue(url.href)), {
+          timeout: 15_000,
+        }).catch(() => {});
+        const navigatedResult = publishedListingResult({ pageUrl: page.url() });
+        if (!navigatedResult) {
+          const error = new Error(
+            "Kleinanzeigen hat nach dem Absenden navigiert, aber keine eindeutige Anzeigen-ID gezeigt."
+          );
+          error.code = "KA_PUBLISH_RESULT_UNKNOWN";
+          throw error;
+        }
+        return navigatedResult;
+      }
+      response = outcome.value;
     } finally {
       page.off("request", onRequest);
     }
@@ -459,10 +565,15 @@ async function publishListingViaForm(args, { cookieHeader, onPhase = null } = {}
       error.code = "KA_PUBLISH_RESULT_UNKNOWN";
       throw error;
     }
+    if (operationDeadline.expired()) throw publishTimeoutError({ publishRequestStarted });
     return result;
   } catch (error) {
-    throw normalizePublishError(error, { publishRequestStarted });
+    const failure = operationDeadline?.expired()
+      ? publishTimeoutError({ publishRequestStarted })
+      : error;
+    throw normalizePublishError(failure, { publishRequestStarted, precheckStep });
   } finally {
+    operationDeadline?.cancel();
     await closeNativeProfile(nativeProfile);
   }
 }
@@ -470,11 +581,13 @@ async function publishListingViaForm(args, { cookieHeader, onPhase = null } = {}
 module.exports = {
   assertListingFormContract,
   categoryPathFromContract,
+  fillEditableOrAssertFixedValue,
   inspectSubmissionPath,
   listingIdFromValue,
   normalizePublishError,
   normalizeSubmissionPath,
   publishListingViaForm,
+  publishTimeoutError,
   publishedListingResult,
   selectVerifiedAttribute,
 };

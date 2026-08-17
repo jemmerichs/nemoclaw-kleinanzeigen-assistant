@@ -1,17 +1,24 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 
 const {
+  archiveNativeProfile,
+  armClosingDeadline,
   assertNetworkAccess,
   classifyAccessProblem,
+  closeNativeProfile,
   extractCookieHeaderFromCurl,
   extractKaCookieString,
   requestMetadataFromCurl,
   validatedCookieHeader,
   validatedFreshSessionCookieString,
   validatedSessionCookieString,
+  validateNativeMarketplaceSession,
 } = require("../tools/auth");
 
 function accessPage({ title = "", bodyText = "", url = "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html" } = {}) {
@@ -91,6 +98,115 @@ test("interactive login rejects complete-looking stale cookies until the access 
     validatedFreshSessionCookieString(cookies(token(now + 3600))),
     /access_token=/
   );
+});
+
+test("interactive login validates the private listing page before persisting the session", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = Buffer.from(JSON.stringify({
+    iss: "https://login.kleinanzeigen.de/",
+    azp: "client_id_123",
+    iat: now,
+    exp: now + 3600,
+    "https://www.kleinanzeigen.de/user_id": 42,
+  })).toString("base64url");
+  const cookies = [
+    { domain: ".kleinanzeigen.de", name: "CSRF-TOKEN", value: "csrf" },
+    { domain: ".kleinanzeigen.de", name: "user_id", value: "42" },
+    { domain: ".kleinanzeigen.de", name: "access_token", value: `e30.${payload}.signature` },
+    { domain: ".kleinanzeigen.de", name: "refresh_token", value: "refresh" },
+  ];
+  const navigations = [];
+  const page = {
+    async goto(url) {
+      navigations.push(url);
+      return { status: () => 200 };
+    },
+    async title() { return "Anzeige aufgeben"; },
+    locator() { return { async innerText() { return "Formular"; } }; },
+    url() { return "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html"; },
+  };
+  const result = await validateNativeMarketplaceSession({
+    async cookies() { return cookies; },
+  }, page);
+
+  assert.deepEqual(navigations, ["https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html"]);
+  assert.match(result.cookieString, /access_token=/);
+});
+
+test("fresh login archives the dedicated profile without deleting it", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-profile-archive-"));
+  const profileDir = path.join(directory, "browser-profile");
+  fs.mkdirSync(profileDir);
+  fs.writeFileSync(path.join(profileDir, "Preferences"), "preserved");
+  try {
+    const archived = await archiveNativeProfile({
+      profileDir,
+      now: Date.parse("2026-08-17T12:00:00.000Z"),
+      endpointReady: async () => false,
+    });
+    assert.equal(fs.existsSync(profileDir), false);
+    assert.equal(fs.readFileSync(path.join(archived, "Preferences"), "utf8"), "preserved");
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("fresh login refuses to move a profile with a live DevTools endpoint", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-live-profile-"));
+  const profileDir = path.join(directory, "browser-profile");
+  fs.mkdirSync(profileDir);
+  fs.writeFileSync(path.join(profileDir, "DevToolsActivePort"), "61234\n/devtools/browser/id\n");
+  try {
+    await assert.rejects(
+      () => archiveNativeProfile({ profileDir, endpointReady: async () => true }),
+      /noch geöffnet/
+    );
+    assert.equal(fs.existsSync(profileDir), true);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("form deadlines close a hung browser once and can be cancelled", async () => {
+  let closed = 0;
+  const expired = armClosingDeadline(async () => { closed++; }, 5);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(expired.expired(), true);
+  assert.equal(closed, 1);
+
+  const cancelled = armClosingDeadline(async () => { closed++; }, 5);
+  cancelled.cancel();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(cancelled.expired(), false);
+  assert.equal(closed, 1);
+});
+
+test("native profile cleanup kills Chrome when the CDP close call hangs", async () => {
+  const { EventEmitter } = require("node:events");
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.signalCode = null;
+  const signals = [];
+  child.kill = signal => {
+    signals.push(signal);
+    child.signalCode = signal;
+    setImmediate(() => child.emit("exit"));
+  };
+  const nativeProfile = {
+    browser: { close: async () => new Promise(() => {}) },
+    child,
+  };
+
+  await closeNativeProfile(nativeProfile, {
+    browserCloseTimeoutMs: 5,
+    childExitTimeoutMs: 5,
+  });
+  await closeNativeProfile(nativeProfile, {
+    browserCloseTimeoutMs: 5,
+    childExitTimeoutMs: 5,
+  });
+
+  assert.deepEqual(signals, ["SIGTERM"]);
 });
 
 test("auth recognizes blocked network responses without retrying login", () => {

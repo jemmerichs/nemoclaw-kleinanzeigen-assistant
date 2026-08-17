@@ -228,6 +228,34 @@ test("private ad reads use the current browser route including explicit sort", a
   assert.equal(client.calls[0].path, "/m-meine-anzeigen-verwalten.json?sort=DEFAULT");
 });
 
+test("current own-ads JSON maps exact reconciliation fields", async () => {
+  const client = new StubClient();
+  client.nextWww = { status: 200, body: { ads: [{
+    id: 12345,
+    title: "6x Möbelerhöher &#x2F; Betterhöher",
+    price: "1.250,50 €",
+    category: "Weiteres Haus &amp; Garten in Haus &amp; Garten",
+    imageCount: 3,
+    state: "ACTIVE",
+    seoUrl: "https://www.kleinanzeigen.de/s-anzeige/example/12345-87-16360",
+    l2Category: "87",
+    adPriceType: "FIXED",
+    viewCount: 4,
+  }] } };
+  assert.deepEqual((await client.getMyAds())[0], {
+    id: 12345,
+    title: "6x Möbelerhöher / Betterhöher",
+    price: 1250.5,
+    priceType: "FIXED",
+    status: "ACTIVE",
+    views: 4,
+    images: 3,
+    categoryId: 87,
+    category: "Weiteres Haus & Garten in Haus & Garten",
+    link: "https://www.kleinanzeigen.de/s-anzeige/example/12345-87-16360",
+  });
+});
+
 test("draft, message, and delete writes use bounded encoded contracts", async () => {
   const client = new StubClient();
   client.nextCsrf = {

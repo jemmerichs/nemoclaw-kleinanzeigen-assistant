@@ -14,6 +14,7 @@ const {
   inspectProfileSession,
   login,
   loginWithSystemChrome,
+  archiveNativeProfile,
 } = require("../tools/auth");
 
 (async () => {
@@ -38,6 +39,14 @@ const {
       console.log("[auth] Expliziter Playwright-Fallback gewählt.");
       await login();
     } else {
+      if (process.argv.includes("--fresh-profile")) {
+        const archived = await archiveNativeProfile();
+        console.log(
+          archived
+            ? "[auth] Das bisherige dedizierte Profil wurde als lokale Sicherung archiviert."
+            : "[auth] Es gab noch kein dediziertes Profil; ein frisches Profil wird angelegt."
+        );
+      }
       await loginWithSystemChrome();
     }
     console.log("Done. Verify with: npm run smoke:ka");

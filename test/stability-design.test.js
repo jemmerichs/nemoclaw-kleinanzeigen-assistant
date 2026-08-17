@@ -183,6 +183,54 @@ test("acceptance 4: incoming media survives restart and retains its hash", () =>
   assert.equal(restored.availability, "available");
 });
 
+test("a definitive listing failure can resume with its durable media after restart", () => {
+  const first = media.persistIncomingMedia(Buffer.from("resume-photo-one"), { source: "test" });
+  const second = media.persistIncomingMedia(Buffer.from("resume-photo-two"), { source: "test" });
+  const listing = {
+    title: "6x Möbelerhöher / Betterhöher",
+    description: "Unbenutzt. Nur Abholung.",
+    price: 6,
+    priceType: "FIXED",
+    mediaIds: [first.mediaId, second.mediaId],
+    imagePaths: [
+      media.resolveMediaAsset(first.mediaId).managedPath,
+      media.resolveMediaAsset(second.mediaId).managedPath,
+    ],
+  };
+  const prepared = broker.prepareOperation({
+    chatId: "listing-resume",
+    action: "ka_publish_prepared_listing",
+    canonicalPayload: {
+      category: "Haus & Garten > Weiteres Haus & Garten",
+      delivery: "pickup_only",
+      listing,
+    },
+    provider: "kleinanzeigen",
+    account: "42",
+    mode: "live",
+    sessionRevision: "revision-a",
+    formFingerprint: "form-a",
+  });
+  broker.claimApproval(prepared.id, { currentMode: "live" });
+  broker.failOperation(prepared.id, Object.assign(new Error("Formular geschlossen"), {
+    code: "KA_PUBLISH_PRECHECK_FAILED",
+  }));
+
+  const recovery = agent.retryableListingRecovery(
+    "listing-resume",
+    "Bitte denselben vollständigen Vorschlag erneut vorbereiten."
+  );
+  assert.equal(recovery.title, listing.title);
+  assert.deepEqual(recovery.mediaIds, listing.mediaIds);
+  assert.equal(recovery.category, "Haus & Garten > Weiteres Haus & Garten");
+  assert.equal(recovery.delivery, "pickup_only");
+  assert.equal(Object.hasOwn(recovery, "imagePaths"), false);
+  assert.equal(
+    agent.retryableListingRecovery("listing-resume", "Warum ist das fehlgeschlagen?"),
+    null
+  );
+});
+
 test("acceptance 5: visible form location binds without a configured location ID", () => {
   delete process.env.KA_DEFAULT_LOCATION_ID;
   const state = normalizeFormState({
@@ -265,6 +313,75 @@ test("acceptance 9: remote success with local failure is reconciled exactly once
   assert.equal((await first).status, "completed");
   assert.equal((await broker.reconcileOperation(prepared.id, reconcile)).status, "completed");
   assert.equal(reconciliations, 1);
+});
+
+test("a transient reconciliation read stays retryable without replaying the write", async () => {
+  const prepared = operation({ chatId: "transient-reconcile", payload: { text: "read-only-retry" } });
+  broker.claimApproval(prepared.id, { currentMode: "live" });
+  broker.markOperationPhase(prepared.id, "commit");
+  broker.failOperation(prepared.id, Object.assign(new Error("outcome unknown"), {
+    code: "KA_PUBLISH_OUTCOME_UNKNOWN",
+  }));
+  const retryable = await broker.reconcileOperation(prepared.id, async () => {
+    const error = new Error("getaddrinfo ENOTFOUND www.kleinanzeigen.de");
+    error.code = "ENOTFOUND";
+    throw error;
+  });
+  assert.equal(retryable.status, "reconcile_required");
+  assert.equal(retryable.phase, "reconcile");
+
+  const manual = await broker.reconcileOperation(prepared.id, async () => {
+    throw new Error("unsupported response shape");
+  });
+  assert.equal(manual.status, "manual_resolution");
+  assert.equal(broker.retryManualReconciliation(prepared.id), true);
+  assert.equal(broker.getOperation(prepared.id).status, "reconcile_required");
+});
+
+test("Kleinanzeigen reconciliation requires the exact current ad shape", async () => {
+  const listing = {
+    title: "6x Möbelerhöher / Betterhöher",
+    price: 6,
+    priceType: "FIXED",
+    categoryId: 87,
+    imagePaths: ["one", "two", "three"],
+  };
+  const exact = {
+    id: "12345",
+    title: listing.title,
+    price: 6,
+    priceType: "FIXED",
+    categoryId: 87,
+    images: 3,
+  };
+  assert.equal(agent.matchesPublishedKleinanzeigenAd(exact, listing), true);
+  for (const changed of [
+    { price: 7 },
+    { priceType: "NEGOTIABLE" },
+    { categoryId: 82 },
+    { images: 2 },
+  ]) {
+    assert.equal(agent.matchesPublishedKleinanzeigenAd({ ...exact, ...changed }, listing), false);
+  }
+  assert.equal(agent.matchesPublishedKleinanzeigenAd({ id: "42" }, listing, "42"), true);
+});
+
+test("a reconciled publish emits one bounded correction notice", async () => {
+  const sent = [];
+  const gateway = { async send(chatId, text) { sent.push({ chatId, text }); } };
+  const completed = {
+    id: "operation-1",
+    chatId: "42",
+    provider: "kleinanzeigen",
+    tool: "ka_publish_prepared_listing",
+    status: "completed",
+    remoteId: "12345",
+    reconciliation: { result: { link: "https://www.kleinanzeigen.de/s-anzeige/12345" } },
+  };
+  assert.deepEqual(await agent.notifyReconciledOperations([completed], gateway), ["operation-1"]);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /wurde veröffentlicht/);
+  assert.match(sent[0].text, /kein zweiter Veröffentlichungsversuch/);
 });
 
 test("acceptance 10: onboard emits one understandable final status with at most one action", async () => {

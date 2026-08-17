@@ -13,6 +13,15 @@ const BLOCKING_AMBIGUOUS_STATUSES = Object.freeze([
   "manual_resolution",
 ]);
 const PENDING_STATUS = "awaiting_approval";
+const TRANSIENT_RECONCILIATION_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "KA_HTTP_TIMEOUT",
+]);
 
 function nowIso(now = Date.now()) {
   return new Date(Number(now)).toISOString();
@@ -168,6 +177,18 @@ function getOperation(operationId) {
   return operationFromRow(
     databaseForHostState().prepare("SELECT * FROM external_operations WHERE operation_id=?")
       .get(String(operationId || ""))
+  );
+}
+
+function latestListingOperationForChat(chatId) {
+  return operationFromRow(
+    databaseForHostState().prepare(`
+      SELECT * FROM external_operations
+      WHERE chat_id=? AND provider='kleinanzeigen'
+        AND action IN ('ka_publish_prepared_listing','ka_save_prepared_draft')
+      ORDER BY created_at DESC, operation_id DESC
+      LIMIT 1
+    `).get(String(chatId || ""))
   );
 }
 
@@ -368,6 +389,15 @@ function unresolvedOperations() {
   `).all().map(operationFromRow);
 }
 
+function retryManualReconciliation(operationId, { now = Date.now() } = {}) {
+  const result = databaseForHostState().prepare(`
+    UPDATE external_operations
+    SET status='reconcile_required',phase='reconcile',updated_at=?
+    WHERE operation_id=? AND status='manual_resolution' AND write_certainty='ambiguous'
+  `).run(nowIso(now), String(operationId));
+  return result.changes === 1;
+}
+
 async function reconcileOperation(operationId, reconcileRead) {
   if (typeof reconcileRead !== "function") throw new Error("Read-only Reconciliation fehlt.");
   const db = databaseForHostState();
@@ -382,12 +412,21 @@ async function reconcileOperation(operationId, reconcileRead) {
     outcome = await reconcileRead(operation);
   } catch (error) {
     const classified = classifyError(error, { phase: "reconcile", requestStarted: true });
+    const transient = TRANSIENT_RECONCILIATION_CODES.has(String(error?.code || ""))
+      || /(?:getaddrinfo|dns|network|socket|timed?\s*out|temporarily unavailable)/i.test(
+        String(error?.message || "")
+      );
     databaseForHostState().prepare(`
       UPDATE external_operations
-      SET status='manual_resolution',phase='reconcile',write_certainty='ambiguous',
+      SET status=?,phase='reconcile',write_certainty='ambiguous',
           reconciliation_json=?,updated_at=?
       WHERE operation_id=? AND status='reconciling'
-    `).run(JSON.stringify({ error: classified }), nowIso(), operation.operationId);
+    `).run(
+      transient ? "reconcile_required" : "manual_resolution",
+      JSON.stringify({ error: classified }),
+      nowIso(),
+      operation.operationId
+    );
     return getOperation(operationId);
   }
   const status = outcome?.status;
@@ -419,11 +458,13 @@ module.exports = {
   failOperation,
   getOperation,
   getPendingForChat,
+  latestListingOperationForChat,
   markOperationPhase,
   payloadFingerprint,
   prepareOperation,
   reconcileOperation,
   recoverInterruptedOperations,
   requireReconciliation,
+  retryManualReconciliation,
   unresolvedOperations,
 };

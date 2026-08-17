@@ -1,6 +1,7 @@
 "use strict";
 
 const {
+  armClosingDeadline,
   assertNetworkAccess,
   closeNativeProfile,
   openNativeProfile,
@@ -19,10 +20,21 @@ const FORM_URL = "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html"
 const INSPECTION_IDLE_MS = 2 * 60 * 1000;
 const PREPARED_FORM_IDLE_MS = 30 * 60 * 1000;
 const INSPECTION_REJECTION_BACKOFF_MS = 30 * 60 * 1000;
+const FORM_OPERATION_TIMEOUT_MS = 90_000;
 let inspectionQueue = Promise.resolve();
 let activeInspectionSession = null;
 let inspectionIdleTimer = null;
 let inspectionBlockedUntil = 0;
+
+function formOperationTimeoutError() {
+  const error = new Error("Die sichtbare Formularprüfung hat das sichere Zeitlimit überschritten.");
+  error.code = "KA_FORM_TIMEOUT";
+  error.definitiveNoWrite = true;
+  error.safeMessage =
+    "Die sichtbare Formularprüfung wurde nach dem sicheren Zeitlimit beendet. " +
+    "Es wurde nichts hochgeladen oder veröffentlicht; Bilder und Angaben bleiben erhalten.";
+  return error;
+}
 
 function normalizeCategoryPath(value) {
   if (value === undefined || value === null) return [];
@@ -158,6 +170,12 @@ async function waitForListingTransition(formMarker, continueButton, timeoutMs = 
   return "missing";
 }
 
+async function waitForCategoryLinks(page, timeoutMs = 10_000) {
+  const categoryLinks = page.locator('main a[href^="#?path="]');
+  await categoryLinks.first().waitFor({ state: "attached", timeout: timeoutMs }).catch(() => {});
+  return categoryLinks;
+}
+
 async function openCategoryPicker(page) {
   for (const name of ["Kategorie ändern", "Wähle deine Kategorie"]) {
     const link = page.getByRole("link", { name, exact: true });
@@ -168,12 +186,13 @@ async function openCategoryPicker(page) {
       if (/login\.kleinanzeigen\.de|m-einloggen/.test(page.url())) {
         throw new Error("Kleinanzeigen-Sitzung fehlt. Bitte zuerst 'npm run login' ausführen.");
       }
-      const categoryLinks = page.locator('main a[href^="#?path="]');
+      const categoryLinks = await waitForCategoryLinks(page);
       if (!await categoryLinks.count()) {
-        throw new Error(
-          "Die aktuelle Kategorieauswahl enthält keine lesbaren Kategoriepfade. " +
-          "Bitte die Kleinanzeigen-Sitzung mit 'npm run login' erneuern."
+        const error = new Error(
+          "Die aktuelle Kategorieauswahl enthält auch nach dem Laden keine lesbaren Kategoriepfade."
         );
+        error.code = "KA_FORM_STRUCTURE_CHANGED";
+        throw error;
       }
       return;
     }
@@ -324,6 +343,10 @@ async function startInspectionSession() {
   // Chrome profile avoids the HeadlessChrome fingerprint and makes any account
   // challenge visible instead of hammering the endpoint in the background.
   const nativeProfile = await openNativeProfile({ headless: false });
+  const startupDeadline = armClosingDeadline(
+    () => closeNativeProfile(nativeProfile),
+    FORM_OPERATION_TIMEOUT_MS
+  );
   try {
     const { context, page } = nativeProfile;
     const browserSession = await ensureCategoryBrowserSession(context);
@@ -341,6 +364,7 @@ async function startInspectionSession() {
       );
     }
     await openCategoryPicker(page);
+    if (startupDeadline.expired()) throw formOperationTimeoutError();
     return {
       nativeProfile,
       page,
@@ -349,11 +373,14 @@ async function startInspectionSession() {
       selectedTokens: [],
     };
   } catch (error) {
+    const failure = startupDeadline.expired() ? formOperationTimeoutError() : error;
     if (["KA_BROWSER_REJECTED", "KA_ACCESS_DENIED"].includes(error.code)) {
       inspectionBlockedUntil = Date.now() + INSPECTION_REJECTION_BACKOFF_MS;
     }
     await closeNativeProfile(nativeProfile);
-    throw error;
+    throw failure;
+  } finally {
+    startupDeadline.cancel();
   }
 }
 
@@ -509,8 +536,13 @@ async function inspectCategoryFormNow({ categoryId, categoryPath, onSessionObser
   const normalizedPath = normalizeCategoryPath(categoryPath);
   let session;
   let keepSession = false;
+  let operationDeadline;
   try {
     session = await inspectionSessionFor(normalizedPath);
+    operationDeadline = armClosingDeadline(
+      () => closeInspectionSession(session),
+      FORM_OPERATION_TIMEOUT_MS
+    );
     const { page } = session;
     const observedCookieHeader = validatedSessionCookieString(
       await session.nativeProfile.context.cookies("https://www.kleinanzeigen.de")
@@ -585,6 +617,7 @@ async function inspectCategoryFormNow({ categoryId, categoryPath, onSessionObser
       keepSession = true;
       keepInspectionSessionWarm(session, PREPARED_FORM_IDLE_MS);
     }
+    if (operationDeadline.expired()) throw formOperationTimeoutError();
     return {
       status: "ready",
       verified: true,
@@ -595,9 +628,11 @@ async function inspectCategoryFormNow({ categoryId, categoryPath, onSessionObser
         "Verwende nur die gelieferten Werte. Fehlt eine nötige Nutzerentscheidung, frage sie vor dem Posting gezielt ab.",
     };
   } catch (error) {
+    const failure = operationDeadline?.expired() ? formOperationTimeoutError() : error;
     await closeInspectionSession(session);
-    throw error;
+    throw failure;
   } finally {
+    operationDeadline?.cancel();
     if (session && !keepSession) await closeInspectionSession(session);
   }
 }
@@ -612,6 +647,7 @@ function inspectCategoryForm(args) {
 
 module.exports = {
   FORM_URL,
+  FORM_OPERATION_TIMEOUT_MS,
   browserCookiesFromHeader,
   discardPreparedFormSession,
   ensureCategoryBrowserSession,
@@ -624,4 +660,6 @@ module.exports = {
   readCategoryChoices,
   selectCategoryPath,
   takePreparedFormSession,
+  waitForCategoryLinks,
+  formOperationTimeoutError,
 };

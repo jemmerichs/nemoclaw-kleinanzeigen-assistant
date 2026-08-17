@@ -8,10 +8,12 @@ const { listingValidationError } = require("../tools/kleinanzeigen");
 const {
   assertListingFormContract,
   categoryPathFromContract,
+  fillEditableOrAssertFixedValue,
   inspectSubmissionPath,
   normalizePublishError,
   normalizeSubmissionPath,
   publishedListingResult,
+  publishTimeoutError,
 } = require("../tools/kleinanzeigen-publish-form");
 const { classifyError } = require("../tools/safe-error");
 
@@ -115,6 +117,34 @@ test("the final browser FormData gate requires both category and verified pickup
   );
 });
 
+test("a readonly profile name is verified without trying to edit it", async () => {
+  let fillCalls = 0;
+  const fixedContact = {
+    async count() { return 1; },
+    async isEditable() { return false; },
+    async inputValue() { return "Jannik"; },
+    async fill() { fillCalls += 1; },
+  };
+  assert.equal(
+    await fillEditableOrAssertFixedValue(fixedContact, "Jannik", { fieldLabel: "Das Kontaktfeld" }),
+    "verified"
+  );
+  assert.equal(fillCalls, 0);
+
+  await assert.rejects(
+    fillEditableOrAssertFixedValue({
+      ...fixedContact,
+      async inputValue() { return "Anderer Name"; },
+    }, "Jannik", { fieldLabel: "Das Kontaktfeld" }),
+    error => {
+      assert.equal(error.code, "KA_BROWSER_FORM_INCOMPLETE");
+      assert.equal(error.definitiveNoWrite, true);
+      assert.match(error.message, /schreibgeschützt/);
+      return true;
+    }
+  );
+});
+
 test("uncoded browser failures never surface as INTERNAL_FAILURE", () => {
   const beforeSubmit = normalizePublishError(new Error("Target page closed"));
   assert.equal(beforeSubmit.code, "KA_PUBLISH_PRECHECK_FAILED");
@@ -126,6 +156,13 @@ test("uncoded browser failures never surface as INTERNAL_FAILURE", () => {
   assert.equal(classifiedBeforeSubmit.code, "KA_PUBLISH_PRECHECK_FAILED");
   assert.match(classifiedBeforeSubmit.safeMessage, /Bilder und Angaben bleiben erhalten/);
 
+  const diagnosed = normalizePublishError(new Error("Preistyp-Auswahl fehlt"), {
+    precheckStep: "fill_listing",
+  });
+  assert.equal(diagnosed.code, "KA_PUBLISH_PRECHECK_FILL_LISTING");
+  assert.match(diagnosed.safeMessage, /Grundfelder ausfüllen/);
+  assert.match(diagnosed.safeMessage, /Preistyp-Auswahl fehlt/);
+
   const afterSubmit = normalizePublishError(new Error("Target page closed"), {
     publishRequestStarted: true,
   });
@@ -135,6 +172,30 @@ test("uncoded browser failures never surface as INTERNAL_FAILURE", () => {
     phase: "commit",
     requestStarted: true,
   }).writeCertainty, "ambiguous");
+});
+
+test("a browser operation timeout is definitive and preserves user inputs", () => {
+  const normalized = normalizePublishError(publishTimeoutError(), {
+    publishRequestStarted: false,
+    precheckStep: "verify_form",
+  });
+  assert.equal(normalized.code, "KA_FORM_TIMEOUT");
+  assert.equal(normalized.definitiveNoWrite, true);
+  assert.match(normalized.safeMessage, /nichts veröffentlicht/);
+  assert.match(normalized.safeMessage, /nicht erneut gesendet/);
+});
+
+test("a timeout after the publish request never claims a definitive no-write", () => {
+  const normalized = normalizePublishError(publishTimeoutError({
+    publishRequestStarted: true,
+  }), {
+    publishRequestStarted: true,
+    precheckStep: "inspect_submission",
+  });
+  assert.equal(normalized.code, "KA_PUBLISH_OUTCOME_UNKNOWN");
+  assert.notEqual(normalized.definitiveNoWrite, true);
+  assert.match(normalized.safeMessage, /nicht eindeutig/);
+  assert.match(normalized.safeMessage, /eigenen Anzeigen/);
 });
 
 test("browser publication result parsing accepts current response and redirect shapes", () => {

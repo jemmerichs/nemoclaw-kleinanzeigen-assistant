@@ -19,6 +19,35 @@ function clampInteger(value, { min, max, fallback }) {
   return Math.max(min, Math.min(max, parsed));
 }
 
+function decodeHtmlEntities(value) {
+  return String(value ?? "")
+    .replace(/&#(?:x([0-9a-f]+)|(\d+));/gi, (_match, hex, decimal) => {
+      const codePoint = Number.parseInt(hex || decimal, hex ? 16 : 10);
+      try {
+        return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+          ? String.fromCodePoint(codePoint)
+          : _match;
+      } catch {
+        return _match;
+      }
+    })
+    .replace(/&(amp|quot|apos|lt|gt);/gi, (_match, entity) => ({
+      amp: "&",
+      quot: '"',
+      apos: "'",
+      lt: "<",
+      gt: ">",
+    })[String(entity).toLowerCase()]);
+}
+
+function sellerPriceAmount(value) {
+  if (Number.isFinite(Number(value)) && String(value).trim() !== "") return Number(value);
+  const match = decodeHtmlEntities(value).match(/\d[\d.]*?(?:,\d{1,2})?(?=\s*(?:€|EUR)(?:\s|$)|$)/i);
+  if (!match) return null;
+  const amount = Number(match[0].replace(/\./g, "").replace(",", "."));
+  return Number.isFinite(amount) ? amount : null;
+}
+
 function safeFilename(filename) {
   return String(filename || "photo.jpg").replace(/["\r\n\\/]/g, "_");
 }
@@ -613,15 +642,27 @@ class KleinanzeigenClient {
     const response = await this._wwwRequest("GET", "/m-meine-anzeigen-verwalten.json?sort=DEFAULT");
     const { body } = this._ensureSuccess("getMyAds", response);
     if (!Array.isArray(body?.ads)) throw new Error("getMyAds: unerwartetes Antwortformat.");
-    return (body.ads || []).slice(0, safeLimit).map(a => ({
-      id:       a.id,
-      title:    a.title,
-      price:    a.priceAmount,
-      status:   a.adStatus,
-      views:    a.pageViewCount,
-      category: a.categoryTreePath || "",
-      link:     a.seoLink ? `https://www.kleinanzeigen.de${a.seoLink}` : "",
-    }));
+    return (body.ads || []).slice(0, safeLimit).map(a => {
+      const rawLink = String(a.seoLink || a.seoUrl || "");
+      const categoryId = Number(a.categoryId || a.l2Category);
+      const imageCount = Number(a.imageCount ?? a.images);
+      return {
+        id: a.id,
+        title: decodeHtmlEntities(a.title),
+        price: sellerPriceAmount(a.priceAmount ?? a.price),
+        priceType: a.priceType || a.adPriceType,
+        status: a.adStatus || a.state,
+        views: a.pageViewCount ?? a.viewCount,
+        ...(Number.isInteger(imageCount) && imageCount >= 0 ? { images: imageCount } : {}),
+        ...(Number.isInteger(categoryId) && categoryId > 0 ? { categoryId } : {}),
+        category: decodeHtmlEntities(a.categoryTreePath || a.category || ""),
+        link: /^https:\/\/www\.kleinanzeigen\.de\//i.test(rawLink)
+          ? rawLink
+          : rawLink.startsWith("/")
+            ? `https://www.kleinanzeigen.de${rawLink}`
+            : "",
+      };
+    });
   }
 
   async getAdBundles() {

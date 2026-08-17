@@ -110,3 +110,13 @@ test("technical preparation failures produce a bounded developer handoff", () =>
   assert.match(result.instruction, /Artikelangaben und Bilder nicht erneut erfragen/);
   assert.match(result.diagnostic.reason, /kein Versandfeld/);
 });
+
+test("a changed category DOM is not misreported as a login failure", () => {
+  const error = new Error("Die Kategoriepfade wurden nach dem Laden nicht sichtbar.");
+  error.code = "KA_FORM_STRUCTURE_CHANGED";
+  const result = preparation.preparationTechnicalFailure(error, {
+    categoryPath: ["Haus & Garten", "Weiteres Haus & Garten"],
+  });
+  assert.equal(result.diagnostic.code, "KA_FORM_STRUCTURE_CHANGED");
+  assert.doesNotMatch(result.action, /login/i);
+});
