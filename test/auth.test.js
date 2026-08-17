@@ -84,7 +84,8 @@ test("authenticated browser 403 is not mislabeled as an IP block", async () => {
     error => {
       assert.equal(error.code, "KA_BROWSER_REJECTED");
       assert.equal(error.status, 403);
-      assert.match(error.message, /belegt keine IP-Sperre/);
+      assert.match(error.message, /belegt weder .*IP-Sperre/);
+      assert.doesNotMatch(error.message, /Browser-Fingerabdruck|erneuert werden/);
       assert.doesNotMatch(error.message, /blockiert diesen Netzwerkpfad/);
       return true;
     }
@@ -99,7 +100,7 @@ test("authenticated block page without a response handle stays a private-access 
     error => {
       assert.equal(error.code, "KA_BROWSER_REJECTED");
       assert.equal(error.status, undefined);
-      assert.match(error.message, /belegt keine IP-Sperre/);
+      assert.match(error.message, /belegt weder .*IP-Sperre/);
       return true;
     }
   );

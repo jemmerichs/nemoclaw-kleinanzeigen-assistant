@@ -6,7 +6,9 @@ const test = require("node:test");
 const {
   browserCookiesFromHeader,
   ensureCategoryBrowserSession,
+  inspectionSessionMatchesPath,
   normalizeCategoryPath,
+  preparedFormSessionMatches,
   selectCategoryPath,
 } = require("../tools/kleinanzeigen-form");
 
@@ -19,6 +21,57 @@ test("category form paths are bounded visible labels, not guessed internal IDs",
   assert.throws(() => normalizeCategoryPath("Elektronik"), /Liste sichtbarer Kategorienamen/);
   assert.throws(() => normalizeCategoryPath(Array(7).fill("Ebene")), /höchstens 6/);
   assert.throws(() => normalizeCategoryPath([""]), /categoryPath\[0\]/);
+});
+
+test("a prepared visible form is reused only for its exact approval binding", () => {
+  const session = {
+    closed: false,
+    readyForm: {
+      categoryId: 87,
+      categoryPath: ["Haus & Garten", "Weiteres Haus & Garten"],
+      formFingerprint: "form-fingerprint",
+      sessionRevision: "session-revision",
+    },
+  };
+  const binding = {
+    categoryId: 87,
+    categoryPath: ["Haus & Garten", "Weiteres Haus & Garten"],
+    formFingerprint: "form-fingerprint",
+    sessionRevision: "session-revision",
+  };
+  assert.equal(preparedFormSessionMatches(session, binding), true);
+  assert.equal(preparedFormSessionMatches(session, { ...binding, categoryId: 88 }), false);
+  assert.equal(preparedFormSessionMatches(session, {
+    ...binding,
+    categoryPath: ["Haus & Garten", "Möbel"],
+  }), false);
+  assert.equal(preparedFormSessionMatches(session, {
+    ...binding,
+    formFingerprint: "changed",
+  }), false);
+  assert.equal(preparedFormSessionMatches({ ...session, closed: true }, binding), false);
+});
+
+test("category-answer follow-ups keep the already visible category form", () => {
+  const selecting = {
+    selectedLabels: ["Haus & Garten"],
+    selectedTokens: ["80"],
+  };
+  assert.equal(inspectionSessionMatchesPath(selecting, [
+    "Haus & Garten",
+    "Weiteres Haus & Garten",
+  ]), true);
+
+  const ready = {
+    ...selecting,
+    selectedLabels: ["Haus & Garten", "Weiteres Haus & Garten"],
+    readyForm: { categoryId: 87 },
+  };
+  assert.equal(inspectionSessionMatchesPath(ready, [
+    "Haus & Garten",
+    "Weiteres Haus & Garten",
+  ]), true);
+  assert.equal(inspectionSessionMatchesPath(ready, ["Haus & Garten", "Möbel"]), false);
 });
 
 test("leaf category selection continues to the real listing form before inspection", async () => {

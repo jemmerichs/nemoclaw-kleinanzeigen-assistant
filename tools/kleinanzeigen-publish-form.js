@@ -15,6 +15,7 @@ const {
   ensureCategoryBrowserSession,
   openCategoryPicker,
   selectCategoryPath,
+  takePreparedFormSession,
 } = require("./kleinanzeigen-form");
 const {
   assertBoundFormState,
@@ -101,6 +102,28 @@ function incompleteFormError(message) {
   error.code = "KA_BROWSER_FORM_INCOMPLETE";
   error.definitiveNoWrite = true;
   return error;
+}
+
+function normalizePublishError(error, { publishRequestStarted = false } = {}) {
+  const normalized = error instanceof Error
+    ? error
+    : new Error("Der Browser hat einen unbekannten Fehler gemeldet.");
+  if (!publishRequestStarted) {
+    normalized.definitiveNoWrite = true;
+    if (!normalized.code) {
+      normalized.code = "KA_PUBLISH_PRECHECK_FAILED";
+      normalized.safeMessage =
+        "Die bereits geprüfte Anzeigenmaske konnte vor dem Veröffentlichen nicht sicher wieder aufgenommen werden. " +
+        "Es wurde nichts veröffentlicht. Bilder und Angaben bleiben erhalten; denselben Vorschlag einmal neu vorbereiten, " +
+        "ohne sie erneut zu senden.";
+    }
+  } else if (!normalized.code) {
+    normalized.code = "KA_PUBLISH_OUTCOME_UNKNOWN";
+    normalized.safeMessage =
+      "Kleinanzeigen hat nach dem Absenden keinen eindeutigen Abschluss bestätigt. " +
+      "Nicht automatisch wiederholen; zuerst die eigenen Anzeigen prüfen.";
+  }
+  return normalized;
 }
 
 function assertListingFormContract(entries, args, contract) {
@@ -317,21 +340,29 @@ async function publishListingViaForm(args, { cookieHeader, onPhase = null } = {}
   let nativeProfile;
   let publishRequestStarted = false;
   try {
-    nativeProfile = await openNativeProfile({ headless: false });
-    const { context, page } = nativeProfile;
-    await ensureCategoryBrowserSession(context, cookieHeader);
-    const initialResponse = await page.goto(FORM_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: FORM_TIMEOUT_MS,
+    nativeProfile = await takePreparedFormSession({
+      categoryId: args.categoryId,
+      categoryPath,
+      formFingerprint: args.formFingerprint,
+      sessionRevision: args.sessionRevision,
     });
-    await assertNetworkAccess(page, initialResponse, { authenticated: true });
-    if (/login\.kleinanzeigen\.de|m-einloggen/.test(page.url())) {
-      throw new Error("Kleinanzeigen-Sitzung fehlt. Bitte zuerst 'npm run login' ausführen.");
-    }
-    await openCategoryPicker(page);
-    const selection = await selectCategoryPath(page, categoryPath);
-    if (!selection.complete) {
-      throw new Error("Der verifizierte Kategoriepfad ist im aktuellen Formular nicht mehr vollständig verfügbar.");
+    nativeProfile ||= await openNativeProfile({ headless: false });
+    const { context, page } = nativeProfile;
+    if (!nativeProfile.reusedPreparedForm) {
+      await ensureCategoryBrowserSession(context, cookieHeader);
+      const initialResponse = await page.goto(FORM_URL, {
+        waitUntil: "domcontentloaded",
+        timeout: FORM_TIMEOUT_MS,
+      });
+      await assertNetworkAccess(page, initialResponse, { authenticated: true });
+      if (/login\.kleinanzeigen\.de|m-einloggen/.test(page.url())) {
+        throw new Error("Kleinanzeigen-Sitzung fehlt. Bitte zuerst 'npm run login' ausführen.");
+      }
+      await openCategoryPicker(page);
+      const selection = await selectCategoryPath(page, categoryPath);
+      if (!selection.complete) {
+        throw new Error("Der verifizierte Kategoriepfad ist im aktuellen Formular nicht mehr vollständig verfügbar.");
+      }
     }
     const actualCategoryId = await page.locator('input[name="categoryId"]').inputValue();
     if (actualCategoryId !== String(args.categoryId)) {
@@ -430,8 +461,7 @@ async function publishListingViaForm(args, { cookieHeader, onPhase = null } = {}
     }
     return result;
   } catch (error) {
-    if (!publishRequestStarted) error.definitiveNoWrite = true;
-    throw error;
+    throw normalizePublishError(error, { publishRequestStarted });
   } finally {
     await closeNativeProfile(nativeProfile);
   }
@@ -442,6 +472,7 @@ module.exports = {
   categoryPathFromContract,
   inspectSubmissionPath,
   listingIdFromValue,
+  normalizePublishError,
   normalizeSubmissionPath,
   publishListingViaForm,
   publishedListingResult,

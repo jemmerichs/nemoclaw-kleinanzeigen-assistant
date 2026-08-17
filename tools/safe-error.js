@@ -3,6 +3,12 @@
 const SAFE_MESSAGES = Object.freeze({
   KA_FORM_STATE_DRIFT:
     "Der sichtbare Anzeigenzustand hat sich seit der Vorschau geändert. Es wurde nichts veröffentlicht; die Vorbereitung muss erneuert werden.",
+  KA_BROWSER_REJECTED:
+    "Kleinanzeigen hat den erneuten Aufruf der sichtbaren Anzeigenmaske abgelehnt. Das ist kein Beleg für eine IP-Sperre. Es wurde nichts veröffentlicht; Bilder und Angaben bleiben erhalten.",
+  KA_PUBLISH_PRECHECK_FAILED:
+    "Die bereits geprüfte Anzeigenmaske konnte vor dem Veröffentlichen nicht sicher wieder aufgenommen werden. Es wurde nichts veröffentlicht. Bilder und Angaben bleiben erhalten; denselben Vorschlag einmal neu vorbereiten, ohne sie erneut zu senden.",
+  KA_PUBLISH_OUTCOME_UNKNOWN:
+    "Kleinanzeigen hat nach dem Absenden keinen eindeutigen Abschluss bestätigt. Nicht automatisch wiederholen; zuerst die eigenen Anzeigen prüfen.",
   MEDIA_HASH_MISMATCH:
     "Ein ausgewähltes Foto hat sich seit der Vorschau geändert. Es wurde nichts geschrieben; bitte den Vorschlag neu erstellen.",
   MEDIA_MISSING:

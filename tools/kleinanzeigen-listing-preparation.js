@@ -146,7 +146,7 @@ function preparationTechnicalFailure(error, { categoryPath = [] } = {}) {
   const action = code === "FORM_LOGIN_REQUIRED"
     ? "Einmal npm run login ausführen und danach denselben Vorschlag erneut vorbereiten."
     : code === "FORM_SESSION_REJECTED"
-      ? "Nicht erneut einloggen; diese vollständige Fehlermeldung an den Entwicklungsagenten weitergeben."
+      ? "Nicht erneut einloggen und Bilder oder Angaben nicht erneut senden. Den Bot weiterlaufen lassen und denselben Vorschlag nach der Browserpause mit einer kurzen Nachricht einmal neu anstoßen; nur bei FORM_LOGIN_REQUIRED einloggen."
       : "Denselben Vorschlag einmal neu vorbereiten; schlägt das erneut fehl, diese vollständige Fehlermeldung weitergeben.";
   return {
     status: "technical_failure",

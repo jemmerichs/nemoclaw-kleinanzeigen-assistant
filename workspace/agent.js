@@ -2016,9 +2016,11 @@ function describeListingValidationFailure(action, error, { categoryContractInval
 
 function describeAmbiguousActionFailure(action, error, marketplace) {
   const status = Number(error?.status);
-  const problem = Number.isInteger(status) && status >= 500
-    ? `${marketplace} meldete einen internen Serverfehler (HTTP ${status}).`
-    : `${marketplace} hat keinen eindeutigen Abschluss bestätigt.`;
+  const problem = status === 403
+    ? `${marketplace} hat genau den Veröffentlichungsaufruf mit HTTP 403 abgelehnt. Das belegt keine allgemeine IP-Sperre.`
+    : Number.isInteger(status) && status >= 500
+      ? `${marketplace} meldete einen internen Serverfehler (HTTP ${status}).`
+      : `${marketplace} hat keinen eindeutigen Abschluss bestätigt.`;
   return [
     `Aktion ${action.id} konnte nicht sicher als abgeschlossen bestätigt werden.`,
     problem,

@@ -9,9 +9,11 @@ const {
   assertListingFormContract,
   categoryPathFromContract,
   inspectSubmissionPath,
+  normalizePublishError,
   normalizeSubmissionPath,
   publishedListingResult,
 } = require("../tools/kleinanzeigen-publish-form");
+const { classifyError } = require("../tools/safe-error");
 
 const contract = {
   categoryId: 87,
@@ -111,6 +113,28 @@ test("the final browser FormData gate requires both category and verified pickup
     }, contract),
     /nicht zum aktuell verifizierten Pflichtvertrag/
   );
+});
+
+test("uncoded browser failures never surface as INTERNAL_FAILURE", () => {
+  const beforeSubmit = normalizePublishError(new Error("Target page closed"));
+  assert.equal(beforeSubmit.code, "KA_PUBLISH_PRECHECK_FAILED");
+  assert.equal(beforeSubmit.definitiveNoWrite, true);
+  const classifiedBeforeSubmit = classifyError(beforeSubmit, {
+    phase: "preflight",
+    requestStarted: true,
+  });
+  assert.equal(classifiedBeforeSubmit.code, "KA_PUBLISH_PRECHECK_FAILED");
+  assert.match(classifiedBeforeSubmit.safeMessage, /Bilder und Angaben bleiben erhalten/);
+
+  const afterSubmit = normalizePublishError(new Error("Target page closed"), {
+    publishRequestStarted: true,
+  });
+  assert.equal(afterSubmit.code, "KA_PUBLISH_OUTCOME_UNKNOWN");
+  assert.equal(afterSubmit.definitiveNoWrite, undefined);
+  assert.equal(classifyError(afterSubmit, {
+    phase: "commit",
+    requestStarted: true,
+  }).writeCertainty, "ambiguous");
 });
 
 test("browser publication result parsing accepts current response and redirect shapes", () => {

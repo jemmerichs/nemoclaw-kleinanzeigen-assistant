@@ -55,8 +55,8 @@ function rejectedPrivateBrowserError(status = null) {
   const hasStatus = status !== null && status !== undefined && Number.isInteger(Number(status));
   const suffix = hasStatus ? ` (HTTP ${Number(status)})` : "";
   const error = new Error(
-    `Der angemeldete Kleinanzeigen-Browserzugriff wurde abgelehnt${suffix}. ` +
-    "Dieser Befund allein belegt keine IP-Sperre; die dedizierte Sitzung oder ihr Browser-Fingerabdruck muss erneuert werden."
+    `Der Aufruf dieser Kleinanzeigen-Seite wurde im angemeldeten Browser abgelehnt${suffix}. ` +
+    "Dieser einzelne Seitenaufruf belegt weder eine allgemeine IP-Sperre noch eine abgelaufene Sitzung."
   );
   error.code = "KA_BROWSER_REJECTED";
   if (hasStatus) error.status = Number(status);

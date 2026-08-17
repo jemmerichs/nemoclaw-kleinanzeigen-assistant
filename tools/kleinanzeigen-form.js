@@ -17,6 +17,7 @@ const { captureVisibleFormState } = require("./kleinanzeigen-form-state");
 
 const FORM_URL = "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html";
 const INSPECTION_IDLE_MS = 2 * 60 * 1000;
+const PREPARED_FORM_IDLE_MS = 30 * 60 * 1000;
 const INSPECTION_REJECTION_BACKOFF_MS = 30 * 60 * 1000;
 let inspectionQueue = Promise.resolve();
 let activeInspectionSession = null;
@@ -263,11 +264,47 @@ async function closeInspectionSession(session = activeInspectionSession) {
   await closeNativeProfile(session.nativeProfile);
 }
 
-function keepInspectionSessionWarm(session) {
+function keepInspectionSessionWarm(session, timeoutMs = INSPECTION_IDLE_MS) {
   if (inspectionIdleTimer) clearTimeout(inspectionIdleTimer);
   inspectionIdleTimer = setTimeout(() => {
     closeInspectionSession(session).catch(() => {});
-  }, INSPECTION_IDLE_MS);
+  }, timeoutMs);
+  inspectionIdleTimer.unref?.();
+}
+
+function preparedFormSessionMatches(session, {
+  categoryId,
+  categoryPath,
+  formFingerprint,
+  sessionRevision,
+} = {}) {
+  const ready = session?.readyForm;
+  if (!ready || session.closed) return false;
+  const expectedPath = normalizeCategoryPath(categoryPath);
+  return Number(ready.categoryId) === Number(categoryId)
+    && ready.categoryPath.length === expectedPath.length
+    && ready.categoryPath.every((label, index) => label === expectedPath[index])
+    && ready.formFingerprint === String(formFingerprint || "")
+    && ready.sessionRevision === String(sessionRevision || "");
+}
+
+async function takePreparedFormSession(binding) {
+  const session = activeInspectionSession;
+  if (!session) return null;
+  if (!preparedFormSessionMatches(session, binding)) {
+    await closeInspectionSession(session);
+    return null;
+  }
+  if (inspectionIdleTimer) {
+    clearTimeout(inspectionIdleTimer);
+    inspectionIdleTimer = null;
+  }
+  activeInspectionSession = null;
+  return {
+    ...session.nativeProfile,
+    page: session.page,
+    reusedPreparedForm: true,
+  };
 }
 
 async function startInspectionSession() {
@@ -316,10 +353,16 @@ async function startInspectionSession() {
   }
 }
 
+function inspectionSessionMatchesPath(session, categoryPath) {
+  if (!session || session.closed) return false;
+  const selectedLabels = session.selectedLabels || [];
+  const matchingPath = selectedLabels.length <= categoryPath.length
+    && selectedLabels.every((label, index) => categoryPath[index] === label);
+  return matchingPath && (!session.readyForm || selectedLabels.length === categoryPath.length);
+}
+
 async function inspectionSessionFor(categoryPath) {
-  const canContinue = activeInspectionSession
-    && activeInspectionSession.selectedLabels.length <= categoryPath.length
-    && activeInspectionSession.selectedLabels.every((label, index) => categoryPath[index] === label);
+  const canContinue = inspectionSessionMatchesPath(activeInspectionSession, categoryPath);
   if (!canContinue) await closeInspectionSession();
   if (!activeInspectionSession) activeInspectionSession = await startInspectionSession();
   if (inspectionIdleTimer) {
@@ -469,10 +512,16 @@ async function inspectCategoryFormNow({ categoryId, categoryPath, onSessionObser
       await session.nativeProfile.context.cookies("https://www.kleinanzeigen.de")
     );
     if (typeof onSessionObserved === "function") await onSessionObserved(observedCookieHeader);
-    const selection = await selectCategoryPath(page, normalizedPath, {
-      selectedLabels: session.selectedLabels,
-      selectedTokens: session.selectedTokens,
-    });
+    const selection = session.readyForm
+      ? {
+        complete: true,
+        selectedPath: [...session.selectedLabels],
+        selectedTokens: [...session.selectedTokens],
+      }
+      : await selectCategoryPath(page, normalizedPath, {
+        selectedLabels: session.selectedLabels,
+        selectedTokens: session.selectedTokens,
+      });
     session.selectedLabels = [...selection.selectedPath];
     session.selectedTokens = [...selection.selectedTokens];
     if (!selection.complete) {
@@ -522,6 +571,16 @@ async function inspectCategoryFormNow({ categoryId, categoryPath, onSessionObser
       cookieHeader,
       userAgent: process.env.KA_USER_AGENT || "",
     });
+    if (String(process.env.NEMOCLAW_MODE || "dry-run").trim() === "live") {
+      session.readyForm = {
+        categoryId: actualCategoryId,
+        categoryPath: [...normalizedPath],
+        formFingerprint: formState.formFingerprint,
+        sessionRevision: formState.sessionRevision,
+      };
+      keepSession = true;
+      keepInspectionSessionWarm(session, PREPARED_FORM_IDLE_MS);
+    }
     return {
       status: "ready",
       verified: true,
@@ -553,8 +612,11 @@ module.exports = {
   ensureCategoryBrowserSession,
   inspectCategoryForm,
   inspectCategoryFormNow,
+  inspectionSessionMatchesPath,
   normalizeCategoryPath,
   openCategoryPicker,
+  preparedFormSessionMatches,
   readCategoryChoices,
   selectCategoryPath,
+  takePreparedFormSession,
 };
