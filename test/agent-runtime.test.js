@@ -1065,6 +1065,77 @@ test("an ambiguous protected write is never retried by a second Go", async () =>
   }
 });
 
+test("live-ad title and description edits stage one exact action and execute only after Go", async () => {
+  const previousMode = process.env.NEMOCLAW_MODE;
+  const originalPrepare = TOOLS.ka_edit_ad.prepareForApproval;
+  const originalEdit = TOOLS.ka_edit_ad.fn;
+  const sent = [];
+  let executed = null;
+  process.env.NEMOCLAW_MODE = "live";
+  TOOLS.ka_edit_ad.prepareForApproval = async args => ({
+    adId: String(args.adId),
+    previousTitle: "Alter Titel",
+    title: String(args.title),
+    description: String(args.description),
+  });
+  TOOLS.ka_edit_ad.fn = async args => {
+    executed = args;
+    return {
+      id: args.adId,
+      previousTitle: args.previousTitle,
+      title: args.title,
+      descriptionChanged: true,
+    };
+  };
+  const gateway = { async send(_chatId, text) { sent.push(text); } };
+  const llmClient = {
+    model: "stub",
+    usageSummary() { return { requests: 0, promptTokens: 0, completionTokens: 0, costUsd: 0 }; },
+    async complete() {
+      return {
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "edit-live-ad",
+            type: "function",
+            function: {
+              name: "ka_edit_ad",
+              arguments: JSON.stringify({
+                adId: "3487180022",
+                title: "Neuer Titel",
+                description: "Neue ehrliche Beschreibung",
+              }),
+            },
+          }],
+        },
+        usage: { totalTokens: 1, costUsd: 0 },
+      };
+    },
+  };
+
+  try {
+    await runAgent("edit-live-ad", "Ändere Titel und Beschreibung.", { llmClient, gateway });
+    const pending = getPending("edit-live-ad");
+    assert.equal(pending.tool, "ka_edit_ad");
+    assert.equal(pending.args.previousTitle, "Alter Titel");
+    assert.equal(executed, null);
+    assert.match(sent[0], /Titel bisher: Alter Titel/);
+    assert.match(sent[0], /Neue ehrliche Beschreibung/);
+
+    await runAgent("edit-live-ad", "Go", { llmClient: null, gateway });
+    assert.equal(executed.title, "Neuer Titel");
+    assert.equal(executed.description, "Neue ehrliche Beschreibung");
+    assert.equal(getPending("edit-live-ad"), null);
+    assert.match(sent.at(-1), /Kleinanzeigen-Anzeige geändert/);
+  } finally {
+    TOOLS.ka_edit_ad.prepareForApproval = originalPrepare;
+    TOOLS.ka_edit_ad.fn = originalEdit;
+    process.env.NEMOCLAW_MODE = previousMode;
+    clearPending("edit-live-ad");
+  }
+});
+
 test("any non-cancel command invalidates an older approval", async () => {
   const sent = [];
   const gateway = { async send(_chatId, text) { sent.push(text); } };

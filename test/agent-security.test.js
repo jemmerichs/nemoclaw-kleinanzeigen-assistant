@@ -43,6 +43,7 @@ test("every externally destructive bridge tool requires approval", () => {
     "ka_save_prepared_draft",
     "ka_delete_draft",
     "ka_delete_ad",
+    "ka_edit_ad",
     "vinted_create_item",
     "vinted_save_draft",
     "vinted_delete_item",
@@ -66,6 +67,7 @@ test("model only sees narrow tools and cannot call raw SQL", () => {
   assert.equal(names.includes("ka_save_draft"), false);
   assert.equal(names.includes("ka_get_category_requirements"), false);
   assert.equal(names.includes("ka_delete_ad"), true);
+  assert.equal(names.includes("ka_edit_ad"), true);
   assert.equal(names.includes("vinted_create_item"), true);
   assert.equal(names.includes("vinted_delete_item"), true);
   assert.equal(names.includes("updateSkillFile"), false);

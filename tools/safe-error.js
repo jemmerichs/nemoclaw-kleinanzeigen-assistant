@@ -9,6 +9,10 @@ const SAFE_MESSAGES = Object.freeze({
     "Die bereits geprüfte Anzeigenmaske konnte vor dem Veröffentlichen nicht sicher wieder aufgenommen werden. Es wurde nichts veröffentlicht. Bilder und Angaben bleiben erhalten; denselben Vorschlag einmal neu vorbereiten, ohne sie erneut zu senden.",
   KA_PUBLISH_OUTCOME_UNKNOWN:
     "Kleinanzeigen hat nach dem Absenden keinen eindeutigen Abschluss bestätigt. Nicht automatisch wiederholen; zuerst die eigenen Anzeigen prüfen.",
+  KA_EDIT_PRECHECK_FAILED:
+    "Die Bearbeitungsmaske konnte vor dem Speichern nicht sicher geprüft werden. Die Anzeige wurde nicht geändert.",
+  KA_EDIT_OUTCOME_UNKNOWN:
+    "Kleinanzeigen hat nach dem Speichern keinen eindeutigen Abschluss bestätigt. Nicht automatisch wiederholen; zuerst die eigenen Anzeigen prüfen.",
   MEDIA_HASH_MISMATCH:
     "Ein ausgewähltes Foto hat sich seit der Vorschau geändert. Es wurde nichts geschrieben; bitte den Vorschlag neu erstellen.",
   MEDIA_MISSING:

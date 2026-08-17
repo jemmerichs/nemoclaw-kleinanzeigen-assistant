@@ -448,6 +448,74 @@ function getAssetBundleByExternalId(marketplace, externalId) {
   return row ? getAssetBundle(row.asset_id) : null;
 }
 
+function recordListingEdit(adId, changes, {
+  marketplace = "kleinanzeigen",
+  now = new Date().toISOString(),
+} = {}) {
+  const normalizedMarketplace = String(marketplace || "").trim().toLowerCase();
+  const normalizedAdId = String(adId || "").trim();
+  const normalizedTitle = changes?.title === undefined
+    ? null
+    : String(changes.title || "").trim();
+  const normalizedDescription = changes?.description === undefined
+    ? null
+    : String(changes.description || "").trim();
+  if (!/^[a-z][a-z0-9_-]{1,30}$/.test(normalizedMarketplace)) {
+    throw new Error("marketplace ist ungültig.");
+  }
+  if (!/^\d+$/.test(normalizedAdId)) throw new Error("adId ist ungültig.");
+  if (normalizedTitle !== null && (!normalizedTitle || normalizedTitle.length > 65)) {
+    throw new Error("title ist ungültig.");
+  }
+  if (
+    normalizedDescription !== null
+    && (!normalizedDescription || normalizedDescription.length > 4000)
+  ) {
+    throw new Error("description ist ungültig.");
+  }
+  if (normalizedTitle === null && normalizedDescription === null) {
+    throw new Error("Mindestens eine Anzeigenänderung ist erforderlich.");
+  }
+
+  const db = getDb();
+  return db.transaction(() => {
+    const listing = db.prepare(`
+      SELECT l.id,l.asset_id,l.payload_json,a.last_listing_payload_json
+      FROM ka_listings l
+      JOIN assets a ON a.id=l.asset_id
+      WHERE l.marketplace=? AND COALESCE(l.external_id,l.ka_id)=?
+      LIMIT 1
+    `).get(normalizedMarketplace, normalizedAdId);
+    if (!listing) return { tracked: false, assetId: null };
+
+    const payload = parseJson(listing.payload_json)
+      || parseJson(listing.last_listing_payload_json)
+      || {};
+    if (normalizedTitle !== null) payload.title = normalizedTitle;
+    if (normalizedDescription !== null) payload.description = normalizedDescription;
+    const serializedPayload = JSON.stringify(payload);
+    db.prepare(`
+      UPDATE ka_listings
+      SET payload_json=?,last_seen_at=?,missing_checks=0
+      WHERE id=?
+    `).run(serializedPayload, now, listing.id);
+    db.prepare(`
+      UPDATE assets
+      SET listing_name=COALESCE(?,listing_name),
+          description=COALESCE(?,description),
+          last_listing_payload_json=?,updated_at=?
+      WHERE id=?
+    `).run(
+      normalizedTitle,
+      normalizedDescription,
+      serializedPayload,
+      now,
+      listing.asset_id
+    );
+    return { tracked: true, assetId: listing.asset_id };
+  })();
+}
+
 function normalizeRemoteStatus(value) {
   const status = String(value || "").trim().toLowerCase();
   if (/(?:remove|delete|gelöscht)/.test(status)) return "removed";
@@ -741,6 +809,7 @@ module.exports = {
   normalizeRemoteStatus,
   query,
   reconcileRemoteListings,
+  recordListingEdit,
   replaceAssetImages,
   validateSql,
 };

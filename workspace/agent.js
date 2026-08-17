@@ -25,6 +25,7 @@ const {
   inspectCategoryForm,
 } = require("../tools/kleinanzeigen-form");
 const { assertBoundFormState } = require("../tools/kleinanzeigen-form-state");
+const kleinanzeigenEditForm = require("../tools/kleinanzeigen-edit-form");
 const kleinanzeigenPublishForm = require("../tools/kleinanzeigen-publish-form");
 const {
   getListingPreparation,
@@ -63,6 +64,7 @@ const {
   getAssetBundleByKaId,
   query: dbQuery,
   reconcileRemoteListings,
+  recordListingEdit,
   replaceAssetImages,
   validateSql,
 } = require("../tools/adstore");
@@ -269,6 +271,12 @@ const kleinanzeigenPreparedActionSchema = objectSchema({
   "formFingerprint",
   "listing",
 ]);
+const kleinanzeigenEditAdActionSchema = objectSchema({
+  adId: string("Numerische Anzeigen-ID", { pattern: "^\\d+$" }),
+  previousTitle: string("Beim Vormerken gelesener bisheriger Titel", { minLength: 1, maxLength: 65 }),
+  title: string("Neuer Anzeigentitel", { minLength: 1, maxLength: 65 }),
+  description: string("Optional neue Anzeigenbeschreibung", { minLength: 1, maxLength: 4000 }),
+}, ["adId", "previousTitle", "title"]);
 const vintedAttributesSchema = {
   type: "object",
   description: "Exakt sichtbare Vinted-Formularfelder, z. B. computer_ram. Werte müssen dem aktuellen Auswahltext entsprechen.",
@@ -896,6 +904,47 @@ async function publishKleinanzeigenListing(rawArgs, { operationId = null } = {})
   }
 }
 
+async function prepareKleinanzeigenEditForApproval(rawArgs) {
+  const args = kleinanzeigenEditForm.normalizeAdEditArgs(rawArgs);
+  const client = requireAuthenticatedKa();
+  if (client.accessTokenExpiresWithin()) await refreshBearer();
+  const ads = await requireAuthenticatedKa().getMyAds({ limit: 100 });
+  const matches = ads.filter(ad => String(ad.id) === args.adId);
+  if (matches.length !== 1) {
+    const error = new Error("Die ausgewählte Anzeige ist in den eigenen Anzeigen nicht eindeutig aktiv.");
+    error.code = "KA_EDIT_AD_NOT_FOUND";
+    error.definitiveNoWrite = true;
+    throw error;
+  }
+  return kleinanzeigenEditForm.normalizeAdEditAction({
+    ...args,
+    previousTitle: String(matches[0].title || "").trim(),
+  });
+}
+
+async function editKleinanzeigenAd(rawArgs, { operationId = null } = {}) {
+  const args = kleinanzeigenEditForm.normalizeAdEditAction(rawArgs);
+  const client = requireAuthenticatedKa();
+  const result = await kleinanzeigenEditForm.editAdViaForm(args, {
+    cookieHeader: client.cookies,
+    onPhase: operationId
+      ? phase => marketplaceBroker.markOperationPhase(operationId, phase)
+      : null,
+  });
+  if (operationId) marketplaceBroker.markOperationPhase(operationId, "local_persist");
+  try {
+    return {
+      ...result,
+      ...recordListingEdit(args.adId, {
+        title: args.title,
+        ...(args.description !== undefined ? { description: args.description } : {}),
+      }),
+    };
+  } catch (error) {
+    return { ...result, localTrackingError: error.message };
+  }
+}
+
 async function savePreparedKleinanzeigenDraft(action, { operationId = null } = {}) {
   try {
     const listing = prepareBoundKleinanzeigenListing(action.listing);
@@ -1225,6 +1274,23 @@ const TOOLS = {
         return { ...result, localTrackingError: error.message };
       }
     },
+  },
+  ka_edit_ad: {
+    description:
+      "Titel und/oder Beschreibung einer eigenen veröffentlichten Kleinanzeigen-Anzeige ändern. Liest die Anzeige beim Vormerken erneut, " +
+      "lässt alle anderen Anzeigenfelder exakt unverändert und benötigt ein exaktes Go.",
+    schema: objectSchema({
+      adId: string("Numerische ID aus ka_get_my_ads", { pattern: "^\\d+$" }),
+      title: string("Optional neuer Anzeigentitel", { minLength: 1, maxLength: 65 }),
+      description: string("Optional neue ehrliche Beschreibung", { minLength: 1, maxLength: 4000 }),
+    }, ["adId"]),
+    actionSchema: kleinanzeigenEditAdActionSchema,
+    requiresApproval: true,
+    requiresLive: true,
+    prepare: kleinanzeigenEditForm.normalizeAdEditArgs,
+    prepareForApproval: prepareKleinanzeigenEditForApproval,
+    prepareAction: kleinanzeigenEditForm.normalizeAdEditAction,
+    fn: editKleinanzeigenAd,
   },
   vinted_save_draft: {
     description: "Einen nicht öffentlichen Vinted-Entwurf mit lokalen Bildern speichern. Kontomutation; benötigt ein exaktes Go.",
@@ -1922,6 +1988,17 @@ function describeAction(action) {
       return `${header}: ausgewählten Kleinanzeigen-Entwurf löschen`;
     case "ka_delete_ad":
       return `${header}: ausgewählte Kleinanzeigen-Anzeige löschen`;
+    case "ka_edit_ad":
+      return [
+        `${header}: veröffentlichte Kleinanzeigen-Anzeige ändern`,
+        ...(args.title !== args.previousTitle
+          ? [`Titel bisher: ${args.previousTitle}`, `Titel neu: ${args.title}`]
+          : [`Titel bleibt: ${args.title}`]),
+        ...(args.description !== undefined
+          ? [`Neue Beschreibung:\n${args.description}`]
+          : ["Beschreibung bleibt unverändert."]),
+        "Alle anderen Anzeigenfelder bleiben unverändert.",
+      ].join("\n");
     case "vinted_create_item":
       return [
         `${header}: Artikel auf Vinted veröffentlichen`,
@@ -1981,6 +2058,13 @@ function describeResult(toolName, result) {
       return `Der ausgewählte Entwurf wurde gelöscht.${localWarning}`;
     case "ka_delete_ad":
       return `Die ausgewählte Anzeige wurde gelöscht.${localWarning}`;
+    case "ka_edit_ad":
+      return [
+        "Kleinanzeigen-Anzeige geändert.",
+        ...(result.previousTitle !== result.title ? [`Neuer Titel: ${result.title}`] : []),
+        ...(result.descriptionChanged ? ["Beschreibung aktualisiert."] : []),
+        localWarning.trim(),
+      ].filter(Boolean).join("\n");
     case "vinted_create_item":
       return [
         `Vinted-Artikel veröffentlicht: ${result.link || result.id}`,
@@ -2245,6 +2329,7 @@ async function handleApproval(chatId, gateway) {
     if (![
       "ka_publish_prepared_listing",
       "ka_save_prepared_draft",
+      "ka_edit_ad",
     ].includes(claimed.tool)) {
       marketplaceBroker.markOperationPhase(
         claimed.id,
@@ -3038,10 +3123,21 @@ function matchesPublishedKleinanzeigenAd(ad, listing, remoteId = null) {
 }
 
 function reconciliationNotice(operation) {
-  if (
-    operation?.provider !== "kleinanzeigen"
-    || operation?.tool !== "ka_publish_prepared_listing"
-  ) return "";
+  if (operation?.provider !== "kleinanzeigen") return "";
+  if (operation?.tool === "ka_edit_ad") {
+    if (operation.status === "completed") {
+      return [
+        "Nachprüfung abgeschlossen: Der Anzeigentitel wurde geändert.",
+        `Neuer Titel: ${operation.args?.title || "(unbekannt)"}`,
+        "Es wurde kein zweiter Änderungsversuch gestartet.",
+      ].join("\n");
+    }
+    if (operation.status === "confirmed_no_write") {
+      return "Nachprüfung abgeschlossen: Der Anzeigentitel wurde nicht geändert. Ein neuer Versuch benötigt einen neuen Vorschlag und ein neues Go.";
+    }
+    return "";
+  }
+  if (operation?.tool !== "ka_publish_prepared_listing") return "";
   if (operation.status === "completed" && operation.remoteId) {
     const link = operation.reconciliation?.result?.link
       || `https://www.kleinanzeigen.de/s-anzeige/${operation.remoteId}`;
@@ -3151,6 +3247,45 @@ async function reconcileExternalOperations() {
           link: remote.link || `https://www.kleinanzeigen.de/s-anzeige/${remote.id}`,
         });
         return { status: "completed", remoteId: String(remote.id), link: remote.link || null, evidence: { read: "own_ads", exactMatch: true } };
+      }
+      if (current.tool === "ka_edit_ad") {
+        const ads = await client.getMyAds({ limit: 100 });
+        const remote = ads.find(ad => String(ad.id) === String(current.args.adId));
+        if (!remote) {
+          return { status: "manual_resolution", evidence: { read: "own_ads", found: false } };
+        }
+        const remoteTitle = String(remote.title || "").trim();
+        if (current.args.description !== undefined) {
+          return {
+            status: "manual_resolution",
+            remoteId: current.args.adId,
+            evidence: {
+              read: "own_ads",
+              titleMatches: remoteTitle === String(current.args.title || "").trim(),
+              descriptionReadUnavailable: true,
+            },
+          };
+        }
+        if (remoteTitle === String(current.args.title || "").trim()) {
+          recordListingEdit(current.args.adId, { title: current.args.title });
+          return {
+            status: "completed",
+            remoteId: current.args.adId,
+            evidence: { read: "own_ads", exactTitleMatch: true },
+          };
+        }
+        if (remoteTitle === String(current.args.previousTitle || "").trim()) {
+          return {
+            status: "confirmed_no_write",
+            remoteId: current.args.adId,
+            evidence: { read: "own_ads", unchangedTitle: true },
+          };
+        }
+        return {
+          status: "manual_resolution",
+          remoteId: current.args.adId,
+          evidence: { read: "own_ads", unexpectedTitle: true },
+        };
       }
       if (current.tool === "ka_send_message") {
         const messages = await client.getMessages(current.args.conversationId, { limit: 100 });

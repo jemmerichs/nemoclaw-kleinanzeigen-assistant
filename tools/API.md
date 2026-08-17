@@ -21,6 +21,7 @@ Do not scrape credentials from an ordinary browser profile. Prefer `npm run logi
 | Read/save/delete drafts | `/users/{uid}/ad-drafts...` | cookie + CSRF for writes |
 | Upload images for drafts | `/p-bild-hochladen.html` | cookie + CSRF |
 | Publish a listing | Current visible `PostListingForm` in the dedicated native Chrome profile | browser session |
+| Edit a live listing title/description | Current visible edit form in the dedicated native Chrome profile | browser session |
 | Delete a listing | `/m-anzeigen-loeschen.json` | cookie + CSRF |
 | Read/send conversations | gateway messagebox API | bearer |
 | Read ad bundles | gateway private bundles API | bearer |
@@ -37,6 +38,11 @@ and verifies the stored SHA-256 immediately before upload; paths never cross the
 Every approved mutation is journaled in `external_operations` before any possible side effect.
 An interrupted or ambiguous operation is reconciled with read-only evidence and is never
 automatically replayed.
+
+`ka_edit_ad` accepts only a live ad ID plus a new title and/or description. The bridge rereads the
+current own-ad title before staging the exact `Go` action, opens the provider's visible edit form only
+after approval, and compares complete form snapshots before and after filling. The save is blocked if
+any field other than the requested title/description changes.
 
 ## Verification status
 

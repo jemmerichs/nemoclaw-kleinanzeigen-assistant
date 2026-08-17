@@ -117,6 +117,42 @@ test("asset bundle preserves canonical listing data and ordered image provenance
   assert.equal(store.getAssetBundleByKaId("unknown-ka-id"), null);
 });
 
+test("confirmed live-ad edits update the canonical local title and description", () => {
+  const payload = {
+    title: "Alter Titel",
+    description: "Alte Beschreibung",
+    categoryId: 87,
+    price: 6,
+  };
+  const assetId = store.query({
+    sql: "INSERT INTO assets (name,listing_name,description,last_listing_payload_json) VALUES (?,?,?,?)",
+    params: ["Tracked edit", payload.title, payload.description, JSON.stringify(payload)],
+  }).lastInsertRowid;
+  store.query({
+    sql: "INSERT INTO ka_listings (asset_id,ka_id,external_id,status,payload_json) VALUES (?,?,?,?,?)",
+    params: [assetId, "3487180022", "3487180022", "active", JSON.stringify(payload)],
+  });
+
+  assert.deepEqual(store.recordListingEdit("3487180022", {
+    title: "Neuer Titel",
+    description: "Neue Beschreibung",
+  }, { now: "2026-08-17T12:00:00.000Z" }), {
+    tracked: true,
+    assetId,
+  });
+  const bundle = store.getAssetBundle(assetId);
+  assert.equal(bundle.asset.listing_name, "Neuer Titel");
+  assert.equal(bundle.asset.description, "Neue Beschreibung");
+  assert.equal(bundle.asset.last_listing_payload.title, "Neuer Titel");
+  assert.equal(bundle.asset.last_listing_payload.description, "Neue Beschreibung");
+  assert.equal(bundle.listings[0].payload.title, "Neuer Titel");
+  assert.equal(bundle.listings[0].payload.description, "Neue Beschreibung");
+  store.query({
+    sql: "UPDATE ka_listings SET status='removed' WHERE external_id=?",
+    params: ["3487180022"],
+  });
+});
+
 test("remote reconciliation tolerates one miss, alerts once after two, and recovers", () => {
   store.query({
     sql: "UPDATE ka_listings SET status='removed' WHERE ka_id=?",
