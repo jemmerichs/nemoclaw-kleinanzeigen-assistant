@@ -37,9 +37,11 @@ function accessTokenMetadata(token) {
   const clientId = String(payload.azp || "");
   if (!/^[A-Za-z0-9_-]{8,200}$/.test(clientId)) return null;
   const expiresAt = Number(payload.exp);
+  const issuedAt = Number(payload.iat);
   return {
     clientId,
     expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
+    issuedAt: Number.isFinite(issuedAt) ? issuedAt : null,
     userId: Object.entries(payload).find(
       ([key, value]) =>
         (key === "user_id" || /\/user_id$/i.test(key)) &&
@@ -273,7 +275,10 @@ class KleinanzeigenClient {
 
     const at = cookieString.match(/(?:^|;\s*)access_token=([^;]+)/);
     const rt = cookieString.match(/(?:^|;\s*)refresh_token=([^;]+)/);
-    this.bearerToken  = bearerToken  || (at ? at[1].trim() : null);
+    // The cookie header is the canonical, atomically persisted session. A
+    // separately configured bearer exists only for legacy sessions and must
+    // never override a newer access_token imported or refreshed in KA_COOKIES.
+    this.bearerToken  = at ? at[1].trim() : (bearerToken || null);
     this.refreshToken = refreshToken || (rt ? rt[1].trim() : null);
 
     // user_id: prefer cookie, fall back to JWT payload
@@ -837,6 +842,7 @@ class KleinanzeigenClient {
 }
 
 module.exports = KleinanzeigenClient;
+module.exports.accessTokenMetadata = accessTokenMetadata;
 module.exports.accessResponseError = accessResponseError;
 module.exports.listingValidationError = listingValidationError;
 module.exports.mergeCookieHeader = mergeCookieHeader;

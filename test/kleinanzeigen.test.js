@@ -153,6 +153,15 @@ test("OIDC refresh rotates tokens in memory without exposing them", async () => 
   assert.equal(client.accessTokenExpiresWithin(), false);
 });
 
+test("the canonical cookie access token wins over a stale legacy bearer value", () => {
+  const cookieToken = accessToken({ expiresInSeconds: 3600 });
+  const client = new KleinanzeigenClient(
+    `CSRF-TOKEN=csrf; access_token=${cookieToken}; refresh_token=refresh`,
+    "stale-legacy-bearer"
+  );
+  assert.equal(client.bearerToken, cookieToken);
+});
+
 test("expired local access tokens fail before a private web request", async () => {
   const expired = accessToken({ expiresInSeconds: -60 });
   const client = new KleinanzeigenClient(`CSRF-TOKEN=csrf; access_token=${expired}; refresh_token=refresh`);

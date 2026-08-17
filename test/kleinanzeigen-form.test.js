@@ -78,7 +78,7 @@ test("leaf category selection continues to the real listing form before inspecti
     },
     getByRole(role, options) {
       assert.equal(role, "button");
-      assert.equal(options.name, "Weiter");
+      assert.equal(options.name.test("Weiter zur Anzeige"), true);
       return {
         async count() { return 1; },
         async click() {
@@ -97,6 +97,66 @@ test("leaf category selection continues to the real listing form before inspecti
   assert.deepEqual(result.selectedPath, ["Haus & Garten", "Weiteres Haus & Garten"]);
   assert.equal(state.continueClicks, 1);
   assert.equal(state.waitedForForm, true);
+});
+
+test("leaf category selection tolerates the current form appearing asynchronously", async () => {
+  let categoryId = "";
+  let formReady = false;
+  let categoryReads = 0;
+  let formReads = 0;
+  const page = {
+    locator(selector) {
+      if (selector === 'main a[href^="#?path="]') {
+        return { async evaluateAll() {
+          return [{
+            label: "Wohnzimmer",
+            href: "#?path=80/88&isParent=false",
+            tokens: ["80", "88"],
+            isParent: false,
+            active: false,
+          }];
+        } };
+      }
+      if (selector.startsWith("main a[href=")) {
+        return {
+          async count() { return 1; },
+          async click() { categoryId = "88"; },
+        };
+      }
+      if (selector === 'input[name="categoryId"]') {
+        return {
+          async count() { return 1; },
+          async inputValue() {
+            categoryReads++;
+            return categoryReads > 1 ? categoryId : "";
+          },
+        };
+      }
+      if (selector === 'input[name="title"]') {
+        return {
+          async count() {
+            formReads++;
+            if (formReads > 2) formReady = true;
+            return formReady ? 1 : 0;
+          },
+        };
+      }
+      throw new Error(`Unexpected selector: ${selector}`);
+    },
+    getByRole(role, options) {
+      assert.equal(role, "button");
+      assert.equal(options.name.test("Weiter"), true);
+      return { async count() { return 0; } };
+    },
+  };
+
+  const result = await selectCategoryPath(page, ["Haus & Garten", "Wohnzimmer"], {
+    selectedLabels: ["Haus & Garten"],
+    selectedTokens: ["80"],
+  });
+  assert.equal(result.complete, true);
+  assert.deepEqual(result.selectedPath, ["Haus & Garten", "Wohnzimmer"]);
+  assert.equal(formReady, true);
 });
 
 test("category browser cookies are derived from the validated API session", () => {
@@ -165,4 +225,49 @@ test("category inspection leaves an already authenticated profile untouched", as
     { source: "profile" }
   );
   assert.equal(additions, 0);
+});
+
+test("category inspection replaces an older profile session with a newer stored session", async () => {
+  const token = ({ issuedAt, expiresAt }) => {
+    const payload = Buffer.from(JSON.stringify({
+      iss: "https://login.kleinanzeigen.de/",
+      azp: "client_id_123",
+      iat: issuedAt,
+      exp: expiresAt,
+      "https://www.kleinanzeigen.de/user_id": "42",
+    })).toString("base64url");
+    return `e30.${payload}.signature`;
+  };
+  const now = Math.floor(Date.now() / 1000);
+  let stored = [
+    { domain: ".kleinanzeigen.de", name: "CSRF-TOKEN", value: "old-csrf" },
+    { domain: ".kleinanzeigen.de", name: "user_id", value: "42" },
+    { domain: ".kleinanzeigen.de", name: "access_token", value: token({ issuedAt: now - 7200, expiresAt: now - 3600 }) },
+    { domain: ".kleinanzeigen.de", name: "refresh_token", value: "refresh-old" },
+  ];
+  const freshHeader = [
+    "CSRF-TOKEN=fresh-csrf",
+    "user_id=42",
+    `access_token=${token({ issuedAt: now - 60, expiresAt: now + 3600 })}`,
+    "refresh_token=refresh-new",
+  ].join("; ");
+  let additions = 0;
+  const context = {
+    async cookies() { return stored; },
+    async addCookies(cookies) {
+      additions++;
+      stored = cookies.map(cookie => ({
+        domain: "www.kleinanzeigen.de",
+        name: cookie.name,
+        value: cookie.value,
+      }));
+    },
+  };
+
+  assert.deepEqual(
+    await ensureCategoryBrowserSession(context, freshHeader),
+    { source: "environment" }
+  );
+  assert.equal(additions, 1);
+  assert.equal(stored.find(cookie => cookie.name === "refresh_token").value, "refresh-new");
 });

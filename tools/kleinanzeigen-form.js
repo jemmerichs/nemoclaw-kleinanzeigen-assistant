@@ -10,6 +10,9 @@ const {
 const {
   rememberCategoryRequirements,
 } = require("./kleinanzeigen-category-contracts");
+const {
+  shouldPreferStoredSession,
+} = require("./kleinanzeigen-session");
 
 const FORM_URL = "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html";
 const INSPECTION_IDLE_MS = 2 * 60 * 1000;
@@ -55,22 +58,30 @@ function browserCookiesFromHeader(rawHeader) {
 }
 
 async function ensureCategoryBrowserSession(context, rawHeader = process.env.KA_COOKIES) {
+  let profileHeader = "";
   try {
-    validatedSessionCookieString(
+    profileHeader = validatedSessionCookieString(
       await context.cookies("https://www.kleinanzeigen.de")
     );
-    return { source: "profile" };
   } catch {}
 
-  let cookies;
+  let environmentHeader = "";
   try {
-    cookies = browserCookiesFromHeader(rawHeader);
-  } catch {
+    environmentHeader = validatedCookieHeader(rawHeader);
+  } catch {}
+
+  if (
+    profileHeader
+    && !shouldPreferStoredSession(profileHeader, environmentHeader)
+  ) return { source: "profile" };
+
+  if (!environmentHeader) {
     throw new Error(
       "Die Kleinanzeigen-Sitzung fehlt oder ist unvollständig. " +
       "Bitte einmal 'npm run login' ausführen."
     );
   }
+  const cookies = browserCookiesFromHeader(environmentHeader);
   await context.addCookies(cookies);
   try {
     validatedSessionCookieString(
@@ -119,6 +130,30 @@ async function readCategoryChoices(page, selectedTokens = []) {
 
 function publicChoices(choices) {
   return choices.map(({ href, tokens, ...choice }) => choice);
+}
+
+async function waitForInputValue(locator, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (await locator.count() === 1) {
+      const value = await locator.inputValue();
+      if (value) return value;
+    }
+    if (Date.now() >= deadline) break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  } while (true);
+  return "";
+}
+
+async function waitForListingTransition(formMarker, continueButton, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (await formMarker.count() === 1) return "form";
+    if (await continueButton.count() === 1) return "continue";
+    if (Date.now() >= deadline) break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  } while (true);
+  return "missing";
 }
 
 async function openCategoryPicker(page) {
@@ -171,7 +206,10 @@ async function selectCategoryPath(page, categoryPath, progress = {}) {
     selectedLabels.push(label);
 
     const categoryInput = page.locator('input[name="categoryId"]');
-    if (await categoryInput.count() === 1 && await categoryInput.inputValue()) {
+    const selectedCategoryId = matches[0].isParent
+      ? ""
+      : await waitForInputValue(categoryInput);
+    if (selectedCategoryId) {
       if (selectedLabels.length !== categoryPath.length) {
         throw new Error(
           `Kategorie "${label}" ist bereits eine Endkategorie; der angegebene categoryPath enthält weitere Ebenen.`
@@ -185,14 +223,18 @@ async function selectCategoryPath(page, categoryPath, progress = {}) {
   if (categoryChosen) {
     const formMarker = page.locator('input[name="title"]');
     if (await formMarker.count() !== 1) {
-      const continueButton = page.getByRole("button", { name: "Weiter", exact: true });
-      if (await continueButton.count() !== 1) {
+      const continueButton = page.getByRole("button", { name: /^Weiter(?:\s|$)/i });
+      const transition = await waitForListingTransition(formMarker, continueButton);
+      if (transition === "form") {
+        return { complete: true, selectedPath: selectedLabels, selectedTokens };
+      }
+      if (transition !== "continue") {
         throw new Error(
           "Die gewählte Endkategorie konnte im aktuellen Formular nicht übernommen werden."
         );
       }
       await continueButton.click();
-      await formMarker.waitFor({ state: "attached", timeout: 10_000 });
+      await formMarker.waitFor({ state: "attached", timeout: 15_000 });
     }
     return { complete: true, selectedPath: selectedLabels, selectedTokens };
   }

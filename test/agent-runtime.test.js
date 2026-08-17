@@ -1501,6 +1501,8 @@ test("agent selectively edits one image, previews it, researches, and stages the
 
 test("two confirmed lifecycle misses proactively produce an exact relist proposal without publishing", async () => {
   const agent = require("../workspace/agent");
+  const previousMode = process.env.NEMOCLAW_MODE;
+  process.env.NEMOCLAW_MODE = "dry-run";
   const { saveTemp } = require("../tools/image");
   const storedImage = saveTemp(await sharp({
     create: {
@@ -1553,6 +1555,9 @@ test("two confirmed lifecycle misses proactively produce an exact relist proposa
     async complete() {
       step++;
       if (step === 1) {
+        // A turn must keep the mode it started under even if a
+        // parallel test or external config reload mutates the global env.
+        process.env.NEMOCLAW_MODE = "live";
         return {
           message: {
             role: "assistant",
@@ -1614,6 +1619,8 @@ test("two confirmed lifecycle misses proactively produce an exact relist proposa
   } finally {
     agent.TOOLS.ka_get_ad_bundles.fn = originalBundles;
     clearPending("lifecycle-relist");
+    if (previousMode === undefined) delete process.env.NEMOCLAW_MODE;
+    else process.env.NEMOCLAW_MODE = previousMode;
   }
 });
 

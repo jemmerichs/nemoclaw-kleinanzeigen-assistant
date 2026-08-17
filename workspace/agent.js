@@ -11,6 +11,11 @@ require("dotenv").config({ path: ENV_FILE });
 const TelegramGateway = require("../tools/telegram");
 const KleinanzeigenClient = require("../tools/kleinanzeigen");
 const {
+  refreshKleinanzeigenClient,
+  sessionAuthFingerprint,
+  shouldPreferStoredSession,
+} = require("../tools/kleinanzeigen-session");
+const {
   applyCategoryPreferences,
   getCategoryRequirements,
   invalidateCategoryRequirements,
@@ -261,6 +266,13 @@ function requireKa() {
 
 function requireAuthenticatedKa() {
   if (!kaAuthenticated) loadKleinanzeigenSession({ required: true });
+  const storedCookies = readStoredKleinanzeigenCookies();
+  if (shouldPreferStoredSession(ka.cookies, storedCookies)) {
+    ka = makeClient(storedCookies);
+    process.env.KA_COOKIES = storedCookies;
+    delete process.env.KA_BEARER_TOKEN;
+    lastAuthRefreshFailure = null;
+  }
   return ka;
 }
 
@@ -297,27 +309,54 @@ function persistKleinanzeigenSession(client) {
   delete process.env.KA_BEARER_TOKEN;
 }
 
+function readStoredKleinanzeigenCookies() {
+  if (!fs.existsSync(ENV_FILE)) return process.env.KA_COOKIES || "";
+  try {
+    const stored = require("dotenv").parse(fs.readFileSync(ENV_FILE, "utf8"));
+    return stored.KA_COOKIES || "";
+  } catch {
+    return process.env.KA_COOKIES || "";
+  }
+}
+
 async function refreshBearer() {
+  const client = requireAuthenticatedKa();
+  const availableFingerprint = sessionAuthFingerprint(
+    readStoredKleinanzeigenCookies() || client.cookies
+  );
   if (
     lastAuthRefreshFailure &&
+    lastAuthRefreshFailure.fingerprint === availableFingerprint &&
     Date.now() - lastAuthRefreshFailure.at < AUTH_REFRESH_FAILURE_COOLDOWN_MS
   ) {
     const error = new Error(lastAuthRefreshFailure.message);
     error.code = lastAuthRefreshFailure.code;
     throw error;
   }
+  if (lastAuthRefreshFailure?.fingerprint !== availableFingerprint) {
+    lastAuthRefreshFailure = null;
+  }
   if (!authRefreshPromise) {
     authRefreshPromise = (async () => {
-      const client = requireAuthenticatedKa();
-      const refreshed = await client.refreshAccessToken();
-      persistKleinanzeigenSession(client);
+      const refreshed = await refreshKleinanzeigenClient(client, {
+        loadStoredCookieHeader: readStoredKleinanzeigenCookies,
+        createClient: makeClient,
+      });
+      ka = refreshed.client;
+      kaAuthenticated = true;
+      persistKleinanzeigenSession(ka);
       lastAuthRefreshFailure = null;
-      console.log(`[agent] Kleinanzeigen-Session bis ${refreshed.expiresAt} erneuert.`);
+      console.log(
+        refreshed.refreshed
+          ? `[agent] Kleinanzeigen-Session bis ${refreshed.expiresAt} erneuert.`
+          : `[agent] Neuere gespeicherte Kleinanzeigen-Session bis ${refreshed.expiresAt} übernommen.`
+      );
     })().catch(error => {
       lastAuthRefreshFailure = {
         at: Date.now(),
         code: error.code,
         message: error.message,
+        fingerprint: sessionAuthFingerprint(readStoredKleinanzeigenCookies() || ka?.cookies),
       };
       throw error;
     }).finally(() => {
@@ -2332,6 +2371,7 @@ async function runAgent(
   if (!gateway) throw new Error("Nachrichten-Gateway ist nicht initialisiert.");
   if (!["user", "system"].includes(source)) throw new Error("Ungültige Nachrichtenquelle.");
   if (source === "user" && isExplicitApproval(userMessage)) return handleApproval(chatId, gateway);
+  const turnMode = getMode();
   const normalizedCommand = String(userMessage || "").trim().toLowerCase();
   if (source === "user" && !["/cancel", "abbrechen", "stopp"].includes(normalizedCommand)) {
     clearPending(chatId);
@@ -2621,7 +2661,7 @@ async function runAgent(
             ]
             : [];
           const confirmationInstruction = tool.requiresLive
-            ? getMode() === "live"
+            ? turnMode === "live"
               ? "Wenn genau das ausgeführt werden soll, antworte als nächste, eigenständige Nachricht nur mit „Go“. Gültig für 30 Minuten."
               : "Dry-run ist aktiv: Diese externe Kontoaktion ist vorgemerkt, wird aber mit „Go“ nicht ausgeführt. " +
                 "Für eine echte Ausführung NEMOCLAW_MODE bewusst auf live setzen, den Bot neu starten und die Aktion erneut prüfen."
