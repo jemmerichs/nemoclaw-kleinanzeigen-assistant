@@ -528,7 +528,7 @@ test("a browser pre-submit gate failure is definitive and never reported as an u
     await runAgent("browser-pre-submit", "Go", { llmClient: null, gateway });
     assert.equal(getPending("browser-pre-submit"), null);
     assert.match(sent[1], /sicher vor einer externen Änderung beendet/);
-    assert.match(sent[1], /Incident/);
+    assert.match(sent[1], /Fehlercode: KA_BROWSER_FORM_INCOMPLETE/);
     assert.doesNotMatch(sent[1], /Ausgang.*unklar|nicht automatisch wiederholen/i);
   } finally {
     TOOLS.ka_publish_prepared_listing.fn = originalCreate;

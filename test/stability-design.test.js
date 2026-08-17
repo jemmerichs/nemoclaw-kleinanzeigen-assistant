@@ -233,12 +233,37 @@ test("acceptance 10: onboard emits one understandable final status with at most 
     checkLocal: async () => ({ ok: true }),
     verifyTelegram: async () => ({ ok: false, detail: "Telegram fehlt.", action: "Token setzen." }),
     evaluateAccount: async () => { throw new Error("must not run"); },
-    verifyVisibleForm: async () => { throw new Error("must not run"); },
     startDryRunService: async () => { throw new Error("must not run"); },
   });
   assert.equal(result.status, FINAL_STATUSES.blocked);
   assert.equal(formatFinalStatus(result).match(/Nächste Handlung:/g).length, 1);
   assert.equal(formatFinalStatus(result).split("\n").length, 1);
+});
+
+test("supporting onboarding safety: a healthy private read starts dry-run without opening the listing form", async () => {
+  let savedEvidence = null;
+  let serviceStarts = 0;
+  let formChecks = 0;
+  const evidence = createEvidence({
+    sessionRevision: "onboard-session",
+    account: "42",
+    privateReadOk: true,
+  });
+  const result = await runOnboarding({
+    ensureDryRun: async () => {},
+    checkLocal: async () => ({ ok: true }),
+    verifyTelegram: async () => ({ ok: true }),
+    ensureSession: async () => ({ ok: true }),
+    evaluateAccount: async () => evidence,
+    verifyVisibleForm: async () => { formChecks++; throw new Error("must not run"); },
+    saveEvidence: value => { savedEvidence = value; },
+    startDryRunService: async () => { serviceStarts++; return { ok: true }; },
+  });
+  assert.equal(result.status, FINAL_STATUSES.ready);
+  assert.equal(formChecks, 0);
+  assert.equal(serviceStarts, 1);
+  assert.equal(savedEvidence, evidence);
+  assert.match(result.detail, /Formularprüfung erfolgt mit dem ersten echten Telegram-Vorschlag/);
 });
 
 test("acceptance 11: live activation refreshes stale session evidence exactly once", async () => {

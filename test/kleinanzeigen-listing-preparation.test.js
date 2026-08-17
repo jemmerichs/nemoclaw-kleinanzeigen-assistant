@@ -106,5 +106,7 @@ test("technical preparation failures produce a bounded developer handoff", () =>
   assert.equal(result.status, "technical_failure");
   assert.equal(result.diagnostic.code, "KA_CATEGORY_INSPECTION_INCOMPLETE");
   assert.equal(result.diagnostic.step, "prepare_current_listing_form");
-  assert.match(result.instruction, /Backend-Entwicklungsagenten/);
+  assert.match(result.action, /vollständige Fehlermeldung weitergeben/);
+  assert.match(result.instruction, /Artikelangaben und Bilder nicht erneut erfragen/);
+  assert.match(result.diagnostic.reason, /kein Versandfeld/);
 });

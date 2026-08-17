@@ -78,7 +78,7 @@ npm run onboard
 npm run enable:live
 ```
 
-`onboard` leaves the machine in dry-run, performs one Telegram check, one current private read and one visible form preparation, and starts the user service. Its single final status is `bereit`, `bereit mit Refresh-Warnung`, or `blockiert`. A working private read remains usable when a proactive refresh diagnostic fails; that condition is `degraded`, not an immediate login requirement.
+`onboard` leaves the machine in dry-run, performs one Telegram check and one current private read, then starts the user service. It deliberately does not open an empty listing form: the visible form is checked later with the first real Telegram proposal and its actual category. Its single final status is `bereit`, `bereit mit Refresh-Warnung`, or `blockiert`. A working private read remains usable when a proactive refresh diagnostic fails; that condition is `degraded`, not an immediate login requirement.
 
 `npm run login` opens a native Chrome window with a dedicated persistent profile and navigates to the current listing flow. Log in manually and complete any CAPTCHA or 2FA yourself; do not submit a listing. The script observes only that dedicated local Chrome process, waits until `user_id`/Bearer identity and CSRF are genuinely present, stores the resulting cookie string plus matching Chrome request identity in the ignored `.env`, and then closes the window automatically. It does not rely on an ENTER prompt or reopen the profile headlessly after login. Keeping the request identity aligned matters because Kleinanzeigen's session-protection cookies can reject a request whose browser version does not match the login.
 
@@ -137,7 +137,7 @@ npm run onboard
 npm run enable:live
 ```
 
-`npm run setup` includes `npm ci`. `onboard` installs the Dry-run service after its checks. Do not copy marketplace cookies, tokens, or browser profiles from another Mac. The guided live command validates current Doctor evidence, the Telegram Dry-run evidence and unresolved operations before changing mode; a failed restart restores Dry-run.
+`npm run setup` includes `npm ci`. `onboard` installs the Dry-run service after its Telegram and private-read checks. Do not copy marketplace cookies, tokens, or browser profiles from another Mac. The first real Telegram proposal supplies the visible form evidence; if that check fails, the bot prints the redacted technical reason, a stable error code and one next action directly. The guided live command validates current evidence and unresolved operations before changing mode; a failed restart restores Dry-run.
 
 `scripts/start.sh` wraps the agent in `caffeinate -i -s`, so while the bot runs the Mac will not idle-sleep or system-sleep on AC power. This keeps the bot alive instead of stopping after a short idle timeout. The `caffeinate` process ends together with the agent, so it does not keep the Mac awake when the bot is stopped. Note that closing the lid or a manual sleep still suspends the Mac; for unattended 24/7 operation set Energy Saver to prevent sleep on AC power.
 
@@ -230,7 +230,7 @@ For an active but weak listing, ask the bot to analyze the asset. It reads the r
 
 | Command | Purpose |
 |---|---|
-| `npm run onboard` | Guided target-Mac setup; force Dry-run, verify Telegram/private read/form once, start service |
+| `npm run onboard` | Guided target-Mac setup; force Dry-run, verify Telegram/private read once, start service |
 | `npm run enable:live` | Validate fresh evidence and the Telegram Dry-run proposal, then deliberately enable Live |
 | `npm run doctor` | Secret-safe local configuration diagnosis |
 | `npm run doctor:telegram` | Startup check including Telegram credentials; marketplace sessions are diagnostic only |

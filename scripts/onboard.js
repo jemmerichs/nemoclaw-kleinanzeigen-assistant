@@ -9,9 +9,8 @@ require("dotenv").config({ path: path.join(root, ".env"), override: true });
 
 const TelegramGateway = require("../tools/telegram");
 const KleinanzeigenClient = require("../tools/kleinanzeigen");
-const { inspectCategoryForm } = require("../tools/kleinanzeigen-form");
 const { kleinanzeigenListingConfig } = require("../tools/listing-config");
-const { adoptNewerObservedSession, saveToEnv } = require("../tools/auth");
+const { saveToEnv } = require("../tools/auth");
 const { evaluatePrivateRead } = require("../tools/session-readiness");
 const { formatFinalStatus, runOnboarding } = require("../tools/target-mac-setup");
 
@@ -83,20 +82,6 @@ async function main() {
           delete process.env.KA_BEARER_TOKEN;
         },
       });
-    },
-    verifyVisibleForm: async () => {
-      if (synthetic) return synthetic.form;
-      try {
-        const result = await inspectCategoryForm({
-          categoryPath: [],
-          onSessionObserved: adoptNewerObservedSession,
-        });
-        return result?.status === "selection_required" || result?.status === "ready"
-          ? { ok: true, formFingerprint: result.formState?.formFingerprint || null }
-          : { ok: false, detail: "Die sichtbare Anzeigenvorbereitung ist nicht verfügbar.", action: "Im lokalen Chrome-Profil anmelden und npm run onboard erneut ausführen." };
-      } catch {
-        return { ok: false, detail: "Die sichtbare Anzeigenvorbereitung ist nicht verfügbar.", action: "Im lokalen Chrome-Profil anmelden und npm run onboard erneut ausführen." };
-      }
     },
     startDryRunService: async () => {
       if (synthetic) return synthetic.service;

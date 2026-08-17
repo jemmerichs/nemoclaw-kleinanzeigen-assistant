@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("crypto");
+const { redactUnsafeText } = require("./safe-error");
 
 const PREPARATION_TTL_MS = 30 * 60 * 1000;
 const preparations = new Map();
@@ -134,21 +135,32 @@ function clearListingPreparations() {
 }
 
 function preparationTechnicalFailure(error, { categoryPath = [] } = {}) {
-  const rawMessage = String(error?.message || error || "Unbekannter Fehler");
-  const safeMessage = /^Bild nicht gefunden:/i.test(rawMessage)
-    ? "Mindestens ein ausgewähltes Bild wurde lokal nicht gefunden."
-    : rawMessage;
+  const rawCode = String(error?.code || "");
+  const rawMessage = String(error?.message || error || "Unbekannter Formularfehler");
+  const code = ["KA_BROWSER_REJECTED", "KA_BROWSER_BACKOFF"].includes(rawCode)
+    ? "FORM_SESSION_REJECTED"
+    : ["KA_SESSION_EXPIRED", "KA_SESSION_REJECTED", "KA_CSRF_EXPIRED", "KA_BEARER_EXPIRED", "KA_REFRESH_EXPIRED"].includes(rawCode)
+      || /(?:login|einloggen|sitzung fehlt)/i.test(rawMessage)
+      ? "FORM_LOGIN_REQUIRED"
+      : rawCode || "FORM_PAGE_CHANGED";
+  const action = code === "FORM_LOGIN_REQUIRED"
+    ? "Einmal npm run login ausführen und danach denselben Vorschlag erneut vorbereiten."
+    : code === "FORM_SESSION_REJECTED"
+      ? "Nicht erneut einloggen; diese vollständige Fehlermeldung an den Entwicklungsagenten weitergeben."
+      : "Denselben Vorschlag einmal neu vorbereiten; schlägt das erneut fehl, diese vollständige Fehlermeldung weitergeben.";
   return {
     status: "technical_failure",
-    message: "Die aktuelle Kleinanzeigen-Maske konnte nicht sicher vorbereitet werden. Es wurde nichts vorgemerkt oder veröffentlicht.",
+    message: "Die sichtbare Kleinanzeigen-Maske konnte technisch nicht sicher vorbereitet werden.",
+    action,
     diagnostic: {
-      code: String(error?.code || "KA_PREPARATION_FAILED"),
+      code,
       step: "prepare_current_listing_form",
+      reason: redactUnsafeText(rawMessage).slice(0, 500),
+      ...(Number.isInteger(Number(error?.status)) ? { httpStatus: Number(error.status) } : {}),
       category: normalizeCategoryPath(categoryPath).join(" > ") || "noch nicht gewählt",
-      error: safeMessage.slice(0, 1000),
     },
     instruction:
-      "Keine Kategorie-ID, Location-ID oder Formularattribute raten. Dieser Diagnoseblock kann unverändert an den Backend-Entwicklungsagenten weitergegeben werden.",
+      "Keine Kategorie-ID, Location-ID oder Formularattribute raten. Bereits bekannte Artikelangaben und Bilder nicht erneut erfragen.",
   };
 }
 

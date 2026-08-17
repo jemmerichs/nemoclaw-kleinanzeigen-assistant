@@ -1,7 +1,5 @@
 "use strict";
 
-const crypto = require("crypto");
-
 const SAFE_MESSAGES = Object.freeze({
   KA_FORM_STATE_DRIFT:
     "Der sichtbare Anzeigenzustand hat sich seit der Vorschau geändert. Es wurde nichts veröffentlicht; die Vorbereitung muss erneuert werden.",
@@ -62,7 +60,6 @@ function classifyError(error, {
     writeCertainty,
     safeMessage: redactUnsafeText(safeMessage || SAFE_MESSAGES[code] || error?.safeMessage || fallback)
       .slice(0, 700),
-    incidentId: crypto.randomBytes(4).toString("hex"),
   };
 }
 

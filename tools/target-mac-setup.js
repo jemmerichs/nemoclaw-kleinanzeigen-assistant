@@ -41,7 +41,6 @@ async function runOnboarding({
   verifyTelegram,
   ensureSession = async () => ({ ok: true }),
   evaluateAccount,
-  verifyVisibleForm,
   ensureDryRun,
   startDryRunService,
   saveEvidence = recordDoctorEvidence,
@@ -54,8 +53,6 @@ async function runOnboarding({
     if (!telegram?.ok) return finalStatus(FINAL_STATUSES.blocked, telegram?.detail, telegram?.action);
     const session = await ensureSession();
     if (!session?.ok) return finalStatus(FINAL_STATUSES.blocked, session?.detail, session?.action);
-    const form = await verifyVisibleForm();
-    if (!form?.ok) return finalStatus(FINAL_STATUSES.blocked, form?.detail, form?.action);
     const evidence = await evaluateAccount();
     if (!evidence || evidence.state === "unavailable") {
       return finalStatus(
@@ -64,21 +61,17 @@ async function runOnboarding({
         "Einmal im auf diesem Mac geöffneten Chrome-Profil anmelden und npm run onboard erneut ausführen."
       );
     }
-    const boundEvidence = {
-      ...evidence,
-      formFingerprint: form.formFingerprint || evidence.formFingerprint || null,
-    };
-    saveEvidence(boundEvidence);
+    saveEvidence(evidence);
     const service = await startDryRunService();
     if (!service?.ok) return finalStatus(FINAL_STATUSES.blocked, service?.detail, service?.action);
     return evidence.state === "degraded"
       ? finalStatus(
         FINAL_STATUSES.degraded,
-        "Private Reads und sichtbare Formularvorbereitung funktionieren; nur die vorsorgliche Sitzungserneuerung ist derzeit nicht belegt."
+        "Telegram, private Reads und der Dry-run-Dienst funktionieren; nur die vorsorgliche Sitzungserneuerung ist derzeit nicht belegt."
       )
       : finalStatus(
         FINAL_STATUSES.ready,
-        "Telegram, private Reads, sichtbare Formularvorbereitung und der Dry-run-Dienst sind bereit."
+        "Telegram, private Reads und der Dry-run-Dienst sind bereit. Die Formularprüfung erfolgt mit dem ersten echten Telegram-Vorschlag."
       );
   } catch {
     return finalStatus(

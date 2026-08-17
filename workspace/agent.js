@@ -1949,7 +1949,7 @@ function describeResult(toolName, result) {
     }), { phase: "local_persist", requestStarted: true })
     : null;
   const localWarning = localFailure
-    ? `\n${marketplace} hat die externe Aktion bestätigt. ${localFailure.safeMessage} Incident ${localFailure.incidentId}.`
+    ? `\n${marketplace} hat die externe Aktion bestätigt. ${localFailure.safeMessage} Fehlercode: ${localFailure.code}.`
     : "";
   switch (toolName) {
     case "ka_publish_prepared_listing":
@@ -2032,15 +2032,16 @@ function describeAmbiguousActionFailure(action, error, marketplace) {
 
 function describePreparationTechnicalFailure(result) {
   const diagnostic = result?.diagnostic || {};
-  const safe = classifyError(Object.assign(new Error("Vorbereitung fehlgeschlagen"), {
-    code: diagnostic.code || "KA_PREPARATION_FAILED",
-    safeMessage: result?.message,
-    definitiveNoWrite: true,
-  }), { phase: "preflight", requestStarted: false });
+  const code = /^[A-Z][A-Z0-9_]{2,79}$/.test(String(diagnostic.code || ""))
+    ? String(diagnostic.code)
+    : "FORM_PAGE_CHANGED";
   return [
-    safe.safeMessage,
-    "Es wurde nichts vorgemerkt oder veröffentlicht. Bitte die fachlichen Angaben prüfen und die Vorbereitung einmal neu starten.",
-    `Incident ${safe.incidentId}.`,
+    String(result?.message || "Die sichtbare Anzeigenmaske konnte nicht sicher vorbereitet werden."),
+    ...(diagnostic.reason ? [`Grund: ${String(diagnostic.reason)}`] : []),
+    "Es wurde nichts vorgemerkt, gespeichert oder veröffentlicht.",
+    "Bereits gesendete Bilder und bekannte Artikelangaben müssen nicht erneut gesendet werden.",
+    `Fehlercode: ${code}.`,
+    `Nächste Handlung: ${String(result?.action || "Diesen Vorschlag einmal neu vorbereiten.")}`,
   ].join("\n");
 }
 
@@ -2266,7 +2267,7 @@ async function handleApproval(chatId, gateway) {
       : ambiguousExternalFailure
       ? describeAmbiguousActionFailure(action, error, marketplace)
       : `${failed.error.safeMessage || "Die Aktion wurde sicher vor einer externen Änderung beendet."} ` +
-        `Incident ${failed.error.incidentId}.`;
+        `Fehlercode: ${failed.error.code}.`;
     appendHistory(
       chatId,
       categoryValidation
@@ -2729,6 +2730,12 @@ async function runAgent(
           if (toolName === "ka_prepare_listing" && result?.status === "technical_failure") {
             const message = describePreparationTechnicalFailure(result);
             await gateway.send(chatId, message);
+            appendHistory(
+              chatId,
+              `System: [FORM_FAILURE ${result?.diagnostic?.code || "FORM_PAGE_CHANGED"}] ` +
+                "Der Fehler ist technisch. Bereits bekannte Artikelangaben und Bilder nicht erneut erfragen; " +
+                "bei Rückfragen nur Ursache, Auswirkung und die ausgegebene nächste Handlung erklären."
+            );
             appendHistory(chatId, `Agent: ${message}`);
             answered = true;
             break;
@@ -2751,7 +2758,7 @@ async function runAgent(
                 });
                 appendHistory(
                   chatId,
-                  `System: ${safePreviewError.safeMessage} Incident ${safePreviewError.incidentId}.`
+                  `System: ${safePreviewError.safeMessage} Fehlercode: ${safePreviewError.code}.`
                 );
                 messages.push({
                   role: "user",
@@ -2774,9 +2781,8 @@ async function runAgent(
             error: safe.safeMessage,
             code: safe.code,
             writeCertainty: safe.writeCertainty,
-            incidentId: safe.incidentId,
           });
-          appendHistory(chatId, `System: ${safe.safeMessage} Incident ${safe.incidentId}.`);
+          appendHistory(chatId, `System: ${safe.safeMessage} Fehlercode: ${safe.code}.`);
           messages.push({ role: "tool", tool_call_id: call.id, content: resultJson });
           const verifiedInspectionFailure = verifiedCategoryInspectionFailureMessage(toolName, error);
           if (verifiedInspectionFailure) {
@@ -3229,7 +3235,7 @@ async function processTelegramItem(item, enqueue, llmClient, gateway) {
   } catch (error) {
     console.error(`[agent] Nachricht fehlgeschlagen: ${error.message}`);
     const safe = classifyError(error, { phase: "preflight", requestStarted: false });
-    await gateway.send(chatId, `${safe.safeMessage} Incident ${safe.incidentId}.`).catch(() => {});
+    await gateway.send(chatId, `${safe.safeMessage} Fehlercode: ${safe.code}.`).catch(() => {});
   }
 }
 
