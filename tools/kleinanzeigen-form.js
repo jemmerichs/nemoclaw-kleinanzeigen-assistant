@@ -354,7 +354,6 @@ async function inspectBaseAttributes(page) {
         if (text && text.length <= 1200) context = text;
         if (current.querySelectorAll?.('input[name^="attributeMap["]').length > inputs.length) break;
       }
-      const explicitLabel = document.querySelector(`label[for="${key.replace(/"/g, '\\"')}"]`);
       const choiceOptions = inputs
         .filter(input => ["radio", "checkbox"].includes(input.getAttribute("type")))
         .map(input => ({
@@ -370,10 +369,36 @@ async function inspectBaseAttributes(page) {
             .trim().replace(/\s+/g, " ").slice(0, 200),
         })).filter(option => option.value)
         : [];
+      const escapedKey = globalThis.CSS?.escape
+        ? globalThis.CSS.escape(key)
+        : key.replace(/(["\\])/g, "\\$1");
+      const explicitKeyLabel = document.querySelector(`label[for="${escapedKey}"]`);
+      const explicitControlLabel = !choiceOptions.length && first.id
+        ? document.querySelector(`label[for="${globalThis.CSS?.escape
+          ? globalThis.CSS.escape(first.id)
+          : first.id.replace(/(["\\])/g, "\\$1")}"]`)
+        : null;
+      let layoutLabel = "";
+      let ancestor = first.parentElement;
+      for (let depth = 0; depth < 9 && ancestor && !layoutLabel; depth++, ancestor = ancestor.parentElement) {
+        const siblings = Array.from(ancestor.children || []).filter(child => (
+          !child.contains(first)
+          && !inputs.some(input => child.contains(input))
+        ));
+        layoutLabel = siblings.map(sibling => (
+          String(sibling.innerText || sibling.textContent || "")
+            .trim().replace(/\s+/g, " ")
+        )).find(text => text && text.length <= 200) || "";
+      }
       const selected = inputs.find(input => input.checked) || first;
       return {
         key,
-        label: String(explicitLabel?.textContent || key).trim().replace(/\s+/g, " ").slice(0, 200),
+        label: String(
+          explicitKeyLabel?.textContent
+          || explicitControlLabel?.textContent
+          || layoutLabel
+          || key
+        ).trim().replace(/\s+/g, " ").slice(0, 200),
         required: !/\boptional\b|\boptional\)/i.test(context),
         currentValue: String(selected?.value || ""),
         context: context.slice(0, 600),

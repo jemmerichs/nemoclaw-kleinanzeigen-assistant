@@ -57,7 +57,7 @@ NEMOCLAW_COMPLEXITY_ROUTING=off
 OPENROUTER_HIGH_MODEL=moonshotai/kimi-k3
 OPENROUTER_HIGH_DAILY_BUDGET_USD=0.25
 
-# Start safe. `npm run enable:live` changes this only after guided onboarding and one Telegram dry-run proposal.
+# Start safe. `npm run enable:live` changes this only after guided onboarding.
 NEMOCLAW_MODE=dry-run
 
 TELEGRAM_BOT_TOKEN=...
@@ -65,8 +65,7 @@ TELEGRAM_ALLOWED_CHAT_ID=123456789
 NEMOCLAW_INBOX_POLL_MINUTES=45
 NEMOCLAW_LISTING_POLL_MINUTES=360
 
-KA_DEFAULT_ZIP_CODE=00000
-# KA_CONTACT_NAME=
+# PLZ, Ort und Profilname werden aus dem sichtbaren Kleinanzeigen-Formular gelesen.
 ```
 
 For the normal target-Mac path, then run:
@@ -74,7 +73,6 @@ For the normal target-Mac path, then run:
 ```bash
 npm run onboard
 # Complete the manual login in the Chrome profile if it opens.
-# Send one representative Telegram album and inspect its complete dry-run proposal.
 npm run enable:live
 ```
 
@@ -116,9 +114,7 @@ Telegram is optional: `npm run chat` works without a bot token or chat ID. Set t
 
 Codex and its in-app browser are development aids only. They are not runtime dependencies. The production Mac needs Node.js, this repository, Chrome, the OpenRouter key, and its own successful dedicated-profile login for each enabled marketplace.
 
-Before unattended Telegram operation, set a real `KA_DEFAULT_ZIP_CODE` and `KA_CONTACT_NAME`. There is no manual `KA_DEFAULT_LOCATION_ID`: preparation captures the current visible place name and internal form value, binds them to the session/form fingerprint, and shows only the place name in the proposal. A change before submit consumes the old approval without writing and creates a fresh proposal.
-
-For a bounded repair on the machine that actually runs the bot, follow [`docs/TARGET_MAC_LISTING_CONFIG_REPAIR.md`](docs/TARGET_MAC_LISTING_CONFIG_REPAIR.md). It includes a copyable prompt for a less capable target-Mac agent and avoids printing `.env` or session secrets.
+There are no manual listing-location or contact defaults. Preparation captures the current visible postal code, place name, contact name and internal form value, binds them to the session/form fingerprint, and shows only the place name in the proposal. A change before submit consumes the old approval without writing and creates a fresh proposal.
 
 The tracked `workspace/memory/preferences.md` is loaded automatically. It currently defaults Kleinanzeigen listings to the exact verified “Nur Abholung” option when a category exposes it; an explicit shipping request for the current listing still takes precedence.
 
@@ -133,11 +129,10 @@ git clone <repository-url>
 cd nemoclaw-kleinanzeigen
 npm run setup
 npm run onboard
-# Complete a representative Telegram album proposal in dry-run.
 npm run enable:live
 ```
 
-`npm run setup` includes `npm ci`. `onboard` installs the Dry-run service after its Telegram and private-read checks. Do not copy marketplace cookies, tokens, or browser profiles from another Mac. The first real Telegram proposal supplies the visible form evidence; if that check fails, the bot prints the redacted technical reason, a stable error code and one next action directly. The guided live command validates current evidence and unresolved operations before changing mode; a failed restart restores Dry-run.
+`npm run setup` includes `npm ci`. `onboard` installs the Dry-run service after its Telegram and private-read checks. Do not copy marketplace cookies, tokens, or browser profiles from another Mac. Live activation needs no sample listing: the first real proposal supplies the visible form evidence; if that check fails, the bot prints the redacted technical reason, a stable error code and one next action directly. The guided live command validates current account evidence and unresolved operations before changing mode; a failed restart restores Dry-run.
 
 `scripts/start.sh` wraps the agent in `caffeinate -i -s`, so while the bot runs the Mac will not idle-sleep or system-sleep on AC power. This keeps the bot alive instead of stopping after a short idle timeout. The `caffeinate` process ends together with the agent, so it does not keep the Mac awake when the bot is stopped. Note that closing the lid or a manual sleep still suspends the Mac; for unattended 24/7 operation set Energy Saver to prevent sleep on AC power.
 
@@ -158,6 +153,19 @@ If moving an already-running installation, stop the old process first and copy `
 ```bash
 npm run chat
 ```
+
+For an opt-in Dev-Mac end-to-end canary through the real Telegram channel, real
+OpenRouter agent and current visible Kleinanzeigen form, stop the normal bot and run:
+
+```bash
+npm run smoke:telegram-agent
+```
+
+The command prints a generated test-image path, a unique marker and the exact
+caption. Send that one image with the caption to the bot from Telegram Web. The
+canary requires a complete bound Dry-run proposal, replies through Telegram and
+then cancels the pending action. It never sends `Go`, starts an image upload or
+publishes a listing. It aborts rather than consuming an unrelated owner message.
 
 Useful prompts:
 

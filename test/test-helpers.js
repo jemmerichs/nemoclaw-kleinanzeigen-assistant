@@ -3,8 +3,8 @@
 const { normalizeFormState } = require("../tools/kleinanzeigen-form-state");
 
 function withBoundKleinanzeigenForm(listing, overrides = {}) {
-  const zipCode = overrides.zipCode || listing.zipCode || process.env.KA_DEFAULT_ZIP_CODE || "80636";
-  const contactName = overrides.contactName || listing.contactName || process.env.KA_CONTACT_NAME || "Jannik";
+  const zipCode = overrides.zipCode || listing.zipCode || "80636";
+  const contactName = overrides.contactName || listing.contactName || "Jannik";
   return {
     ...listing,
     ...normalizeFormState({

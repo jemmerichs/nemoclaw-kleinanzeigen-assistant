@@ -71,7 +71,7 @@ async function runOnboarding({
       )
       : finalStatus(
         FINAL_STATUSES.ready,
-        "Telegram, private Reads und der Dry-run-Dienst sind bereit. Die Formularprüfung erfolgt mit dem ersten echten Telegram-Vorschlag."
+        "Telegram, private Reads und der Dry-run-Dienst sind bereit. Live kann jetzt aktiviert werden; die Formularprüfung erfolgt mit der ersten echten Anzeige."
       );
   } catch {
     return finalStatus(
@@ -101,32 +101,15 @@ async function enableLive({
   now = Date.now(),
 } = {}) {
   const revision = sessionRevision(cookieHeader, { userAgent });
-  let state = readState();
-  let proposal = state.telegramDryRunProposal;
-  if (!proposal?.complete || (
-    proposal.sessionRevision
-    && proposal.sessionRevision !== "none"
-    && String(proposal.sessionRevision) !== String(revision)
-  )) {
-    return {
-      ok: false,
-      refreshed: false,
-      reason: "telegram_dry_run_missing",
-      message: "Live bleibt gesperrt: Zuerst mit der aktuellen Sitzung ein vollständiges Telegram-Dry-run-Angebot erzeugen.",
-    };
-  }
+  const state = readState();
   let evidence = state.doctorEvidence;
   let refreshed = false;
   const activationEvidenceFresh = current => (
     evidenceIsFresh(current, { sessionRevision: revision, now })
-    && String(current.formFingerprint || "") === String(proposal?.formFingerprint || "")
-    && /^[a-f0-9]{64}$/.test(String(current.formFingerprint || ""))
   );
   if (!activationEvidenceFresh(evidence)) {
     refreshed = true;
     evidence = await refreshEvidence();
-    state = readState();
-    proposal = state.telegramDryRunProposal;
   }
   if (!activationEvidenceFresh(evidence)) {
     return {

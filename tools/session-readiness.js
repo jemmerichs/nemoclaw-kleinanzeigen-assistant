@@ -162,31 +162,6 @@ function recordDoctorEvidence(evidence, { filePath = READINESS_FILE } = {}) {
   return evidence;
 }
 
-function recordDryRunProposal({
-  operationId,
-  sessionRevision: revision,
-  formFingerprint,
-  mediaHashes,
-  category,
-  completedAt = new Date().toISOString(),
-} = {}, { filePath = READINESS_FILE } = {}) {
-  const state = readOperationalState(filePath);
-  state.telegramDryRunProposal = {
-    complete: true,
-    operationId: String(operationId || ""),
-    sessionRevision: String(revision || "none"),
-    formFingerprint: String(formFingerprint || "none"),
-    category: String(category || "").trim().slice(0, 500),
-    mediaHashes: Array.isArray(mediaHashes)
-      ? mediaHashes.map(item => ({ mediaId: item.mediaId || null, sha256: item.sha256 }))
-      : [],
-    completedAt: new Date(completedAt).toISOString(),
-  };
-  state.updatedAt = new Date().toISOString();
-  writeOperationalState(state, filePath);
-  return state.telegramDryRunProposal;
-}
-
 function evidenceIsFresh(evidence, {
   sessionRevision: revision,
   maximumAgeMs = DEFAULT_EVIDENCE_TTL_MS,
@@ -208,7 +183,6 @@ module.exports = {
   evidenceIsFresh,
   readOperationalState,
   recordDoctorEvidence,
-  recordDryRunProposal,
   sessionRevision,
   writeOperationalState,
 };

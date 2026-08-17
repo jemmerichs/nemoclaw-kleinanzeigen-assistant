@@ -113,12 +113,6 @@ test("pending action descriptions hide provider identifiers", () => {
 });
 
 test("known category requirements are enforced while preparing the exact action", () => {
-  const previousLocation = {
-    zipCode: process.env.KA_DEFAULT_ZIP_CODE,
-    contactName: process.env.KA_CONTACT_NAME,
-  };
-  delete process.env.KA_DEFAULT_ZIP_CODE;
-  delete process.env.KA_CONTACT_NAME;
   const base = {
     title: "Heißluftfritteuse",
     description: "Gebraucht und funktionsfähig.",
@@ -132,49 +126,32 @@ test("known category requirements are enforced while preparing the exact action"
     sessionRevision: "security-session",
     imagePaths: [],
   };
-  try {
-    assert.throws(
-      () => prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm({
-        ...base,
-        attributes: {
-          "haushaltsgeraete.art": "haushaltskleingeraete",
-        },
-      })),
-      /Veröffentlichungskonfiguration.*Standard-PLZ.*Profilname/
-    );
-
-    process.env.KA_DEFAULT_ZIP_CODE = "80636";
-    process.env.KA_CONTACT_NAME = "Jannik";
-    assert.throws(
-      () => prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm(base)),
-      /haushaltsgeraete\.art/
-    );
-    const prepared = prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm({
-      ...base,
-      attributes: {
-        "haushaltsgeraete.art": "haushaltskleingeraete",
-      },
-    }));
-    assert.equal(prepared.attributes["haushaltsgeraete.versand"], "nein");
-    const configured = prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm({
-      ...base,
-      zipCode: "10115",
-      locationId: "6488",
-      contactName: "Geraten",
-      attributes: {
-        "haushaltsgeraete.art": "haushaltskleingeraete",
-      },
-    }));
-    assert.equal(configured.zipCode, "80636");
-    assert.equal(configured.locationId, "6488");
-    assert.equal(configured.contactName, "Jannik");
-    assert.equal(TOOLS.ka_get_category_requirements.requiresApproval, undefined);
-  } finally {
-    if (previousLocation.zipCode === undefined) delete process.env.KA_DEFAULT_ZIP_CODE;
-    else process.env.KA_DEFAULT_ZIP_CODE = previousLocation.zipCode;
-    if (previousLocation.contactName === undefined) delete process.env.KA_CONTACT_NAME;
-    else process.env.KA_CONTACT_NAME = previousLocation.contactName;
-  }
+  assert.throws(
+    () => prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm(base)),
+    /haushaltsgeraete\.art/
+  );
+  const prepared = prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm({
+    ...base,
+    attributes: {
+      "haushaltsgeraete.art": "haushaltskleingeraete",
+    },
+  }));
+  assert.equal(prepared.attributes["haushaltsgeraete.versand"], "nein");
+  const visiblyBound = prepareBoundKleinanzeigenListing(withBoundKleinanzeigenForm({
+    ...base,
+    zipCode: "10115",
+    locationId: "6488",
+    locationName: "Berlin-Mitte",
+    contactName: "Formularname",
+    attributes: {
+      "haushaltsgeraete.art": "haushaltskleingeraete",
+    },
+  }));
+  assert.equal(visiblyBound.zipCode, "10115");
+  assert.equal(visiblyBound.locationId, "6488");
+  assert.equal(visiblyBound.locationName, "Berlin-Mitte");
+  assert.equal(visiblyBound.contactName, "Formularname");
+  assert.equal(TOOLS.ka_get_category_requirements.requiresApproval, undefined);
 });
 
 test("startup rejects placeholder IDs and heartbeat recipients outside the allowlist", () => {

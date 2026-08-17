@@ -185,6 +185,7 @@ function sanitizeContract(contract) {
   const categoryId = normalizeCategoryId(contract?.categoryId);
   if (!categoryId) throw new Error("Dynamischer Kategorievertrag hat keine gültige categoryId.");
   const category = String(contract.category || "").trim().slice(0, 300);
+  const knownContract = CATEGORY_CONTRACTS.get(categoryId);
   const requiredAttributes = (contract.requiredAttributes || []).slice(0, 40).map(field => {
     const key = String(field?.key || "").trim();
     if (!/^[A-Za-z0-9_.-]{1,100}$/.test(key)) {
@@ -199,9 +200,14 @@ function sanitizeContract(contract) {
       seenValues.add(value);
       return [{ value, label }];
     });
+    const rawLabel = String(field?.label || "").trim();
+    const knownLabel = knownContract?.requiredAttributes.find(
+      knownField => knownField.key === key
+    )?.label;
     return {
       key,
-      label: String(field?.label || key).trim().slice(0, 200),
+      label: String(!rawLabel || rawLabel === key ? knownLabel || key : rawLabel)
+        .trim().slice(0, 200),
       values,
     };
   });

@@ -203,6 +203,25 @@ function normalizeConversationPath(value) {
   return path;
 }
 
+function isVintedLoginRoute(value) {
+  try {
+    const url = new URL(String(value || ""), VINTED_ORIGIN);
+    return /^\/member\/(?:general\/(?:login|signup)|register\/select_type)(?:\/|$)/.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function isEmptyVintedProfileText(value) {
+  const text = String(value || "");
+  return /(?:Aktuell keine Angebote|List items to start selling|No items(?: yet)?|Start a new listing streak)/i.test(text)
+    || (/(?:Edit profile|Profil bearbeiten)/i.test(text) && /(?:Listings|Angebote)/i.test(text));
+}
+
+function isEmptyVintedInboxText(value) {
+  return /(?:No messages yet|Noch keine Nachrichten|Keine Nachrichten)/i.test(String(value || ""));
+}
+
 async function uniqueVisible(locator, label, timeoutMs) {
   await locator.first().waitFor({ state: "visible", timeout: timeoutMs });
   const count = await locator.count();
@@ -261,7 +280,7 @@ class VintedClient {
           { status }
         );
       }
-      if (/\/member\/(?:general\/login|signup)/.test(page.url())) {
+      if (isVintedLoginRoute(page.url())) {
         throw clientError(
           "VINTED_SESSION_EXPIRED",
           "Vinted-Sitzung ist abgelaufen. Bitte 'npm run login:vinted' ausführen."
@@ -274,11 +293,13 @@ class VintedClient {
   }
 
   async getCurrentUser() {
-    const targetUrl = this.userId
-      ? `${VINTED_ORIGIN}/member/${this.userId}`
-      : `${VINTED_ORIGIN}/`;
+    const targetUrl = this.userId ? `${VINTED_ORIGIN}/inbox` : `${VINTED_ORIGIN}/`;
     return this._withPage(targetUrl, async page => {
       if (this.userId) {
+        await page.goto(`${VINTED_ORIGIN}/member/${this.userId}`, {
+          waitUntil: "domcontentloaded",
+          timeout: this.timeoutMs,
+        });
         const heading = page.getByRole("heading", { level: 1 }).first();
         await heading.waitFor({ state: "visible", timeout: this.timeoutMs });
         const login = String(await heading.innerText()).trim();
@@ -346,11 +367,8 @@ class VintedClient {
       await page.getByRole("heading", { level: 1 }).waitFor({ state: "visible", timeout: this.timeoutMs });
       const rows = await extractProductCards(page, safeLimit);
       if (!rows.length) {
-        const empty = await page.getByRole("heading", {
-          name: "List items to start selling",
-          exact: true,
-        }).count();
-        if (!empty) {
+        const mainText = await page.locator("main").innerText().catch(() => "");
+        if (!isEmptyVintedProfileText(mainText)) {
           throw new Error("Das Vinted-Profil lieferte keine eindeutig erkennbare Artikel- oder Leeransicht.");
         }
       }
@@ -361,12 +379,15 @@ class VintedClient {
   async getConversations({ limit = 30 } = {}) {
     const safeLimit = clampInteger(limit, { min: 1, max: 100, fallback: 30 });
     return this._withPage(`${VINTED_ORIGIN}/inbox`, async page => {
-      await page.getByRole("heading", { name: "Inbox", exact: true }).waitFor({
-        state: "visible",
-        timeout: this.timeoutMs,
-      });
-      const empty = await page.getByText("No messages yet", { exact: true }).count();
-      if (empty) return [];
+      const conversationLinks = page.locator('main a[href^="/inbox/"]');
+      const inboxHeading = page.getByRole("heading", {
+        name: /^(?:Inbox|Posteingang|Nachrichten|Messages)$/i,
+      }).first();
+      await Promise.race([
+        conversationLinks.first().waitFor({ state: "attached", timeout: this.timeoutMs }),
+        inboxHeading.waitFor({ state: "visible", timeout: this.timeoutMs }),
+        page.waitForTimeout(Math.min(2_000, this.timeoutMs)),
+      ]).catch(() => {});
       const rows = await page.evaluate(maxItems => {
         return Array.from(document.querySelectorAll('main a[href^="/inbox/"]'))
           .slice(0, maxItems)
@@ -377,7 +398,12 @@ class VintedClient {
             testId: link.getAttribute("data-testid") || "",
           }));
       }, safeLimit);
-      if (!rows.length) throw new Error("Vinted-Inbox hat ein unerwartetes Seitenformat.");
+      if (!rows.length) {
+        const mainText = await page.locator("main").innerText().catch(() => "");
+        if (isEmptyVintedInboxText(mainText)) return [];
+        if (new URL(page.url()).pathname === "/inbox" && !String(mainText).trim()) return [];
+        throw new Error("Vinted-Inbox hat ein unerwartetes Seitenformat.");
+      }
       return rows.map(row => ({
         conversationPath: normalizeConversationPath(row.path),
         preview: row.preview,
@@ -597,6 +623,9 @@ module.exports = VintedClient;
 module.exports.CONDITION_LABELS = CONDITION_LABELS;
 module.exports.PACKAGE_TYPE_IDS = PACKAGE_TYPE_IDS;
 module.exports.extractProductCards = extractProductCards;
+module.exports.isEmptyVintedInboxText = isEmptyVintedInboxText;
+module.exports.isEmptyVintedProfileText = isEmptyVintedProfileText;
+module.exports.isVintedLoginRoute = isVintedLoginRoute;
 module.exports.normalizeAttributes = normalizeAttributes;
 module.exports.normalizeConversationPath = normalizeConversationPath;
 module.exports.normalizeListingArgs = normalizeListingArgs;

@@ -13,8 +13,6 @@ process.env.NEMOCLAW_READINESS_FILE = path.join(temporary, "readiness.json");
 process.env.NEMOCLAW_DB_PATH = path.join(temporary, "ads.db");
 process.env.NEMOCLAW_KA_CATEGORY_CACHE_FILE = path.join(temporary, "category-contracts.json");
 process.env.NEMOCLAW_MODE = "dry-run";
-process.env.KA_DEFAULT_ZIP_CODE = "80636";
-process.env.KA_CONTACT_NAME = "Jannik";
 process.env.KA_COOKIES = "csrf-token=facade-test; registered_user=true";
 
 const categoryContracts = require("../tools/kleinanzeigen-category-contracts");

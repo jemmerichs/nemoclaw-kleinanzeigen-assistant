@@ -159,10 +159,10 @@ test("acceptance 5: visible form location binds without a configured location ID
 
 test("acceptance 6: location drift blocks the write and yields new bindable form evidence", () => {
   const preview = normalizeFormState({
-    categoryId: 87, zipCode: "80636", locationId: "one", locationName: "München", sessionRevision: "rev",
+    categoryId: 87, zipCode: "80636", locationId: "one", locationName: "München", contactName: "Jannik", sessionRevision: "rev",
   });
   const changed = normalizeFormState({
-    categoryId: 87, zipCode: "14467", locationId: "two", locationName: "Potsdam", sessionRevision: "rev",
+    categoryId: 87, zipCode: "14467", locationId: "two", locationName: "Potsdam", contactName: "Jannik", sessionRevision: "rev",
   });
   assert.throws(
     () => assertBoundFormState(preview, changed),
@@ -263,7 +263,7 @@ test("supporting onboarding safety: a healthy private read starts dry-run withou
   assert.equal(formChecks, 0);
   assert.equal(serviceStarts, 1);
   assert.equal(savedEvidence, evidence);
-  assert.match(result.detail, /Formularprüfung erfolgt mit dem ersten echten Telegram-Vorschlag/);
+  assert.match(result.detail, /Live kann jetzt aktiviert werden.*Formularprüfung erfolgt mit der ersten echten Anzeige/);
 });
 
 test("acceptance 11: live activation refreshes stale session evidence exactly once", async () => {
@@ -277,14 +277,7 @@ test("acceptance 11: live activation refreshes stale session evidence exactly on
     refreshOk: true,
     formFingerprint: "a".repeat(64),
   });
-  let state = {
-    doctorEvidence: { ...fresh, sessionRevision: "older-revision" },
-    telegramDryRunProposal: {
-      complete: true,
-      sessionRevision: revision,
-      formFingerprint: "a".repeat(64),
-    },
-  };
+  let state = { doctorEvidence: { ...fresh, sessionRevision: "older-revision" } };
   let refreshes = 0;
   let liveWrites = 0;
   const result = await enableLive({
@@ -320,10 +313,7 @@ test("supporting activation safety: a restart exception restores dry-run", async
   let dryRunRestores = 0;
   const result = await enableLive({
     cookieHeader: cookies,
-    readState: () => ({
-      doctorEvidence: evidence,
-      telegramDryRunProposal: { complete: true, sessionRevision: revision, formFingerprint },
-    }),
+    readState: () => ({ doctorEvidence: evidence }),
     refreshEvidence: async () => { throw new Error("must not refresh"); },
     unresolved: () => [],
     setLiveMode: async () => {},

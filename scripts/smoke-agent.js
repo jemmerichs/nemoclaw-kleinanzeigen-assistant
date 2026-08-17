@@ -39,6 +39,17 @@ function parseArgs(argv) {
   return { images, context, requiredFacts };
 }
 
+function smokePrompt(mediaIds, context = "") {
+  return [
+    ...mediaIds.map(mediaId => `[MEDIA id:${mediaId}]`),
+    "Nur ein Dry-run-Test: Erkenne den Artikel, recherchiere vergleichbare aktuelle Angebote und bereite eine vollständige ehrliche Verkaufsanzeige vor. Nichts ausführen.",
+    ...(String(context || "").trim()
+      ? [`Zusätzlicher Testkontext: ${String(context).trim()}`]
+      : []),
+    "Bereite den fertigen Vorschlag mit ka_prepare_listing vor und rufe bei ready sofort ka_publish_prepared_listing nur mit der preparationId auf. Die Bridge darf ihn ausschließlich als blockierte Dry-run-Aktion vormerken.",
+  ].join("\n");
+}
+
 function verifySmokeResult({
   result,
   pending,
@@ -160,11 +171,7 @@ async function main() {
     validateConfig({ requireTelegram: false });
     loadKleinanzeigenSession();
     const llmClient = createLlmClientFromEnv();
-    const prompt = [
-      ...imported.map(item => `[MEDIA id:${item.media.mediaId}]`),
-      context || "Nur ein Dry-run-Test: Erkenne den Artikel, recherchiere vergleichbare aktuelle Angebote und bereite eine vollständige ehrliche Verkaufsanzeige vor. Nichts ausführen.",
-      "Bereite den fertigen Vorschlag mit ka_prepare_listing vor und rufe bei ready sofort ka_publish_prepared_listing nur mit der preparationId auf. Die Bridge darf ihn ausschließlich als blockierte Dry-run-Aktion vormerken.",
-    ].join("\n");
+    const prompt = smokePrompt(imported.map(item => item.media.mediaId), context);
     const result = await runAgent("agent-smoke", prompt, { llmClient, gateway });
     const pending = result?.pending;
     verifySmokeResult({
@@ -203,4 +210,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseArgs, verifySmokeResult };
+module.exports = { parseArgs, smokePrompt, verifySmokeResult };

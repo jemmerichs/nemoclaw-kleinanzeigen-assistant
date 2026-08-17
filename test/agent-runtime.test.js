@@ -36,6 +36,7 @@ const {
   getHistory,
   getPending,
   normalizeHistoryEntry,
+  observedKaSearchCategoryIds,
   prepareBoundKleinanzeigenListing,
   runAgent,
   stagePending,
@@ -104,6 +105,70 @@ test("private Kleinanzeigen access failures produce an evidence-bounded diagnosi
   assert.match(message, /belegt weder eine allgemeine IP-Sperre/);
   assert.match(message, /npm run login/);
   assert.doesNotMatch(message, /Telekom|München|Wohnanschluss|Stunden|Tag/);
+});
+
+test("empty market research cannot provide category evidence for listing preparation", () => {
+  assert.deepEqual(observedKaSearchCategoryIds([
+    { tool: "ka_search_ads", result: { count: 0, categoryIds: [] } },
+    { tool: "ka_prepare_listing", blockedBy: "empty_market_research" },
+  ]), []);
+  assert.deepEqual(observedKaSearchCategoryIds([
+    { tool: "ka_search_ads", result: { count: 2, categoryIds: [82, 82, 80] } },
+  ]), [82, 80]);
+});
+
+test("agent broadens empty market research before preparing a listing", async () => {
+  const originalSearch = TOOLS.ka_search_ads.fn;
+  const originalPrepare = TOOLS.ka_prepare_listing.fn;
+  const sent = [];
+  let searchCalls = 0;
+  let prepareCalls = 0;
+  let modelCalls = 0;
+  const toolCall = (id, name, args) => ({
+    role: "assistant",
+    content: "",
+    tool_calls: [{
+      id,
+      type: "function",
+      function: { name, arguments: JSON.stringify(args) },
+    }],
+  });
+  const modelMessages = [
+    toolCall("narrow-search", "ka_search_ads", { keyword: "Testartikel dunkelgrün", limit: 10 }),
+    toolCall("blocked-prepare", "ka_prepare_listing", semanticListingArgs()),
+    toolCall("broad-search", "ka_search_ads", { keyword: "Testartikel", limit: 10 }),
+    toolCall("ready-prepare", "ka_prepare_listing", semanticListingArgs()),
+    { role: "assistant", content: "Recherche und Vorbereitung sind abgeschlossen." },
+  ];
+
+  TOOLS.ka_search_ads.fn = async () => {
+    searchCalls++;
+    return searchCalls === 1
+      ? []
+      : [{ id: "comparable-1", title: "Vergleich", price: 10, categoryId: 278 }];
+  };
+  TOOLS.ka_prepare_listing.fn = async () => {
+    prepareCalls++;
+    return { status: "ready", preparationId: "0".repeat(24) };
+  };
+
+  try {
+    const result = await runAgent("empty-research-guard", "Testartikel recherchieren und vorbereiten", {
+      llmClient: {
+        model: "stub",
+        async complete() { return { message: modelMessages[modelCalls++] }; },
+      },
+      gateway: { async send(_chatId, text) { sent.push(text); } },
+    });
+    assert.equal(searchCalls, 2);
+    assert.equal(prepareCalls, 1);
+    assert.equal(result.toolTrace.some(entry => entry.blockedBy === "empty_market_research"), true);
+    assert.match(sent.at(-1), /Vorbereitung.*abgeschlossen/);
+  } finally {
+    TOOLS.ka_search_ads.fn = originalSearch;
+    TOOLS.ka_prepare_listing.fn = originalPrepare;
+    clearPending("empty-research-guard");
+  }
 });
 
 test("private Kleinanzeigen 403 is never retried automatically", async () => {
@@ -288,12 +353,6 @@ test("protected model action is staged exactly and Go is consumed once", async (
 });
 
 test("ready bridge configuration cannot be hallucinated as unresolved", async () => {
-  const previous = {
-    zipCode: process.env.KA_DEFAULT_ZIP_CODE,
-    contactName: process.env.KA_CONTACT_NAME,
-  };
-  process.env.KA_DEFAULT_ZIP_CODE = "80636";
-  process.env.KA_CONTACT_NAME = "Jannik";
   const sent = [];
   let modelCalls = 0;
   const gateway = { async send(_chatId, text) { sent.push(text); } };
@@ -304,13 +363,13 @@ test("ready bridge configuration cannot be hallucinated as unresolved", async ()
       if (modelCalls === 1) {
         assert.match(
           request.messages[1].content,
-          /Kleinanzeigen-Veröffentlichungskonfiguration: bereit/
+          /liest PLZ, Ort, Profilname.*aktuellen sichtbaren Formular/
         );
         return {
           message: {
             role: "assistant",
             content:
-              "Die Veröffentlichung konnte noch nicht vorbereitet werden, da das Standortpaar in der Bridge-Umgebung nicht vollständig aufgelöst ist. KA_DEFAULT_LOCATION_ID muss aktualisiert werden.",
+              "Die Kleinanzeigen-Veröffentlichung ist blockiert, da auf diesem Mac eine gültige Standard-PLZ und der Profilname fehlen. Bitte zuerst die lokale Konfiguration ergänzen.",
           },
         };
       }
@@ -351,28 +410,18 @@ test("ready bridge configuration cannot be hallucinated as unresolved", async ()
     assert.equal(result.answered, true);
     assert.deepEqual(result.toolCalls, ["ka_publish_prepared_listing"]);
     assert.equal(sent.length, 1);
-    assert.doesNotMatch(sent[0], /nicht vollständig aufgelöst|KA_DEFAULT/);
+    assert.doesNotMatch(sent[0], /blockiert|Standard-PLZ|Profilname fehlen|lokale Konfiguration/);
     assert.equal(getPending("ready-listing-config").args.listing.zipCode, "80636");
     assert.equal(getPending("ready-listing-config").args.listing.locationId, "16360");
     assert.equal(getPending("ready-listing-config").args.listing.contactName, "Jannik");
   } finally {
     clearPending("ready-listing-config");
-    if (previous.zipCode === undefined) delete process.env.KA_DEFAULT_ZIP_CODE;
-    else process.env.KA_DEFAULT_ZIP_CODE = previous.zipCode;
-    if (previous.contactName === undefined) delete process.env.KA_CONTACT_NAME;
-    else process.env.KA_CONTACT_NAME = previous.contactName;
   }
 });
 
 test("server-rejected category contract blocks a repeated empty-attribute proposal", async () => {
-  const previous = {
-    mode: process.env.NEMOCLAW_MODE,
-    zipCode: process.env.KA_DEFAULT_ZIP_CODE,
-    contactName: process.env.KA_CONTACT_NAME,
-  };
+  const previousMode = process.env.NEMOCLAW_MODE;
   process.env.NEMOCLAW_MODE = "live";
-  process.env.KA_DEFAULT_ZIP_CODE = "80636";
-  process.env.KA_CONTACT_NAME = "Jannik";
   categoryContracts.rememberCategoryRequirements({
     categoryId: 654,
     category: "Haus & Garten > Test",
@@ -461,24 +510,14 @@ test("server-rejected category contract blocks a repeated empty-attribute propos
   } finally {
     TOOLS.ka_publish_prepared_listing.fn = originalCreate;
     clearPending("category-quarantine");
-    if (previous.mode === undefined) delete process.env.NEMOCLAW_MODE;
-    else process.env.NEMOCLAW_MODE = previous.mode;
-    if (previous.zipCode === undefined) delete process.env.KA_DEFAULT_ZIP_CODE;
-    else process.env.KA_DEFAULT_ZIP_CODE = previous.zipCode;
-    if (previous.contactName === undefined) delete process.env.KA_CONTACT_NAME;
-    else process.env.KA_CONTACT_NAME = previous.contactName;
+    if (previousMode === undefined) delete process.env.NEMOCLAW_MODE;
+    else process.env.NEMOCLAW_MODE = previousMode;
   }
 });
 
 test("a browser pre-submit gate failure is definitive and never reported as an uncertain write", async () => {
-  const previous = {
-    mode: process.env.NEMOCLAW_MODE,
-    zipCode: process.env.KA_DEFAULT_ZIP_CODE,
-    contactName: process.env.KA_CONTACT_NAME,
-  };
+  const previousMode = process.env.NEMOCLAW_MODE;
   process.env.NEMOCLAW_MODE = "live";
-  process.env.KA_DEFAULT_ZIP_CODE = "80636";
-  process.env.KA_CONTACT_NAME = "Jannik";
   categoryContracts.rememberCategoryRequirements({
     categoryId: 655,
     category: "Haus & Garten > Test",
@@ -533,12 +572,8 @@ test("a browser pre-submit gate failure is definitive and never reported as an u
   } finally {
     TOOLS.ka_publish_prepared_listing.fn = originalCreate;
     clearPending("browser-pre-submit");
-    if (previous.mode === undefined) delete process.env.NEMOCLAW_MODE;
-    else process.env.NEMOCLAW_MODE = previous.mode;
-    if (previous.zipCode === undefined) delete process.env.KA_DEFAULT_ZIP_CODE;
-    else process.env.KA_DEFAULT_ZIP_CODE = previous.zipCode;
-    if (previous.contactName === undefined) delete process.env.KA_CONTACT_NAME;
-    else process.env.KA_CONTACT_NAME = previous.contactName;
+    if (previousMode === undefined) delete process.env.NEMOCLAW_MODE;
+    else process.env.NEMOCLAW_MODE = previousMode;
   }
 });
 

@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { verifySmokeResult } = require("../scripts/smoke-agent");
+const { smokePrompt, verifySmokeResult } = require("../scripts/smoke-agent");
 
 function fixture(categoryId = 230) {
   const images = ["/images/one.jpg", "/images/two.jpg"];
@@ -56,6 +56,14 @@ function fixture(categoryId = 230) {
     proposal,
   };
 }
+
+test("agent smoke context cannot replace price research and preparation requirements", () => {
+  const prompt = smokePrompt(["a".repeat(24), "b".repeat(24)], "Dunkelgrün muss erwähnt werden.");
+  assert.match(prompt, /recherchiere vergleichbare aktuelle Angebote/);
+  assert.match(prompt, /Zusätzlicher Testkontext: Dunkelgrün/);
+  assert.match(prompt, /ka_prepare_listing/);
+  assert.equal((prompt.match(/\[MEDIA id:/g) || []).length, 2);
+});
 
 test("agent smoke verifier binds the staged category to observed search results", () => {
   assert.doesNotThrow(() => verifySmokeResult(fixture()));

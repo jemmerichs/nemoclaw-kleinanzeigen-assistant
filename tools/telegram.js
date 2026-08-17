@@ -7,6 +7,16 @@ const path = require("path");
 
 const MAX_MESSAGE_LENGTH = 4000;
 const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+const DEFAULT_DNS_RETRY_DELAYS_MS = Object.freeze([1000, 4000]);
+
+function isTransientDnsError(error) {
+  const code = String(error?.code || error?.cause?.code || "").toUpperCase();
+  return code === "ENOTFOUND" || code === "EAI_AGAIN";
+}
+
+function wait(milliseconds) {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
 
 function telegramPlainText(text) {
   return String(text || "")
@@ -49,13 +59,27 @@ function mimeTypeFor(filePath) {
 }
 
 class TelegramGateway {
-  constructor(token, { lastUpdateId = 0 } = {}) {
+  constructor(token, { lastUpdateId = 0, dnsRetryDelaysMs = DEFAULT_DNS_RETRY_DELAYS_MS } = {}) {
     if (!token) throw new Error("Telegram bot token fehlt.");
     this.token = token;
     this.lastUpdateId = Number(lastUpdateId) || 0;
+    this.dnsRetryDelaysMs = (Array.isArray(dnsRetryDelaysMs) ? dnsRetryDelaysMs : [])
+      .slice(0, 2)
+      .map(value => Math.max(0, Math.min(5000, Number(value) || 0)));
   }
 
-  _request(method, body, socketTimeoutMs = 30000) {
+  async _request(method, body, socketTimeoutMs = 30000) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this._requestOnce(method, body, socketTimeoutMs);
+      } catch (error) {
+        if (!isTransientDnsError(error) || attempt >= this.dnsRetryDelaysMs.length) throw error;
+        await wait(this.dnsRetryDelaysMs[attempt]);
+      }
+    }
+  }
+
+  _requestOnce(method, body, socketTimeoutMs = 30000) {
     return new Promise((resolve, reject) => {
       const data = JSON.stringify(body);
       const opts = {
@@ -202,3 +226,4 @@ module.exports = TelegramGateway;
 module.exports.splitMessage = splitMessage;
 module.exports.mimeTypeFor = mimeTypeFor;
 module.exports.telegramPlainText = telegramPlainText;
+module.exports.isTransientDnsError = isTransientDnsError;

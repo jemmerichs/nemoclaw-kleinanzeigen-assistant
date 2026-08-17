@@ -9,7 +9,6 @@ require("dotenv").config({ path: path.join(root, ".env"), override: true });
 
 const TelegramGateway = require("../tools/telegram");
 const KleinanzeigenClient = require("../tools/kleinanzeigen");
-const { kleinanzeigenListingConfig } = require("../tools/listing-config");
 const { saveToEnv } = require("../tools/auth");
 const { evaluatePrivateRead } = require("../tools/session-readiness");
 const { formatFinalStatus, runOnboarding } = require("../tools/target-mac-setup");
@@ -28,14 +27,13 @@ async function main() {
     },
     checkLocal: async () => {
       if (synthetic) return synthetic.local;
-      const config = kleinanzeigenListingConfig();
       const apiKeyOk = /^sk-or-v1-[A-Za-z0-9_-]{20,}$/.test(process.env.OPENROUTER_API_KEY || "");
-      return apiKeyOk && config.ready
+      return apiKeyOk
         ? { ok: true }
         : {
           ok: false,
-          detail: "Die nicht geheime Grundkonfiguration ist unvollständig.",
-          action: "OpenRouter-Key, Standard-PLZ und Profilname in .env vervollständigen.",
+          detail: "Die lokale Grundkonfiguration ist unvollständig.",
+          action: "OpenRouter-Key in .env vervollständigen.",
         };
     },
     verifyTelegram: async () => {

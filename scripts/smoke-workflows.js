@@ -14,7 +14,7 @@ async function main() {
   process.env.NEMOCLAW_MODE = "dry-run";
   process.env.NEMOCLAW_COMPLEXITY_ROUTING = "manual";
   process.env.NEMOCLAW_SESSION_FILE = path.join(temporary, "sessions.json");
-process.env.NEMOCLAW_STATE_FILE = path.join(temporary, "state.json");
+  process.env.NEMOCLAW_STATE_FILE = path.join(temporary, "state.json");
   process.env.NEMOCLAW_DB_PATH = path.join(temporary, "ads.db");
   process.env.NEMOCLAW_IMAGE_DIR = path.join(temporary, "images");
 
@@ -62,7 +62,9 @@ process.env.NEMOCLAW_STATE_FILE = path.join(temporary, "state.json");
     const normalMessages = await agent.TOOLS.ka_get_messages.fn("smoke-normal");
     const normal = await agent.runAgent(
       "workflow-normal",
-      "Automatischer Inbox-Check: Die aktive Anzeige „Testartikel“ hat eine neue Nachricht von Alex. Zeige die Käuferfrage wörtlich und schlage eine knappe Antwort vor.",
+      "Automatischer Inbox-Check: Die aktive Anzeige „Testartikel“ hat eine neue Nachricht von Alex. " +
+        "Zeige die Käuferfrage wörtlich, formuliere eine knappe Antwort und merke genau diese mit ka_send_message " +
+        "als Go-pflichtige Aktion vor. Nicht senden.",
       {
         llmClient,
         gateway,

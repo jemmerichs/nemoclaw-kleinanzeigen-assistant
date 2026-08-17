@@ -34,7 +34,6 @@ const VintedClient = require("../tools/vinted");
 const { PROFILE_DIR: VINTED_PROFILE_DIR } = require("../tools/vinted-auth");
 const { OpenRouterClient } = require("../tools/openrouter");
 const { adoptNewerObservedSession, saveToEnv } = require("../tools/auth");
-const { kleinanzeigenListingConfig } = require("../tools/listing-config");
 const {
   editImage,
   normalizeOperations: normalizeImageOperations,
@@ -52,7 +51,6 @@ const {
   accountFromSession,
   evidenceIsFresh,
   readOperationalState,
-  recordDryRunProposal,
   sessionRevision,
 } = require("../tools/session-readiness");
 const {
@@ -637,31 +635,24 @@ function recordRemovedListing(adId, marketplace = "kleinanzeigen") {
   return { assetId, remainingActiveListings };
 }
 
-function defaultsForListing(args) {
-  const config = kleinanzeigenListingConfig();
-  return {
-    ...args,
-    zipCode: config.zipCode,
-    contactName: config.contactName,
-  };
-}
-
 function assertBoundListingLocation(args) {
   const zipCode = String(args.zipCode || "").trim();
   const locationId = String(args.locationId || "").trim();
   const locationName = String(args.locationName || "").trim();
-  const config = kleinanzeigenListingConfig();
-  if (!config.ready) {
-    throw new Error(
-      "Die Kleinanzeigen-Veröffentlichungskonfiguration dieser Bridge ist unvollständig oder ungültig: " +
-      `${config.problems.join(", ")}. Bitte PLZ und Profilnamen auf diesem Mac konfigurieren.`
-    );
-  }
-  if (zipCode !== config.zipCode || !locationId || !locationName) {
+  const contactName = String(args.contactName || "").trim();
+  if (!/^\d{5}$/.test(zipCode) || zipCode === "00000" || !locationId || !locationName) {
     const error = new Error(
       "Der sichtbare Standort ist nicht vollständig an die aktuelle Formularvorbereitung gebunden."
     );
     error.code = "KA_FORM_LOCATION_UNRESOLVED";
+    error.definitiveNoWrite = true;
+    throw error;
+  }
+  if (!contactName || contactName.length > 30) {
+    const error = new Error(
+      "Der sichtbare Profilname ist nicht vollständig an die aktuelle Formularvorbereitung gebunden."
+    );
+    error.code = "KA_FORM_CONTACT_UNRESOLVED";
     error.definitiveNoWrite = true;
     throw error;
   }
@@ -676,7 +667,6 @@ function assertBoundListingLocation(args) {
 }
 
 function prepareListingArgs(rawArgs, { includeContact = false } = {}) {
-  const defaults = defaultsForListing(rawArgs);
   const mediaIds = Array.isArray(rawArgs.mediaIds) && rawArgs.mediaIds.length
     ? rawArgs.mediaIds.map(mediaId => resolveMediaAsset(mediaId).mediaId)
     : (rawArgs.imagePaths || []).map(imagePath => (
@@ -689,7 +679,7 @@ function prepareListingArgs(rawArgs, { includeContact = false } = {}) {
     title: String(rawArgs.title || "").trim(),
     description: String(rawArgs.description || "").trim(),
     priceType: rawArgs.priceType || "NEGOTIABLE",
-    zipCode: defaults.zipCode,
+    zipCode: String(rawArgs.zipCode || "").trim(),
     locationId: String(rawArgs.locationId || "").trim(),
     locationName: String(rawArgs.locationName || "").trim(),
     sessionRevision: String(rawArgs.sessionRevision || "").trim(),
@@ -701,7 +691,7 @@ function prepareListingArgs(rawArgs, { includeContact = false } = {}) {
       ? { ...rawArgs.attributes }
       : {},
   };
-  if (includeContact) args.contactName = defaults.contactName;
+  if (includeContact) args.contactName = String(rawArgs.contactName || "").trim();
   return args;
 }
 
@@ -1488,6 +1478,14 @@ function compactToolTrace(toolName, args, result, error = null) {
   return { tool: toolName, args: safeArgs, ok: true };
 }
 
+function observedKaSearchCategoryIds(toolTrace = []) {
+  return [...new Set(toolTrace
+    .filter(entry => entry?.tool === "ka_search_ads")
+    .flatMap(entry => entry?.result?.categoryIds || [])
+    .map(Number)
+    .filter(Number.isInteger))];
+}
+
 function verifiedKaAccessFailureMessage(toolName, error) {
   const code = String(error?.code || "");
   const privateAccessCodes = new Set([
@@ -2070,17 +2068,13 @@ async function deliverAgentMessage(chatId, message, gateway) {
 
 function userPrompt(chatId, history) {
   const pending = getPending(chatId);
-  const listingConfig = kleinanzeigenListingConfig();
   return [
     `## Session\nChat-ID: ${chatId}`,
     [
       "## Aktueller Bridge-Zustand (verbindlich)",
       `Modus: ${getMode()}`,
       `Vorgemerkte Aktion: ${pending ? "wartet auf Go" : "keine"}`,
-      listingConfig.ready
-        ? "Kleinanzeigen-Veröffentlichungskonfiguration: bereit. ka_prepare_listing setzt Standort, Profilname, Kategorie-ID und Formularattribute intern; diese technischen Werte weder erfragen noch selbst setzen."
-        : "Kleinanzeigen-Veröffentlichungskonfiguration: blockiert; auf diesem Mac fehlt oder ist ungültig: " +
-          `${listingConfig.problems.join(", ")}. Eine Veröffentlichung kann erst nach lokaler Konfiguration vorbereitet werden.`,
+      "Kleinanzeigen-Formularwerte: ka_prepare_listing liest PLZ, Ort, Profilname, Kategorie-ID und Formularattribute aus dem aktuellen sichtbaren Formular; diese technischen Werte weder erfragen noch selbst setzen.",
       "Ein früherer Entwurf, Link oder Veröffentlichungserfolg gilt nicht als aktuell bestätigt, " +
         "wenn er nur im Gespräch erwähnt wurde. Bei Bedarf den aktuellen Marktplatzstand mit dem passenden Lesetool prüfen.",
     ].join("\n"),
@@ -2091,10 +2085,9 @@ function userPrompt(chatId, history) {
 }
 
 function contradictsReadyListingConfiguration(message) {
-  if (!kleinanzeigenListingConfig().ready) return false;
   const text = String(message || "");
-  const mentionsConfiguration = /KA_DEFAULT_(?:ZIP_CODE|LOCATION_ID)|KA_CONTACT_NAME|Standort(?:paar|konfiguration)|Bridge-Umgebung|Location-ID/i.test(text);
-  const claimsUnavailable = /unvollständig|nicht (?:vollständig )?aufgelöst|nicht hinterlegt|fehlt|fehlend|aktualisiert werden|konnte noch nicht vorbereitet/i.test(text);
+  const mentionsConfiguration = /KA_DEFAULT_(?:ZIP_CODE|LOCATION_ID)|KA_CONTACT_NAME|Standard-PLZ|Profilname|(?:lokale |Veröffentlichungs|Standort)konfiguration|Standortpaar|Bridge-Umgebung|Location-ID/i.test(text);
+  const claimsUnavailable = /unvollständig|nicht (?:vollständig )?aufgelöst|nicht hinterlegt|fehlt|fehlen|fehlend|aktualisiert werden|konnte noch nicht vorbereitet|blockiert/i.test(text);
   return mentionsConfiguration && claimsUnavailable;
 }
 
@@ -2302,7 +2295,6 @@ async function handleCommand(chatId, userMessage, gateway, llmClient) {
     const usage = llmClient?.usageSummary?.();
     const inboxMinutes = normalizeInboxPollMinutes(process.env.NEMOCLAW_INBOX_POLL_MINUTES);
     const listingMinutes = normalizeListingPollMinutes(process.env.NEMOCLAW_LISTING_POLL_MINUTES);
-    const listingConfig = kleinanzeigenListingConfig();
     const operationalState = readOperationalState();
     const currentSessionRevision = sessionRevision(process.env.KA_COOKIES || "", {
       userAgent: process.env.KA_USER_AGENT || "",
@@ -2318,9 +2310,7 @@ async function handleCommand(chatId, userMessage, gateway, llmClient) {
       `Komplexitätsrouting: ${getRoutingMode()} (high: ${process.env.OPENROUTER_HIGH_MODEL || "moonshotai/kimi-k3"})`,
       `Kleinanzeigen-Kontozugriff: ${readiness}`,
       `Vinted-Session: ${vintedAuthenticated ? "importiert" : "fehlt (npm run login:vinted)"}`,
-      `Anzeigen-Veröffentlichung: ${listingConfig.ready
-        ? "PLZ und Profilname vorhanden; der sichtbare Ort wird bei jeder Vorbereitung gebunden"
-        : `blockiert (${listingConfig.problems.join(", ")})`}`,
+      "Anzeigen-Veröffentlichung: Formularwerte werden bei jeder Vorbereitung sichtbar geprüft und gebunden",
       `Inbox-Monitor: ${inboxMinutes === 0 ? "aus" : `${inboxMinutes} min`}`,
       `Anzeigen-Lifecycle: ${listingMinutes === 0 ? "aus" : `${listingMinutes} min`}`,
       `Vorgemerkte Aktion: ${pending ? "wartet auf Go" : "keine"}`,
@@ -2570,6 +2560,32 @@ async function runAgent(
           });
           continue;
         }
+        const attemptedKaResearch = toolTrace.some(entry => entry?.tool === "ka_search_ads");
+        if (
+          toolName === "ka_prepare_listing"
+          && attemptedKaResearch
+          && observedKaSearchCategoryIds(toolTrace).length === 0
+        ) {
+          toolTrace.push({
+            tool: toolName,
+            args: agentFacingToolResult(args),
+            staged: false,
+            blockedBy: "empty_market_research",
+          });
+          messages.push(modelMessage);
+          messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: JSON.stringify({
+              error:
+                "Die bisherige Kleinanzeigen-Suche lieferte keine belastbare sichtbare Kategorie. " +
+                "Suche jetzt einmal mit einem kürzeren, allgemeineren Produktbegriff ohne geratene Kategorieeinschränkung. " +
+                "Bereite die Anzeige erst danach vor.",
+              code: "KA_MARKET_RESEARCH_EMPTY",
+            }),
+          });
+          continue;
+        }
         const remainingVisuals = turnMediaIds.filter(
           mediaId => !visuallyPresentedImages.has(mediaId)
         );
@@ -2631,19 +2647,6 @@ async function runAgent(
             if (tool.prepareForApproval) args = await tool.prepareForApproval(args);
             validateSchema(args, tool.actionSchema || tool.schema);
             action = stagePending(chatId, toolName, args);
-            if (
-              turnMode === "dry-run"
-              && channel === "telegram"
-              && toolName === "ka_publish_prepared_listing"
-            ) {
-              recordDryRunProposal({
-                operationId: action.id,
-                sessionRevision: action.sessionRevision,
-                formFingerprint: action.formFingerprint,
-                mediaHashes: action.materials,
-                category: args.category,
-              });
-            }
           } catch (error) {
             toolTrace.push({
               tool: toolName,
@@ -2679,7 +2682,7 @@ async function runAgent(
             ? turnMode === "live"
               ? "Wenn genau das ausgeführt werden soll, antworte als nächste, eigenständige Nachricht nur mit „Go“. Gültig für 30 Minuten."
               : "Dry-run ist aktiv: Diese externe Kontoaktion ist vorgemerkt, wird aber mit „Go“ nicht ausgeführt. " +
-                "Nach einem vollständigen Telegram-Test kann Live bewusst mit npm run enable:live aktiviert werden; prüfe die Aktion danach erneut."
+                "Live kann bewusst mit npm run enable:live aktiviert werden; prüfe die Aktion danach erneut."
             : "Diese Aktion betrifft nur das lokale Inventar und wird nicht vom Dry-run blockiert. " +
               "Wenn genau das ausgeführt werden soll, antworte als nächste, eigenständige Nachricht nur mit „Go“. Gültig für 30 Minuten.";
           const message = [
@@ -2813,8 +2816,8 @@ async function runAgent(
         messages.push({
           role: "user",
           content:
-            "Korrektur durch die Bridge: Die Kleinanzeigen-Veröffentlichungskonfiguration auf diesem Mac ist vollständig und gültig. " +
-            "Die vorige gegenteilige Diagnose darf nicht ausgegeben werden. Nenne keine internen Variablennamen und erfrage keine Standortwerte. " +
+            "Korrektur durch die Bridge: PLZ, Ort und Profilname werden erst bei ka_prepare_listing aus dem aktuellen sichtbaren Formular gelesen. " +
+            "Die vorige .env-Diagnose darf nicht ausgegeben werden. Nenne keine internen Variablennamen und erfrage keine Standortwerte. " +
             "Wenn Jannik veröffentlichen möchte und alle Angebotsdaten vorliegen, rufe ka_prepare_listing mit sichtbarem Kategoriepfad und fachlicher Versandwahl auf; " +
             "andernfalls antworte nur mit der tatsächlich noch fehlenden Nutzerentscheidung.",
         });
@@ -3466,12 +3469,12 @@ module.exports = {
   getRoutingMode,
   loadContext,
   loadKleinanzeigenSession,
-  kleinanzeigenListingConfig,
   loadVintedSession,
   listingLifecyclePrompt,
   main,
   notifyUnreadConversations,
   normalizeHistoryEntry,
+  observedKaSearchCategoryIds,
   processTelegramUpdates,
   prepareBoundKleinanzeigenListing,
   reconcileExternalOperations,

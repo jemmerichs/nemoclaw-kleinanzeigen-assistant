@@ -3,7 +3,6 @@
 
 const fs = require("fs");
 const path = require("path");
-const { kleinanzeigenListingConfig } = require("../tools/listing-config");
 const {
   evidenceIsFresh,
   readOperationalState,
@@ -226,8 +225,6 @@ function main() {
   });
   const accountReady = localReady && kaCookies && csrfOk && userIdOk && bearerOk
     && browserFingerprintOk && browserVersionAligned && currentEvidence;
-  const listingConfig = kleinanzeigenListingConfig();
-  const publishReady = listingConfig.ready;
   line("Lokaler Dry-run", localReady, localReady ? "bereit — npm run chat" : "nicht bereit");
   accountLine(
     "Kontoaktionen",
@@ -245,10 +242,8 @@ function main() {
   );
   optionalLine(
     "Anzeigen-Veröffentlichung",
-    publishReady,
-    publishReady
-      ? "PLZ und Kontaktname gesetzt; der Ort wird aus dem sichtbaren Formular gebunden"
-      : `vor Live-Veröffentlichung korrigieren: ${listingConfig.problems.join(", ")}`
+    true,
+    "PLZ, Ort und Kontaktname werden bei der Vorbereitung aus dem sichtbaren Formular gebunden"
   );
   if (requireTelegram) {
     line(

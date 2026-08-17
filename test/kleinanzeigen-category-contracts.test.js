@@ -8,6 +8,18 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
+const testCacheDirectory = fs.mkdtempSync(
+  path.join(os.tmpdir(), "nemoclaw-category-contracts-suite-")
+);
+process.env.NEMOCLAW_KA_CATEGORY_CACHE_FILE = path.join(
+  testCacheDirectory,
+  "contracts.json"
+);
+
+test.after(() => {
+  fs.rmSync(testCacheDirectory, { recursive: true, force: true });
+});
+
 const {
   applyCategoryPreferences,
   getCategoryRequirements,

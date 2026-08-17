@@ -6,10 +6,25 @@ const test = require("node:test");
 const VintedClient = require("../tools/vinted");
 const {
   extractProductCards,
+  isEmptyVintedInboxText,
+  isEmptyVintedProfileText,
+  isVintedLoginRoute,
   normalizeConversationPath,
   normalizeListingArgs,
   parseProductCard,
 } = require("../tools/vinted");
+
+test("Vinted recognizes current login redirects and localized empty states", () => {
+  assert.equal(isVintedLoginRoute(
+    "https://www.vinted.de/member/register/select_type?ref_url=%2Finbox"
+  ), true);
+  assert.equal(isVintedLoginRoute("https://www.vinted.de/member/3172002476"), false);
+  assert.equal(isEmptyVintedProfileText("Aktuell keine Angebote"), true);
+  assert.equal(isEmptyVintedProfileText("Edit profile Listings Start a new listing streak!"), true);
+  assert.equal(isEmptyVintedProfileText("Unexpected profile"), false);
+  assert.equal(isEmptyVintedInboxText("Noch keine Nachrichten"), true);
+  assert.equal(isEmptyVintedInboxText("Unexpected inbox"), false);
+});
 const {
   extractVintedCookieString,
   requestFieldNames,

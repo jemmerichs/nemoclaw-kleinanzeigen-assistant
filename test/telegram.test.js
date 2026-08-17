@@ -4,7 +4,12 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const TelegramGateway = require("../tools/telegram");
-const { mimeTypeFor, splitMessage, telegramPlainText } = require("../tools/telegram");
+const {
+  isTransientDnsError,
+  mimeTypeFor,
+  splitMessage,
+  telegramPlainText,
+} = require("../tools/telegram");
 
 test("long Telegram messages are split without losing content", () => {
   const original = `${"a".repeat(2500)}\n${"b".repeat(2500)}`;
@@ -78,4 +83,37 @@ test("getUpdates advances the offset monotonically", async () => {
   const updates = await gateway.getUpdates();
   assert.equal(updates.length, 2);
   assert.equal(gateway.lastUpdateId, 9);
+});
+
+test("Telegram retries only pre-connect DNS failures with bounded delays", async () => {
+  const gateway = new TelegramGateway("test-token", { dnsRetryDelaysMs: [0, 0, 0] });
+  let attempts = 0;
+  gateway._requestOnce = async () => {
+    attempts++;
+    if (attempts < 3) {
+      const error = new Error("getaddrinfo ENOTFOUND api.telegram.org");
+      error.code = attempts === 1 ? "ENOTFOUND" : "EAI_AGAIN";
+      throw error;
+    }
+    return { ok: true };
+  };
+
+  assert.deepEqual(await gateway._request("sendMessage", { chat_id: "42", text: "test" }), { ok: true });
+  assert.equal(attempts, 3);
+  assert.equal(isTransientDnsError(Object.assign(new Error("dns"), { code: "ENOTFOUND" })), true);
+  assert.equal(isTransientDnsError(Object.assign(new Error("timeout"), { code: "ETIMEDOUT" })), false);
+});
+
+test("Telegram does not retry ambiguous transport failures", async () => {
+  const gateway = new TelegramGateway("test-token", { dnsRetryDelaysMs: [0, 0] });
+  let attempts = 0;
+  gateway._requestOnce = async () => {
+    attempts++;
+    const error = new Error("socket hang up");
+    error.code = "ECONNRESET";
+    throw error;
+  };
+
+  await assert.rejects(() => gateway._request("sendMessage", { chat_id: "42", text: "test" }), /socket hang up/);
+  assert.equal(attempts, 1);
 });
