@@ -18,6 +18,36 @@ function fixture() {
   return JSON.parse(process.env.NEMOCLAW_ONBOARD_FIXTURE);
 }
 
+function runSessionCommand(args, { failureDetail, failureAction } = {}) {
+  const command = spawnSync(process.execPath, [path.join(root, "scripts", "login.js"), ...args], {
+    cwd: root,
+    stdio: "inherit",
+  });
+  require("dotenv").config({ path: path.join(root, ".env"), override: true });
+  return command.status === 0 && process.env.KA_COOKIES
+    ? { ok: true }
+    : {
+      ok: false,
+      detail: failureDetail,
+      action: failureAction,
+    };
+}
+
+function importProfileSession() {
+  return runSessionCommand(["--import-only"], {
+    failureDetail: "Die vorhandene dedizierte Browser-Sitzung konnte nicht importiert werden.",
+    failureAction: "Den geführten Login im anschließend geöffneten Chrome-Profil abschließen.",
+  });
+}
+
+function runLogin() {
+  const result = runSessionCommand([], {
+    failureDetail: "Der geführte Login wurde nicht mit einer gültigen Sitzung abgeschlossen.",
+    failureAction: "npm run login separat abschließen und danach npm run onboard erneut ausführen.",
+  });
+  return result.ok ? { ...result, loginPerformed: true } : result;
+}
+
 async function main() {
   const synthetic = fixture();
   const result = await runOnboarding({
@@ -50,24 +80,24 @@ async function main() {
       }
     },
     ensureSession: async () => {
-      if (synthetic || process.env.KA_COOKIES) return { ok: true };
-      const login = spawnSync(process.execPath, [path.join(root, "scripts", "login.js")], {
-        cwd: root,
-        encoding: "utf8",
-      });
-      require("dotenv").config({ path: path.join(root, ".env"), override: true });
-      return login.status === 0 && process.env.KA_COOKIES
-        ? { ok: true }
-        : {
-          ok: false,
-          detail: "Die lokale Marktplatz-Sitzung ist noch nicht angemeldet.",
-          action: "Den manuellen Login im geöffneten Chrome-Profil abschließen und npm run onboard erneut ausführen.",
-        };
+      return { ok: true };
+    },
+    importSession: async () => {
+      if (synthetic) return synthetic.import || { ok: false };
+      return importProfileSession();
+    },
+    recoverSession: async () => {
+      if (synthetic) return synthetic.recovery || {
+        ok: false,
+        detail: "Die synthetische Sitzung erfordert einen Login.",
+        action: "Eine erfolgreiche Recovery-Fixture bereitstellen.",
+      };
+      return runLogin();
     },
     evaluateAccount: async () => {
       if (synthetic) return synthetic.evidence;
       const cookies = process.env.KA_COOKIES || "";
-      if (!cookies) return { state: "unavailable" };
+      if (!cookies) return { state: "unavailable", loginRequired: true };
       const client = new KleinanzeigenClient(cookies, process.env.KA_BEARER_TOKEN || null);
       return evaluatePrivateRead({
         cookieHeader: () => client.cookies,

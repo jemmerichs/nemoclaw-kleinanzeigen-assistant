@@ -11,6 +11,12 @@ const {
 } = require("./kleinanzeigen-session");
 
 const DEFAULT_EVIDENCE_TTL_MS = 30 * 60 * 1000;
+const LOGIN_REQUIRED_CODES = new Set([
+  "KA_BEARER_EXPIRED",
+  "KA_CSRF_EXPIRED",
+  "KA_REFRESH_EXPIRED",
+  "KA_SESSION_EXPIRED",
+]);
 const READINESS_FILE = process.env.NEMOCLAW_READINESS_FILE
   ? path.resolve(process.env.NEMOCLAW_READINESS_FILE)
   : path.resolve(__dirname, "../workspace/readiness.json");
@@ -50,6 +56,10 @@ function classifyReadiness({ privateReadOk, refreshAttempted = false, refreshOk 
   return "ready";
 }
 
+function isLoginRequiredError(error) {
+  return LOGIN_REQUIRED_CODES.has(String(error?.code || ""));
+}
+
 function createEvidence({
   provider = "kleinanzeigen",
   capability = "private_read",
@@ -62,6 +72,7 @@ function createEvidence({
   expiresAt = null,
   formFingerprint = null,
   safeDetail = null,
+  loginRequired = false,
 } = {}) {
   if (!revision) throw new Error("Session-Revision fehlt für Readiness-Evidenz.");
   return {
@@ -77,6 +88,7 @@ function createEvidence({
     expiresAt: expiresAt ? new Date(expiresAt).toISOString() : null,
     formFingerprint: formFingerprint ? String(formFingerprint) : null,
     safeDetail: safeDetail ? String(safeDetail).slice(0, 300) : null,
+    loginRequired: !privateReadOk && Boolean(loginRequired),
   };
 }
 
@@ -98,6 +110,7 @@ async function evaluatePrivateRead({
   let readError = null;
   let refreshAttempted = false;
   let refreshOk = null;
+  let refreshError = null;
   try {
     await privateRead();
     readOk = true;
@@ -117,6 +130,7 @@ async function evaluatePrivateRead({
       }
     } catch (error) {
       refreshOk = false;
+      refreshError = error;
       if (!readError) readError = error;
     }
   }
@@ -137,6 +151,9 @@ async function evaluatePrivateRead({
     safeDetail: readOk
       ? refreshOk === false ? "Private Read funktioniert; vorsorgliche Erneuerung ist nicht verfügbar." : null
       : "Die aktuelle Session kann den privaten Read nicht ausführen.",
+    loginRequired: !readOk && (
+      isLoginRequiredError(readError) || isLoginRequiredError(refreshError)
+    ),
   });
 }
 
@@ -181,6 +198,7 @@ module.exports = {
   createEvidence,
   evaluatePrivateRead,
   evidenceIsFresh,
+  isLoginRequiredError,
   readOperationalState,
   recordDoctorEvidence,
   sessionRevision,

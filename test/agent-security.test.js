@@ -1,7 +1,20 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
+
+const testDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-agent-security-"));
+process.env.NEMOCLAW_KA_CATEGORY_CACHE_FILE = path.join(
+  testDirectory,
+  "category-contracts.json"
+);
+
+test.after(() => {
+  fs.rmSync(testDirectory, { recursive: true, force: true });
+});
 
 const {
   TOOLS,

@@ -40,6 +40,8 @@ async function runOnboarding({
   checkLocal,
   verifyTelegram,
   ensureSession = async () => ({ ok: true }),
+  importSession = null,
+  recoverSession = null,
   evaluateAccount,
   ensureDryRun,
   startDryRunService,
@@ -53,12 +55,37 @@ async function runOnboarding({
     if (!telegram?.ok) return finalStatus(FINAL_STATUSES.blocked, telegram?.detail, telegram?.action);
     const session = await ensureSession();
     if (!session?.ok) return finalStatus(FINAL_STATUSES.blocked, session?.detail, session?.action);
-    const evidence = await evaluateAccount();
+    let evidence = await evaluateAccount();
+    if (
+      evidence?.state === "unavailable"
+      && evidence.loginRequired === true
+      && session.loginPerformed !== true
+    ) {
+      if (typeof importSession === "function") {
+        const imported = await importSession();
+        if (imported?.ok) evidence = await evaluateAccount();
+      }
+      if (evidence?.state === "unavailable" && evidence.loginRequired === true
+        && typeof recoverSession === "function") {
+        const recovery = await recoverSession();
+        if (!recovery?.ok) {
+          return finalStatus(FINAL_STATUSES.blocked, recovery?.detail, recovery?.action);
+        }
+        evidence = await evaluateAccount();
+      }
+    }
     if (!evidence || evidence.state === "unavailable") {
+      if (evidence?.loginRequired === true) {
+        return finalStatus(
+          FINAL_STATUSES.blocked,
+          "Der einmalige Login hat noch keine gültige private Marktplatz-Sitzung erzeugt.",
+          "npm run login separat abschließen und danach npm run onboard erneut ausführen."
+        );
+      }
       return finalStatus(
         FINAL_STATUSES.blocked,
-        "Die aktuelle lokale Marktplatz-Sitzung kann den privaten Read nicht ausführen.",
-        "Einmal im auf diesem Mac geöffneten Chrome-Profil anmelden und npm run onboard erneut ausführen."
+        "Der private Marktplatz-Read ist trotz vorhandener Sitzung nicht erreichbar.",
+        "Netzwerkzugriff kurz prüfen und npm run onboard einmal erneut ausführen; kein erneuter Login ohne Login-Hinweis."
       );
     }
     saveEvidence(evidence);
@@ -112,11 +139,15 @@ async function enableLive({
     evidence = await refreshEvidence();
   }
   if (!activationEvidenceFresh(evidence)) {
+    const loginRequired = evidence?.loginRequired === true;
     return {
       ok: false,
       refreshed,
-      reason: "stale_evidence",
-      message: "Live bleibt gesperrt: Für die aktuelle Sitzung fehlt frische Doctor-Evidenz.",
+      reason: loginRequired ? "session_login_required" : "stale_evidence",
+      message: loginRequired
+        ? "Live bleibt gesperrt: Die Marktplatz-Sitzung benötigt einen neuen Login. " +
+          "npm run onboard öffnet das dedizierte Chrome-Profil und prüft danach automatisch erneut."
+        : "Live bleibt gesperrt: Für die aktuelle Sitzung fehlt frische Doctor-Evidenz. Bitte npm run onboard ausführen.",
     };
   }
   if (!liveEvidenceAcceptable(evidence, { now })) {

@@ -89,6 +89,46 @@ test("acceptance 1: healthy private read plus rejected proactive refresh stays d
   assert.doesNotMatch(evidence.safeDetail, /anmelden|login/i);
 });
 
+test("unavailable readiness distinguishes an expired session from a network failure", async () => {
+  const authEvidence = await evaluatePrivateRead({
+    cookieHeader: cookieHeader(),
+    privateRead: async () => {
+      const error = new Error("expired");
+      error.code = "KA_SESSION_EXPIRED";
+      throw error;
+    },
+    refresh: async () => {
+      const error = new Error("refresh expired");
+      error.code = "KA_REFRESH_EXPIRED";
+      throw error;
+    },
+  });
+  assert.equal(authEvidence.state, "unavailable");
+  assert.equal(authEvidence.loginRequired, true);
+
+  const networkEvidence = await evaluatePrivateRead({
+    cookieHeader: cookieHeader(),
+    privateRead: async () => {
+      const error = new Error("dns");
+      error.code = "ENOTFOUND";
+      throw error;
+    },
+  });
+  assert.equal(networkEvidence.state, "unavailable");
+  assert.equal(networkEvidence.loginRequired, false);
+
+  const rejectedEvidence = await evaluatePrivateRead({
+    cookieHeader: cookieHeader(),
+    privateRead: async () => {
+      const error = new Error("private 403");
+      error.code = "KA_SESSION_REJECTED";
+      throw error;
+    },
+  });
+  assert.equal(rejectedEvidence.state, "unavailable");
+  assert.equal(rejectedEvidence.loginRequired, false);
+});
+
 test("acceptance 2: unusual product albums always receive research and preparation tools", () => {
   const tools = agent.toolDefinitions().map(definition => definition.function.name);
   assert.equal(tools.includes("ka_search_ads"), true);
@@ -266,6 +306,127 @@ test("supporting onboarding safety: a healthy private read starts dry-run withou
   assert.match(result.detail, /Live kann jetzt aktiviert werden.*Formularprüfung erfolgt mit der ersten echten Anzeige/);
 });
 
+test("onboard performs one login recovery and rechecks a stale stored session in the same run", async () => {
+  const stale = createEvidence({
+    sessionRevision: "stale-session",
+    account: "42",
+    privateReadOk: false,
+    loginRequired: true,
+  });
+  const recovered = createEvidence({
+    sessionRevision: "recovered-session",
+    account: "42",
+    privateReadOk: true,
+  });
+  let accountChecks = 0;
+  let loginRecoveries = 0;
+  let serviceStarts = 0;
+  let savedEvidence = null;
+  const result = await runOnboarding({
+    ensureDryRun: async () => {},
+    checkLocal: async () => ({ ok: true }),
+    verifyTelegram: async () => ({ ok: true }),
+    ensureSession: async () => ({ ok: true }),
+    recoverSession: async () => {
+      loginRecoveries++;
+      return { ok: true, loginPerformed: true };
+    },
+    evaluateAccount: async () => (++accountChecks === 1 ? stale : recovered),
+    saveEvidence: value => { savedEvidence = value; },
+    startDryRunService: async () => { serviceStarts++; return { ok: true }; },
+  });
+  assert.equal(result.status, FINAL_STATUSES.ready);
+  assert.equal(loginRecoveries, 1);
+  assert.equal(accountChecks, 2);
+  assert.equal(serviceStarts, 1);
+  assert.equal(savedEvidence, recovered);
+});
+
+test("onboard imports an already logged-in dedicated profile before opening a new login", async () => {
+  const stale = createEvidence({
+    sessionRevision: "stale-env-session",
+    account: "42",
+    privateReadOk: false,
+    loginRequired: true,
+  });
+  const imported = createEvidence({
+    sessionRevision: "imported-profile-session",
+    account: "42",
+    privateReadOk: true,
+  });
+  let accountChecks = 0;
+  let profileImports = 0;
+  let interactiveLogins = 0;
+  const result = await runOnboarding({
+    ensureDryRun: async () => {},
+    checkLocal: async () => ({ ok: true }),
+    verifyTelegram: async () => ({ ok: true }),
+    ensureSession: async () => ({ ok: true }),
+    importSession: async () => { profileImports++; return { ok: true }; },
+    recoverSession: async () => { interactiveLogins++; return { ok: true }; },
+    evaluateAccount: async () => (++accountChecks === 1 ? stale : imported),
+    saveEvidence: () => {},
+    startDryRunService: async () => ({ ok: true }),
+  });
+  assert.equal(result.status, FINAL_STATUSES.ready);
+  assert.equal(profileImports, 1);
+  assert.equal(interactiveLogins, 0);
+  assert.equal(accountChecks, 2);
+});
+
+test("onboard falls through from a stale profile import to exactly one interactive login", async () => {
+  const unavailable = createEvidence({
+    sessionRevision: "stale-profile-session",
+    account: "42",
+    privateReadOk: false,
+    loginRequired: true,
+  });
+  const recovered = createEvidence({
+    sessionRevision: "interactive-login-session",
+    account: "42",
+    privateReadOk: true,
+  });
+  let accountChecks = 0;
+  let profileImports = 0;
+  let interactiveLogins = 0;
+  const result = await runOnboarding({
+    ensureDryRun: async () => {},
+    checkLocal: async () => ({ ok: true }),
+    verifyTelegram: async () => ({ ok: true }),
+    ensureSession: async () => ({ ok: true }),
+    importSession: async () => { profileImports++; return { ok: true }; },
+    recoverSession: async () => { interactiveLogins++; return { ok: true, loginPerformed: true }; },
+    evaluateAccount: async () => (++accountChecks < 3 ? unavailable : recovered),
+    saveEvidence: () => {},
+    startDryRunService: async () => ({ ok: true }),
+  });
+  assert.equal(result.status, FINAL_STATUSES.ready);
+  assert.equal(profileImports, 1);
+  assert.equal(interactiveLogins, 1);
+  assert.equal(accountChecks, 3);
+});
+
+test("onboard does not open the login profile for a non-authentication outage", async () => {
+  let loginRecoveries = 0;
+  const result = await runOnboarding({
+    ensureDryRun: async () => {},
+    checkLocal: async () => ({ ok: true }),
+    verifyTelegram: async () => ({ ok: true }),
+    ensureSession: async () => ({ ok: true }),
+    recoverSession: async () => { loginRecoveries++; return { ok: true }; },
+    evaluateAccount: async () => createEvidence({
+      sessionRevision: "network-outage",
+      account: "42",
+      privateReadOk: false,
+      loginRequired: false,
+    }),
+    startDryRunService: async () => { throw new Error("must not start"); },
+  });
+  assert.equal(result.status, FINAL_STATUSES.blocked);
+  assert.equal(loginRecoveries, 0);
+  assert.match(result.action, /kein erneuter Login/i);
+});
+
 test("acceptance 11: live activation refreshes stale session evidence exactly once", async () => {
   const cookies = cookieHeader("current");
   const revision = sessionRevision(cookies);
@@ -296,6 +457,27 @@ test("acceptance 11: live activation refreshes stale session evidence exactly on
   assert.equal(result.refreshed, true);
   assert.equal(refreshes, 1);
   assert.equal(liveWrites, 1);
+});
+
+test("live activation reports the login recovery path instead of generic missing evidence", async () => {
+  const cookies = cookieHeader("login-required");
+  const unavailable = createEvidence({
+    sessionRevision: sessionRevision(cookies),
+    account: "42",
+    privateReadOk: false,
+    loginRequired: true,
+  });
+  const result = await enableLive({
+    cookieHeader: cookies,
+    readState: () => ({}),
+    refreshEvidence: async () => unavailable,
+    unresolved: () => [],
+    setLiveMode: async () => { throw new Error("must not write"); },
+    restartService: async () => { throw new Error("must not restart"); },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "session_login_required");
+  assert.match(result.message, /npm run onboard.*Chrome-Profil.*automatisch erneut/i);
 });
 
 test("supporting activation safety: a restart exception restores dry-run", async () => {
