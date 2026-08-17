@@ -20,7 +20,10 @@ const {
   invalidateCategoryRequirements,
   validateCategoryAttributes,
 } = require("../tools/kleinanzeigen-category-contracts");
-const { inspectCategoryForm } = require("../tools/kleinanzeigen-form");
+const {
+  discardPreparedFormSession,
+  inspectCategoryForm,
+} = require("../tools/kleinanzeigen-form");
 const { assertBoundFormState } = require("../tools/kleinanzeigen-form-state");
 const kleinanzeigenPublishForm = require("../tools/kleinanzeigen-publish-form");
 const {
@@ -884,32 +887,36 @@ async function publishKleinanzeigenListing(rawArgs, { operationId = null } = {})
 }
 
 async function savePreparedKleinanzeigenDraft(action, { operationId = null } = {}) {
-  const listing = prepareBoundKleinanzeigenListing(action.listing);
-  const inspection = await inspectCategoryForm({
-    categoryPath: normalizeCategoryPath(action.category),
-    onSessionObserved: adoptNewerObservedSession,
-  });
-  if (inspection?.status !== "ready" || !inspection.formState) {
-    const error = new Error("Die aktuelle Formularvorbereitung ist nicht mehr vollständig.");
-    error.code = "KA_FORM_STATE_DRIFT";
-    error.definitiveNoWrite = true;
-    throw error;
-  }
-  assertBoundFormState(listing, inspection.formState);
-  if (operationId) marketplaceBroker.markOperationPhase(operationId, "upload");
-  const imageUrls = await uploadImages(listing.imagePaths || [], { forDraft: true });
-  if (operationId) marketplaceBroker.markOperationPhase(operationId, "commit");
-  const result = await requireAuthenticatedKa().saveDraft({
-    ...listing,
-    priceAmount: listing.price,
-    imageUrls,
-  });
-  if (operationId) marketplaceBroker.markOperationPhase(operationId, "local_persist");
   try {
-    const assetId = ensureAssetForListing(listing, { active: false, draftId: result.draftId });
-    return { ...result, assetId, imageCount: listing.imagePaths.length };
-  } catch (error) {
-    return { ...result, imageCount: listing.imagePaths.length, localTrackingError: error.message };
+    const listing = prepareBoundKleinanzeigenListing(action.listing);
+    const inspection = await inspectCategoryForm({
+      categoryPath: normalizeCategoryPath(action.category),
+      onSessionObserved: adoptNewerObservedSession,
+    });
+    if (inspection?.status !== "ready" || !inspection.formState) {
+      const error = new Error("Die aktuelle Formularvorbereitung ist nicht mehr vollständig.");
+      error.code = "KA_FORM_STATE_DRIFT";
+      error.definitiveNoWrite = true;
+      throw error;
+    }
+    assertBoundFormState(listing, inspection.formState);
+    if (operationId) marketplaceBroker.markOperationPhase(operationId, "upload");
+    const imageUrls = await uploadImages(listing.imagePaths || [], { forDraft: true });
+    if (operationId) marketplaceBroker.markOperationPhase(operationId, "commit");
+    const result = await requireAuthenticatedKa().saveDraft({
+      ...listing,
+      priceAmount: listing.price,
+      imageUrls,
+    });
+    if (operationId) marketplaceBroker.markOperationPhase(operationId, "local_persist");
+    try {
+      const assetId = ensureAssetForListing(listing, { active: false, draftId: result.draftId });
+      return { ...result, assetId, imageCount: listing.imagePaths.length };
+    } catch (error) {
+      return { ...result, imageCount: listing.imagePaths.length, localTrackingError: error.message };
+    }
+  } finally {
+    await discardPreparedFormSession();
   }
 }
 

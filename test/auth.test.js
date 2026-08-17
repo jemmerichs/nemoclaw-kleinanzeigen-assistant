@@ -10,6 +10,7 @@ const {
   extractKaCookieString,
   requestMetadataFromCurl,
   validatedCookieHeader,
+  validatedFreshSessionCookieString,
   validatedSessionCookieString,
 } = require("../tools/auth");
 
@@ -61,6 +62,34 @@ test("auth accepts the current session shape with user identity in the bearer JW
   assert.equal(
     validatedCookieHeader(`CSRF-TOKEN=csrf; access_token=${accessToken}; refresh_token=refresh`),
     `CSRF-TOKEN=csrf; access_token=${accessToken}; refresh_token=refresh`
+  );
+});
+
+test("interactive login rejects complete-looking stale cookies until the access token is fresh", () => {
+  const token = expiresAt => {
+    const payload = Buffer.from(JSON.stringify({
+      iss: "https://login.kleinanzeigen.de/",
+      azp: "client_id_123",
+      iat: expiresAt - 3600,
+      exp: expiresAt,
+      "https://www.kleinanzeigen.de/user_id": 42,
+    })).toString("base64url");
+    return `e30.${payload}.signature`;
+  };
+  const cookies = accessToken => [
+    { domain: ".kleinanzeigen.de", name: "CSRF-TOKEN", value: "csrf" },
+    { domain: ".kleinanzeigen.de", name: "user_id", value: "42" },
+    { domain: ".kleinanzeigen.de", name: "access_token", value: accessToken },
+    { domain: ".kleinanzeigen.de", name: "refresh_token", value: "refresh" },
+  ];
+  const now = Math.floor(Date.now() / 1000);
+  assert.throws(
+    () => validatedFreshSessionCookieString(cookies(token(now - 60))),
+    /noch nicht frisch/
+  );
+  assert.match(
+    validatedFreshSessionCookieString(cookies(token(now + 3600))),
+    /access_token=/
   );
 });
 

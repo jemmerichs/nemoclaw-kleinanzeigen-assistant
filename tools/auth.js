@@ -9,6 +9,7 @@ const net = require("net");
 
 const fs   = require("fs");
 const path = require("path");
+const { hasFreshAccessToken } = require("./kleinanzeigen-session");
 
 const ENV_FILE    = path.resolve(__dirname, "../.env");
 const PROFILE_DIR = path.resolve(__dirname, "../workspace/browser-profile");
@@ -193,6 +194,14 @@ function validatedCookieHeader(rawHeader) {
   const missing = missingSessionParts(values);
   if (missing.length) throw new Error(`Sitzung unvollständig (${missing.join(", ")} fehlt).`);
   return [...values].map(([name, value]) => `${name}=${value}`).join("; ");
+}
+
+function validatedFreshSessionCookieString(cookies, minimumLifetimeSeconds = 60) {
+  const cookieString = validatedSessionCookieString(cookies);
+  if (!hasFreshAccessToken(cookieString, minimumLifetimeSeconds)) {
+    throw new Error("Der Access-Token der sichtbaren Sitzung ist noch nicht frisch.");
+  }
+  return cookieString;
 }
 
 function rawCookieHeaderFromCurl(input) {
@@ -480,9 +489,13 @@ async function waitForValidatedNativeSession(context, page, timeoutMs = LOGIN_TI
     await assertNetworkAccess(page, null, { authenticated: true });
     try {
       const cookies = await context.cookies("https://www.kleinanzeigen.de");
+      const cookieString = validatedFreshSessionCookieString(cookies);
+      if (/login\.kleinanzeigen\.de|m-einloggen/.test(page.url())) {
+        throw new Error("Der sichtbare Browser befindet sich noch im Login.");
+      }
       return {
         cookies,
-        cookieString: validatedSessionCookieString(cookies),
+        cookieString,
       };
     } catch (error) {
       lastError = error;
@@ -610,7 +623,7 @@ async function inspectProfileSession() {
 
 async function loginWithSystemChrome() {
   let nativeProfile;
-  nativeProfile = await openNativeProfile({ url: CSRF_URL });
+  nativeProfile = await openNativeProfile({ url: LOGIN_URL });
   console.log("[auth] Das dedizierte NemoClaw-Chrome-Fenster wurde geöffnet.");
   console.log("[auth] Bitte manuell einloggen und 2FA/CAPTCHA selbst abschließen.");
   console.log("[auth] Die Sitzung wird im selben Fenster automatisch validiert; nichts absenden.");
@@ -708,6 +721,7 @@ module.exports = {
   userIdFromAccessToken,
   validatedAcceptLanguage,
   validatedCookieHeader,
+  validatedFreshSessionCookieString,
   validatedSessionCookieString,
   validatedUserAgent,
 };

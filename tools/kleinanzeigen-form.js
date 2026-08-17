@@ -307,6 +307,10 @@ async function takePreparedFormSession(binding) {
   };
 }
 
+async function discardPreparedFormSession() {
+  await closeInspectionSession();
+}
+
 async function startInspectionSession() {
   if (Date.now() < inspectionBlockedUntil) {
     const error = new Error(
@@ -609,6 +613,7 @@ function inspectCategoryForm(args) {
 module.exports = {
   FORM_URL,
   browserCookiesFromHeader,
+  discardPreparedFormSession,
   ensureCategoryBrowserSession,
   inspectCategoryForm,
   inspectCategoryFormNow,
