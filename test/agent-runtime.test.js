@@ -33,6 +33,7 @@ const {
   contextStats,
   createScheduledErrorReporter,
   describeListingValidationFailure,
+  ensureKleinanzeigenSessionFresh,
   executeTool,
   getHistory,
   getPending,
@@ -96,6 +97,49 @@ test("scheduled Kleinanzeigen checks log one session failure per cooldown", () =
 
   assert.equal(report("listing-heartbeat", error, "session-b"), true);
   assert.equal(written.length, 2);
+});
+
+test("private Kleinanzeigen preflight refreshes before an expiring request", async () => {
+  const checkedLifetimes = [];
+  const fresh = {
+    accessTokenExpiresWithin: seconds => {
+      checkedLifetimes.push(seconds);
+      return false;
+    },
+  };
+  const expiring = {
+    accessTokenExpiresWithin: seconds => {
+      checkedLifetimes.push(seconds);
+      return true;
+    },
+  };
+  let current = expiring;
+  let refreshes = 0;
+
+  const result = await ensureKleinanzeigenSessionFresh({
+    getClient: () => current,
+    refresh: async () => {
+      refreshes++;
+      current = fresh;
+    },
+  });
+
+  assert.equal(result, fresh);
+  assert.equal(refreshes, 1);
+  assert.deepEqual(checkedLifetimes, [5 * 60, 60]);
+});
+
+test("private Kleinanzeigen preflight leaves a fresh session untouched", async () => {
+  const fresh = { accessTokenExpiresWithin: () => false };
+  let refreshes = 0;
+
+  const result = await ensureKleinanzeigenSessionFresh({
+    getClient: () => fresh,
+    refresh: async () => { refreshes++; },
+  });
+
+  assert.equal(result, fresh);
+  assert.equal(refreshes, 0);
 });
 
 test("agent process lock blocks a second instance and recovers a stale PID", () => {
@@ -1051,10 +1095,13 @@ test("a Vinted draft is normalized and staged without an external call", async (
 
 test("an ambiguous protected write is never retried by a second Go", async () => {
   const agent = require("../workspace/agent");
-  const originalSend = agent.TOOLS.ka_send_message.fn;
+  const ka = agent.requireAuthenticatedKa();
+  const originalAccessTokenExpiresWithin = ka.accessTokenExpiresWithin;
+  const originalSend = ka.sendMessage;
   const previousMode = process.env.NEMOCLAW_MODE;
   let attempts = 0;
-  agent.TOOLS.ka_send_message.fn = async () => {
+  ka.accessTokenExpiresWithin = () => false;
+  ka.sendMessage = async () => {
     attempts++;
     throw new Error("Verbindung nach dem Senden abgebrochen; Remote-Status unklar.");
   };
@@ -1082,7 +1129,8 @@ test("an ambiguous protected write is never retried by a second Go", async () =>
     assert.equal(attempts, 1);
     assert.match(sent[1], /keine aktuelle/);
   } finally {
-    agent.TOOLS.ka_send_message.fn = originalSend;
+    ka.accessTokenExpiresWithin = originalAccessTokenExpiresWithin;
+    ka.sendMessage = originalSend;
     process.env.NEMOCLAW_MODE = previousMode;
     clearPending("ambiguous-write");
   }

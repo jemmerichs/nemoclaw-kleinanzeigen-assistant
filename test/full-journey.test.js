@@ -41,6 +41,7 @@ test("album, publish, relist, and buyer reply form one exact-approval journey", 
   const ka = agent.requireAuthenticatedKa();
   const original = {
     publishListingViaForm: kleinanzeigenPublishForm.publishListingViaForm,
+    accessTokenExpiresWithin: ka.accessTokenExpiresWithin,
     sendMessage: ka.sendMessage,
     search: agent.TOOLS.ka_search_ads.fn,
     bundles: agent.TOOLS.ka_get_ad_bundles.fn,
@@ -48,6 +49,7 @@ test("album, publish, relist, and buyer reply form one exact-approval journey", 
   const created = [];
   const outbound = [];
   let uploadCount = 0;
+  ka.accessTokenExpiresWithin = () => false;
   kleinanzeigenPublishForm.publishListingViaForm = async args => {
     uploadCount += args.imagePaths.length;
     const id = `910000000${created.length + 1}`;
@@ -317,6 +319,7 @@ test("album, publish, relist, and buyer reply form one exact-approval journey", 
     agent.clearPending("lifecycle-77");
     agent.clearPending("inbox-77");
     kleinanzeigenPublishForm.publishListingViaForm = original.publishListingViaForm;
+    ka.accessTokenExpiresWithin = original.accessTokenExpiresWithin;
     ka.sendMessage = original.sendMessage;
     agent.TOOLS.ka_search_ads.fn = original.search;
     agent.TOOLS.ka_get_ad_bundles.fn = original.bundles;
