@@ -31,6 +31,7 @@ function servicePaths({
     launchAgentsDir,
     plistPath: path.join(launchAgentsDir, `${LABEL}.plist`),
     agentPidPath: path.join(root, "workspace", "agent.pid"),
+    serviceStartRequestPath: path.join(root, "workspace", "service-start.request"),
     logDir,
     stdoutPath: path.join(logDir, "launchd.stdout.log"),
     stderrPath: path.join(logDir, "launchd.stderr.log"),
@@ -70,7 +71,7 @@ function buildPlist(options = {}) {
     <string>launchd</string>
   </dict>
   <key>RunAtLoad</key>
-  <true/>
+  <false/>
   <key>ProcessType</key>
   <string>Background</string>
   <key>ThrottleInterval</key>
@@ -125,6 +126,28 @@ function writePrivate(filePath, content) {
   fs.writeFileSync(temporary, content, { encoding: "utf8", mode: 0o600 });
   fs.renameSync(temporary, filePath);
   fs.chmodSync(filePath, 0o600);
+}
+
+function requestManualServiceStart(paths) {
+  writePrivate(paths.serviceStartRequestPath, `${Math.floor(Date.now() / 1000)}\n`);
+}
+
+function clearManualServiceStartRequest(paths) {
+  try {
+    fs.unlinkSync(paths.serviceStartRequestPath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
+
+function kickstartManually(domain, paths) {
+  requestManualServiceStart(paths);
+  try {
+    launchctl(["kickstart", "-k", `${domain}/${LABEL}`]);
+  } catch (error) {
+    clearManualServiceStartRequest(paths);
+    throw error;
+  }
 }
 
 function waitBriefly(milliseconds) {
@@ -194,8 +217,9 @@ function install() {
   const domain = `gui/${process.getuid()}`;
   launchctl(["bootout", domain, paths.plistPath], { tolerateFailure: true, inherit: false });
   launchctl(["bootstrap", domain, paths.plistPath]);
-  launchctl(["kickstart", "-k", `${domain}/${LABEL}`]);
-  console.log(`✓ nemoclaw läuft als macOS-Benutzerdienst (${LABEL}).`);
+  kickstartManually(domain, paths);
+  console.log(`✓ nemoclaw läuft als manuell gestarteter macOS-Benutzerdienst (${LABEL}).`);
+  console.log("Der Dienst startet nicht automatisch bei Anmeldung oder Neustart.");
   console.log(`Status: npm run service:status`);
   console.log(`Logs: ${paths.stdoutPath} / ${paths.stderrPath}`);
 }
@@ -233,7 +257,7 @@ function restart() {
     process.exitCode = 1;
     return;
   }
-  launchctl(["kickstart", "-k", `${domain}/${LABEL}`]);
+  kickstartManually(domain, paths);
   console.log(`✓ ${LABEL} wurde neu gestartet.`);
   console.log(`Status: npm run service:status`);
   console.log(`Logs: ${paths.stdoutPath} / ${paths.stderrPath}`);

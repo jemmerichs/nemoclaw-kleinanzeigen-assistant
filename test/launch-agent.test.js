@@ -30,9 +30,10 @@ test("launchd plist is portable, private, and contains no secrets", () => {
 
   assert.equal(paths.plistPath, `/Users/test/Library/LaunchAgents/${LABEL}.plist`);
   assert.equal(paths.agentPidPath, `${root}/workspace/agent.pid`);
+  assert.equal(paths.serviceStartRequestPath, `${root}/workspace/service-start.request`);
   assert.match(plist, new RegExp(`<string>${LABEL}</string>`));
   assert.match(plist, /Nemo &amp; Claw/);
-  assert.match(plist, /<key>RunAtLoad<\/key>\s*<true\/>/);
+  assert.match(plist, /<key>RunAtLoad<\/key>\s*<false\/>/);
   assert.doesNotMatch(plist, /<key>KeepAlive<\/key>/);
   assert.doesNotMatch(plist, /caffeinate/);
   assert.match(plist, /<key>Umask<\/key>\s*<integer>63<\/integer>/);
@@ -51,6 +52,8 @@ test("foreground launcher ties caffeinate to the visible agent process", () => {
   const serviceScript = fs.readFileSync(path.resolve(__dirname, "../scripts/launch-agent.js"), "utf8");
   assert.match(startScript, /exec caffeinate -i -s node workspace\/agent\.js/);
   assert.match(startScript, /NEMOCLAW_SERVICE/);
+  assert.match(startScript, /service-start\.request/);
+  assert.match(startScript, /Automatischer Start ist deaktiviert/);
   assert.match(startScript, /doctor\.js --telegram/);
   assert.doesNotMatch(startScript, /doctor\.js --telegram --account/);
   assert.match(serviceScript, /"--telegram",\s*"--account"/);
@@ -60,6 +63,30 @@ test("foreground launcher ties caffeinate to the visible agent process", () => {
   assert.match(startScript, /keinen gültigen PID-Lock übernommen/);
   assert.doesNotMatch(startScript, /pgrep -f/);
   assert.doesNotMatch(startScript, /osascript[^\n]*\|\| true/);
+});
+
+test("legacy launchd definitions cannot start the bot without a fresh manual request", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-manual-launch-"));
+  const project = path.join(directory, "project");
+  const scripts = path.join(project, "scripts");
+  fs.mkdirSync(scripts, { recursive: true });
+  fs.mkdirSync(path.join(project, "workspace"), { recursive: true });
+  fs.copyFileSync(path.resolve(__dirname, "../scripts/start.sh"), path.join(scripts, "start.sh"));
+
+  try {
+    const result = spawnSync("/bin/bash", [path.join(scripts, "start.sh")], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        NEMOCLAW_SERVICE: "launchd",
+      },
+    });
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Automatischer Start ist deaktiviert/);
+    assert.equal(fs.existsSync(path.join(project, "workspace", "agent.pid")), false);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("service restart may signal only the expected agent in the same checkout", () => {
@@ -110,6 +137,10 @@ test("launchd startup fails when Terminal cannot be opened", () => {
   fs.mkdirSync(bin, { recursive: true });
   fs.copyFileSync(path.resolve(__dirname, "../scripts/start.sh"), path.join(scripts, "start.sh"));
   fs.writeFileSync(path.join(project, ".env"), "NEMOCLAW_MODE=dry-run\n");
+  fs.writeFileSync(
+    path.join(project, "workspace", "service-start.request"),
+    `${Math.floor(Date.now() / 1000)}\n`,
+  );
   fs.writeFileSync(path.join(bin, "node"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "osascript"), "#!/usr/bin/env bash\nexit 42\n", { mode: 0o755 });
 

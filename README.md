@@ -136,9 +136,9 @@ npm run enable:live
 
 `scripts/start.sh` wraps the agent in `caffeinate -i -s`, so while the bot runs the Mac will not idle-sleep or system-sleep on AC power. This keeps the bot alive instead of stopping after a short idle timeout. The `caffeinate` process ends together with the agent, so it does not keep the Mac awake when the bot is stopped. Note that closing the lid or a manual sleep still suspends the Mac; for unattended 24/7 operation set Energy Saver to prevent sleep on AC power.
 
-When running as a launchd service, a visible Terminal window opens directly showing the bot. Closing that window stops the bot. Run `npm run service:install` or `npm run service:restart` to start it again; `service:restart` refuses to open another window while the current agent is still running.
+When running as a launchd service, a visible Terminal window opens directly showing the bot. Closing that window stops the bot. The service never starts automatically at macOS login or after a reboot. Run `npm run service:install` or `npm run service:restart` to start it explicitly; `service:restart` refuses to open another window while the current agent is still running. Updated launchers also reject automatic invocations from older installed plist files.
 
-To stop automatic operation:
+To stop the current service and remove its registration:
 
 ```bash
 npm run service:uninstall
@@ -266,7 +266,7 @@ For an active but weak listing, ask the bot to analyze the asset. It reads the r
 | `npm run login:automated` | Explicit Playwright-driven login fallback |
 | `npm run refresh-auth` | Access-/Refresh-Token per OIDC erneuern und atomar speichern; kein Browserzugriff |
 | `npm run launch` / `npm start` | Runtime/Telegram preflight, optional OpenShell policy, then Telegram bot |
-| `npm run service:install` | Install/start the bot as a standard macOS user LaunchAgent |
+| `npm run service:install` | Install and explicitly start the bot as a manual macOS user LaunchAgent; no login/reboot auto-start |
 | `npm run service:status` | Inspect the loaded LaunchAgent |
 | `npm run service:restart` | Start the loaded LaunchAgent again after its visible bot Terminal has been closed |
 | `npm run service:uninstall` | Stop/remove only the LaunchAgent; retain bot data |

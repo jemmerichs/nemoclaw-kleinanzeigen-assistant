@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 AGENT_PID_FILE="$PROJECT_DIR/workspace/agent.pid"
+SERVICE_START_REQUEST_FILE="$PROJECT_DIR/workspace/service-start.request"
 
 read_running_agent_pid() {
   local pid_file="${1:-$AGENT_PID_FILE}"
@@ -31,6 +32,24 @@ open_agent_terminal() {
     -e 'end run' \
     "$command" >/dev/null
 }
+
+consume_manual_service_start_request() {
+  local requested_at=""
+  local now=""
+  local age=""
+  [ -f "$SERVICE_START_REQUEST_FILE" ] || return 1
+  IFS= read -r requested_at < "$SERVICE_START_REQUEST_FILE" || true
+  rm -f "$SERVICE_START_REQUEST_FILE"
+  [[ "$requested_at" =~ ^[0-9]{1,10}$ ]] || return 1
+  now="$(date +%s)"
+  age=$((now - requested_at))
+  [ "$age" -ge 0 ] && [ "$age" -le 120 ]
+}
+
+if [ "${NEMOCLAW_SERVICE:-}" = "launchd" ] && ! consume_manual_service_start_request; then
+  echo "[start] Automatischer Start ist deaktiviert; Start nur über 'npm run service:restart'."
+  exit 0
+fi
 
 if [ ! -f "$PROJECT_DIR/.env" ]; then
   echo "[start] .env fehlt. Führe zuerst 'npm run setup' aus."
