@@ -73,10 +73,13 @@ For the normal target-Mac path, then run:
 ```bash
 npm run onboard
 # Complete the manual login in the Chrome profile if it opens.
+npm start
+# Complete the Telegram Dry-run check, then close the bot Terminal.
 npm run enable:live
+npm start
 ```
 
-`onboard` leaves the machine in dry-run, performs one Telegram check and one current private read, then starts the user service. If stored credentials are present but the private read proves that they require a login, the same onboarding run opens the dedicated Chrome profile exactly once and repeats the private read after the login. Network failures do not trigger a pointless login loop. It deliberately does not open an empty listing form: the visible form is checked later with the first real Telegram proposal and its actual category. Its single final status is `bereit`, `bereit mit Refresh-Warnung`, or `blockiert`. A working private read remains usable when a proactive refresh diagnostic fails; that condition is `degraded`, not an immediate login requirement.
+`onboard` leaves the machine in dry-run and performs one Telegram check and one current private read. It does not start the bot. If stored credentials are present but the private read proves that they require a login, the same onboarding run opens the dedicated Chrome profile exactly once and repeats the private read after the login. Network failures do not trigger a pointless login loop. It deliberately does not open an empty listing form: the visible form is checked later with the first real Telegram proposal and its actual category. Its single final status is `bereit`, `bereit mit Refresh-Warnung`, or `blockiert`. A working private read remains usable when a proactive refresh diagnostic fails; that condition is `degraded`, not an immediate login requirement.
 
 `npm run login` opens a native Chrome window with a dedicated persistent profile and navigates to the current listing flow. Log in manually and complete any CAPTCHA or 2FA yourself; do not submit a listing. The script observes only that dedicated local Chrome process, waits until `user_id`/Bearer identity and CSRF are genuinely present, stores the resulting cookie string plus matching Chrome request identity in the ignored `.env`, and then closes the window automatically. It does not rely on an ENTER prompt or reopen the profile headlessly after login. Keeping the request identity aligned matters because Kleinanzeigen's session-protection cookies can reject a request whose browser version does not match the login.
 
@@ -120,7 +123,7 @@ The tracked `workspace/memory/preferences.md` is loaded automatically. It curren
 
 ## Target Mac cutover
 
-The canonical, agent-readable deployment and migration procedure is [docs/TARGET_MAC_RUNBOOK.md](docs/TARGET_MAC_RUNBOOK.md). It includes the required manual browser handoff, forbidden session/profile transfers, dry-run acceptance gate, and service lifecycle.
+The canonical, agent-readable deployment and migration procedure is [docs/TARGET_MAC_RUNBOOK.md](docs/TARGET_MAC_RUNBOOK.md). It includes the required manual browser handoff, forbidden session/profile transfers, dry-run acceptance gate, and manual runtime lifecycle.
 
 The complete operator sequence on the Mac that will actually run the bot is:
 
@@ -129,24 +132,19 @@ git clone <repository-url>
 cd nemoclaw-kleinanzeigen
 npm run setup
 npm run onboard
+npm start
+# Complete the Dry-run acceptance check and close the bot Terminal.
 npm run enable:live
+npm start
 ```
 
-`npm run setup` includes `npm ci`. `onboard` installs the Dry-run service after its Telegram and private-read checks. Do not copy marketplace cookies, tokens, or browser profiles from another Mac. Live activation needs no sample listing: the first real proposal supplies the visible form evidence; if that check fails, the bot prints the redacted technical reason, a stable error code and one next action directly. The guided live command validates current account evidence and unresolved operations before changing mode; a failed restart restores Dry-run.
+`npm run setup` includes `npm ci`. `onboard` validates the Dry-run configuration after its Telegram and private-read checks without starting the bot. Do not copy marketplace cookies, tokens, or browser profiles from another Mac. The first real proposal supplies the visible form evidence; if that check fails, the bot prints the redacted technical reason, a stable error code and one next action directly. The guided live command validates current account evidence and unresolved operations before changing mode. A running Dry-run bot must be closed and started again with `npm start` after activation.
 
 `scripts/start.sh` wraps the agent in `caffeinate -i -s`, so while the bot runs the Mac will not idle-sleep or system-sleep on AC power. This keeps the bot alive instead of stopping after a short idle timeout. The `caffeinate` process ends together with the agent, so it does not keep the Mac awake when the bot is stopped. Note that closing the lid or a manual sleep still suspends the Mac; for unattended 24/7 operation set Energy Saver to prevent sleep on AC power.
 
-When running as a launchd service, a visible Terminal window opens directly showing the bot. Closing that window stops the bot. The service never starts automatically at macOS login or after a reboot. Run `npm run service:install` or `npm run service:restart` to start it explicitly; `service:restart` refuses to open another window while the current agent is still running. Updated launchers also reject automatic invocations from older installed plist files.
+`npm start` performs the runtime preflight and opens a visible Terminal showing the bot. Closing that window stops it. There is no background service or automatic login/reboot start. Older Macs that still have the retired LaunchAgent should run `npm run service:uninstall` from their old checkout before pulling this version. If they pull first, the updated launcher rejects the stale launchd invocation, so it cannot start the bot.
 
-To stop the current service and remove its registration:
-
-```bash
-npm run service:uninstall
-```
-
-Uninstalling removes only the LaunchAgent definition. It preserves `.env`, the Chrome profile, inventory, images and logs. The bot does not need Codex at runtime.
-
-If moving an already-running installation, stop the old process first and copy `workspace/ads.db` (including any current WAL/SHM files), `workspace/images`, and the non-marketplace configuration from `.env` together. Never copy `workspace/browser-profile` or `workspace/vinted-browser-profile`; Chrome protects those profiles with machine-local credentials. Bootstrap fresh marketplace sessions in Chrome on the destination Mac, then run the account smoke tests before installing its service. Never run two instances against the same Telegram bot and inventory at once.
+If moving an already-running installation, stop the old process first and copy `workspace/ads.db` (including any current WAL/SHM files), `workspace/images`, and the non-marketplace configuration from `.env` together. Never copy `workspace/browser-profile` or `workspace/vinted-browser-profile`; Chrome protects those profiles with machine-local credentials. Bootstrap fresh marketplace sessions in Chrome on the destination Mac, then run the account smoke tests before starting the bot. Never run two instances against the same Telegram bot and inventory at once.
 
 ## Test locally before Telegram
 
@@ -214,6 +212,7 @@ For normal operation, use the guided gate rather than editing the mode manually:
 
 ```bash
 npm run enable:live
+npm start
 ```
 
 The bot supports:
@@ -238,8 +237,8 @@ For an active but weak listing, ask the bot to analyze the asset. It reads the r
 
 | Command | Purpose |
 |---|---|
-| `npm run onboard` | Guided target-Mac setup; force Dry-run, verify Telegram/private read once, start service |
-| `npm run enable:live` | Validate fresh evidence and the Telegram Dry-run proposal, then deliberately enable Live |
+| `npm run onboard` | Guided target-Mac setup; force Dry-run and verify Telegram/private read once without starting the bot |
+| `npm run enable:live` | Validate fresh evidence and unresolved operations, then configure Live for the next `npm start` |
 | `npm run doctor` | Secret-safe local configuration diagnosis |
 | `npm run doctor:telegram` | Startup check including Telegram credentials; marketplace sessions are diagnostic only |
 | `npm run doctor:account` | Strict installation gate including Telegram and Kleinanzeigen account readiness |
@@ -265,11 +264,7 @@ For an active but weak listing, ask the bot to analyze the asset. It reads the r
 | `npm run login:inspect` | Show only saved Kleinanzeigen cookie names/domains |
 | `npm run login:automated` | Explicit Playwright-driven login fallback |
 | `npm run refresh-auth` | Access-/Refresh-Token per OIDC erneuern und atomar speichern; kein Browserzugriff |
-| `npm run launch` / `npm start` | Runtime/Telegram preflight, optional OpenShell policy, then Telegram bot |
-| `npm run service:install` | Install and explicitly start the bot as a manual macOS user LaunchAgent; no login/reboot auto-start |
-| `npm run service:status` | Inspect the loaded LaunchAgent |
-| `npm run service:restart` | Start the loaded LaunchAgent again after its visible bot Terminal has been closed |
-| `npm run service:uninstall` | Stop/remove only the LaunchAgent; retain bot data |
+| `npm start` | Runtime/Telegram preflight, optional OpenShell policy, then open the Telegram bot in a visible Terminal |
 | `npm test` | Offline regression suite |
 | `npm run check` | Syntax checks |
 

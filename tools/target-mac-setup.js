@@ -44,7 +44,6 @@ async function runOnboarding({
   recoverSession = null,
   evaluateAccount,
   ensureDryRun,
-  startDryRunService,
   saveEvidence = recordDoctorEvidence,
 } = {}) {
   try {
@@ -89,16 +88,14 @@ async function runOnboarding({
       );
     }
     saveEvidence(evidence);
-    const service = await startDryRunService();
-    if (!service?.ok) return finalStatus(FINAL_STATUSES.blocked, service?.detail, service?.action);
     return evidence.state === "degraded"
       ? finalStatus(
         FINAL_STATUSES.degraded,
-        "Telegram, private Reads und der Dry-run-Dienst funktionieren; nur die vorsorgliche Sitzungserneuerung ist derzeit nicht belegt."
+        "Telegram, private Reads und die Dry-run-Konfiguration sind bereit; nur die vorsorgliche Sitzungserneuerung ist derzeit nicht belegt. Start mit npm start."
       )
       : finalStatus(
         FINAL_STATUSES.ready,
-        "Telegram, private Reads und der Dry-run-Dienst sind bereit. Live kann jetzt aktiviert werden; die Formularprüfung erfolgt mit der ersten echten Anzeige."
+        "Telegram, private Reads und die Dry-run-Konfiguration sind bereit. Start mit npm start; die Formularprüfung erfolgt mit der ersten echten Anzeige."
       );
   } catch {
     return finalStatus(
@@ -124,7 +121,6 @@ async function enableLive({
   unresolved = unresolvedOperations,
   setLiveMode,
   setDryRunMode,
-  restartService,
   now = Date.now(),
 } = {}) {
   const revision = sessionRevision(cookieHeader, { userAgent });
@@ -179,34 +175,11 @@ async function enableLive({
       message: "Live bleibt gesperrt: Der lokale Betriebsmodus konnte nicht sicher aktualisiert werden.",
     };
   }
-  let restarted;
-  try {
-    restarted = await restartService();
-  } catch {
-    restarted = { ok: false };
-  }
-  if (!restarted?.ok) {
-    let rolledBack = false;
-    if (typeof setDryRunMode === "function") {
-      try {
-        await setDryRunMode();
-        rolledBack = true;
-      } catch {}
-    }
-    return {
-      ok: false,
-      refreshed,
-      reason: "restart_failed",
-      message: rolledBack
-        ? "Live bleibt gesperrt: Der Dienststart ist fehlgeschlagen; Dry-run wurde wiederhergestellt. Bitte npm run onboard ausführen."
-        : "Der Dienststart ist fehlgeschlagen. Vor dem nächsten Start muss der Modus sicher auf Dry-run gesetzt werden.",
-    };
-  }
   return {
     ok: true,
     refreshed,
     reason: "enabled",
-    message: "Live ist aktiviert; die erste Mutation benötigt weiterhin ihre exakte Go-Freigabe.",
+    message: "Live ist konfiguriert. Einen laufenden Bot beenden und mit npm start neu starten; die erste Mutation benötigt weiterhin ihre exakte Go-Freigabe.",
   };
 }
 

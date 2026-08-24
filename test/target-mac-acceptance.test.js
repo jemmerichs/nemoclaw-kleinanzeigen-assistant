@@ -408,16 +408,14 @@ test("acceptance 10: onboard emits one understandable final status with at most 
     checkLocal: async () => ({ ok: true }),
     verifyTelegram: async () => ({ ok: false, detail: "Telegram fehlt.", action: "Token setzen." }),
     evaluateAccount: async () => { throw new Error("must not run"); },
-    startDryRunService: async () => { throw new Error("must not run"); },
   });
   assert.equal(result.status, FINAL_STATUSES.blocked);
   assert.equal(formatFinalStatus(result).match(/Nächste Handlung:/g).length, 1);
   assert.equal(formatFinalStatus(result).split("\n").length, 1);
 });
 
-test("supporting onboarding safety: a healthy private read starts dry-run without opening the listing form", async () => {
+test("supporting onboarding safety: a healthy private read prepares dry-run without starting a service", async () => {
   let savedEvidence = null;
-  let serviceStarts = 0;
   let formChecks = 0;
   const evidence = createEvidence({
     sessionRevision: "onboard-session",
@@ -432,13 +430,11 @@ test("supporting onboarding safety: a healthy private read starts dry-run withou
     evaluateAccount: async () => evidence,
     verifyVisibleForm: async () => { formChecks++; throw new Error("must not run"); },
     saveEvidence: value => { savedEvidence = value; },
-    startDryRunService: async () => { serviceStarts++; return { ok: true }; },
   });
   assert.equal(result.status, FINAL_STATUSES.ready);
   assert.equal(formChecks, 0);
-  assert.equal(serviceStarts, 1);
   assert.equal(savedEvidence, evidence);
-  assert.match(result.detail, /Live kann jetzt aktiviert werden.*Formularprüfung erfolgt mit der ersten echten Anzeige/);
+  assert.match(result.detail, /Start mit npm start.*Formularprüfung erfolgt mit der ersten echten Anzeige/);
 });
 
 test("onboard performs one login recovery and rechecks a stale stored session in the same run", async () => {
@@ -455,7 +451,6 @@ test("onboard performs one login recovery and rechecks a stale stored session in
   });
   let accountChecks = 0;
   let loginRecoveries = 0;
-  let serviceStarts = 0;
   let savedEvidence = null;
   const result = await runOnboarding({
     ensureDryRun: async () => {},
@@ -468,12 +463,10 @@ test("onboard performs one login recovery and rechecks a stale stored session in
     },
     evaluateAccount: async () => (++accountChecks === 1 ? stale : recovered),
     saveEvidence: value => { savedEvidence = value; },
-    startDryRunService: async () => { serviceStarts++; return { ok: true }; },
   });
   assert.equal(result.status, FINAL_STATUSES.ready);
   assert.equal(loginRecoveries, 1);
   assert.equal(accountChecks, 2);
-  assert.equal(serviceStarts, 1);
   assert.equal(savedEvidence, recovered);
 });
 
@@ -501,7 +494,6 @@ test("onboard imports an already logged-in dedicated profile before opening a ne
     recoverSession: async () => { interactiveLogins++; return { ok: true }; },
     evaluateAccount: async () => (++accountChecks === 1 ? stale : imported),
     saveEvidence: () => {},
-    startDryRunService: async () => ({ ok: true }),
   });
   assert.equal(result.status, FINAL_STATUSES.ready);
   assert.equal(profileImports, 1);
@@ -533,7 +525,6 @@ test("onboard falls through from a stale profile import to exactly one interacti
     recoverSession: async () => { interactiveLogins++; return { ok: true, loginPerformed: true }; },
     evaluateAccount: async () => (++accountChecks < 3 ? unavailable : recovered),
     saveEvidence: () => {},
-    startDryRunService: async () => ({ ok: true }),
   });
   assert.equal(result.status, FINAL_STATUSES.ready);
   assert.equal(profileImports, 1);
@@ -555,7 +546,6 @@ test("onboard does not open the login profile for a non-authentication outage", 
       privateReadOk: false,
       loginRequired: false,
     }),
-    startDryRunService: async () => { throw new Error("must not start"); },
   });
   assert.equal(result.status, FINAL_STATUSES.blocked);
   assert.equal(loginRecoveries, 0);
@@ -586,12 +576,12 @@ test("acceptance 11: live activation refreshes stale session evidence exactly on
     },
     unresolved: () => [],
     setLiveMode: async () => { liveWrites++; },
-    restartService: async () => ({ ok: true }),
   });
   assert.equal(result.ok, true);
   assert.equal(result.refreshed, true);
   assert.equal(refreshes, 1);
   assert.equal(liveWrites, 1);
+  assert.match(result.message, /npm start/);
 });
 
 test("live activation reports the login recovery path instead of generic missing evidence", async () => {
@@ -608,15 +598,14 @@ test("live activation reports the login recovery path instead of generic missing
     refreshEvidence: async () => unavailable,
     unresolved: () => [],
     setLiveMode: async () => { throw new Error("must not write"); },
-    restartService: async () => { throw new Error("must not restart"); },
   });
   assert.equal(result.ok, false);
   assert.equal(result.reason, "session_login_required");
   assert.match(result.message, /npm run onboard.*Chrome-Profil.*automatisch erneut/i);
 });
 
-test("supporting activation safety: a restart exception restores dry-run", async () => {
-  const cookies = cookieHeader("restart-failure");
+test("supporting activation safety: a mode update exception restores dry-run", async () => {
+  const cookies = cookieHeader("mode-update-failure");
   const revision = sessionRevision(cookies);
   const formFingerprint = "b".repeat(64);
   const evidence = createEvidence({
@@ -633,11 +622,10 @@ test("supporting activation safety: a restart exception restores dry-run", async
     readState: () => ({ doctorEvidence: evidence }),
     refreshEvidence: async () => { throw new Error("must not refresh"); },
     unresolved: () => [],
-    setLiveMode: async () => {},
+    setLiveMode: async () => { throw new Error("mode write failed"); },
     setDryRunMode: async () => { dryRunRestores++; },
-    restartService: async () => { throw new Error("launchd failed"); },
   });
   assert.equal(result.ok, false);
-  assert.equal(result.reason, "restart_failed");
+  assert.equal(result.reason, "mode_update_failed");
   assert.equal(dryRunRestores, 1);
 });

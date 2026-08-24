@@ -111,16 +111,6 @@ async function main() {
         },
       });
     },
-    startDryRunService: async () => {
-      if (synthetic) return synthetic.service;
-      const command = spawnSync(process.execPath, [path.join(root, "scripts", "launch-agent.js"), "install"], {
-        cwd: root,
-        encoding: "utf8",
-      });
-      return command.status === 0
-        ? { ok: true }
-        : { ok: false, detail: "Der Dry-run-Dienst konnte nicht gestartet werden.", action: "macOS-Automationsfreigabe prüfen und npm run onboard erneut ausführen." };
-    },
   });
   process.stdout.write(`${formatFinalStatus(result)}\n`);
   if (result.status === "blockiert") process.exitCode = 1;

@@ -2,7 +2,6 @@
 "use strict";
 
 const path = require("path");
-const { spawnSync } = require("child_process");
 
 const root = path.resolve(__dirname, "..");
 require("dotenv").config({ path: path.join(root, ".env"), override: true });
@@ -39,14 +38,6 @@ async function main() {
     setDryRunMode: async () => {
       saveToEnv({ NEMOCLAW_MODE: "dry-run" });
       process.env.NEMOCLAW_MODE = "dry-run";
-    },
-    restartService: async () => {
-      if (process.env.NEMOCLAW_ENABLE_LIVE_FIXTURE === "success") return { ok: true };
-      const command = spawnSync(process.execPath, [path.join(root, "scripts", "launch-agent.js"), "restart"], {
-        cwd: root,
-        encoding: "utf8",
-      });
-      return { ok: command.status === 0 };
     },
   }).catch(() => ({
     ok: false,
