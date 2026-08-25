@@ -880,7 +880,8 @@ test("/context reports bounded transient history and separate durable state with
   assert.equal(stats.historyCharLimit, 4000);
   assert.equal(stats.perEntryCharLimit, 1500);
   assert.equal(stats.retentionHours, 24);
-  assert.ok(stats.approximateFixedInputTokens < 15000);
+  assert.ok(stats.systemContextChars < 12000);
+  assert.ok(stats.approximateFixedInputTokens < 7500);
   assert.match(sent.at(-1), /Context-Management/);
   assert.match(sent.at(-1), /letzten 24 Stunden/);
   assert.match(sent.at(-1), /Schlanker Standardkontext/);
@@ -911,7 +912,7 @@ test("every user turn receives the same fixed typed sales catalog", () => {
   assert.equal(names.includes("ka_create_ad"), false);
   assert.equal(names.includes("vinted_search_items"), true);
   assert.equal(names.includes("ka_get_messages"), true);
-  assert.match(require("../workspace/agent").loadContext(), /Skill: Inbox/);
+  assert.doesNotMatch(require("../workspace/agent").loadContext(), /Skill-Dokumentation/);
 });
 
 test("an unusual turn can use any fixed-catalog sales tool without scope activation", async () => {
@@ -1818,6 +1819,38 @@ test("two confirmed lifecycle misses proactively produce an exact relist proposa
     clearPending("lifecycle-relist");
     if (previousMode === undefined) delete process.env.NEMOCLAW_MODE;
     else process.env.NEMOCLAW_MODE = previousMode;
+  }
+});
+
+test("a reported missing ad gets a targeted one-read reconciliation with its stored bundle", async () => {
+  const agent = require("../workspace/agent");
+  const payload = {
+    assetName: "Reported Lifecycle Test",
+    title: "Gemeldeter verschwundener Artikel",
+    description: "Gespeicherte Beschreibung für den Relist.",
+    categoryId: 278,
+    price: 25,
+    priceType: "NEGOTIABLE",
+    imagePaths: [],
+  };
+  const assetId = agent.ensureAssetForListing(payload, { active: true });
+  store.query({
+    sql: "INSERT INTO ka_listings (asset_id,ka_id,status,payload_json) VALUES (?,?,?,?)",
+    params: [assetId, "reported-agent-1", "active", JSON.stringify(payload)],
+  });
+  const originalGetMyAds = agent.TOOLS.ka_get_my_ads.fn;
+  agent.TOOLS.ka_get_my_ads.fn = async () => [];
+
+  try {
+    const result = await agent.TOOLS.ka_check_reported_missing_ad.fn({ assetId });
+    assert.equal(result.events.length, 1);
+    assert.equal(result.events[0].assetId, assetId);
+    assert.equal(result.reportedAsset.asset.last_listing_payload.title, payload.title);
+    assert.equal(result.reportedAsset.listings[0].status, "needs_review");
+    assert.equal(result.reportedAsset.listings[0].missing_checks, 1);
+    assert.equal(result.reportedAsset.listings[0].pending_event, null);
+  } finally {
+    agent.TOOLS.ka_get_my_ads.fn = originalGetMyAds;
   }
 });
 

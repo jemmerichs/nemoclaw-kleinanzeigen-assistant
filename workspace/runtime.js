@@ -150,7 +150,7 @@ function randomInboxIntervalMs(minutes, random = Math.random) {
 }
 
 function normalizeListingPollMinutes(value) {
-  if (value === undefined || value === null || String(value).trim() === "") return 360;
+  if (value === undefined || value === null || String(value).trim() === "") return 0;
   const parsed = Number(value);
   if (parsed === 0) return 0;
   if (!Number.isFinite(parsed) || parsed < 30 || parsed > 1440) {

@@ -294,6 +294,46 @@ test("remote reconciliation tolerates one miss, alerts once after two, and recov
   });
 });
 
+test("a user-reported missing ad can be reconciled once without touching other assets", () => {
+  const firstAssetId = store.query({
+    sql: "INSERT INTO assets (name,has_active_listing) VALUES (?,?)",
+    params: ["Reported missing", 1],
+  }).lastInsertRowid;
+  const secondAssetId = store.query({
+    sql: "INSERT INTO assets (name,has_active_listing) VALUES (?,?)",
+    params: ["Unrelated active", 1],
+  }).lastInsertRowid;
+  store.query({
+    sql: "INSERT INTO ka_listings (asset_id,ka_id,status) VALUES (?,?,?)",
+    params: [firstAssetId, "reported-missing-1", "active"],
+  });
+  store.query({
+    sql: "INSERT INTO ka_listings (asset_id,ka_id,status) VALUES (?,?,?)",
+    params: [secondAssetId, "unrelated-active-1", "active"],
+  });
+
+  const result = store.reconcileRemoteListings([], {
+    missingThreshold: 1,
+    assetIds: [firstAssetId],
+    now: "2026-08-25T10:00:00.000Z",
+  });
+
+  assert.equal(result.events.length, 1);
+  assert.equal(result.events[0].assetId, firstAssetId);
+  assert.deepEqual(store.query({
+    sql: "SELECT status,missing_checks FROM ka_listings WHERE ka_id=?",
+    params: ["reported-missing-1"],
+  })[0], { status: "needs_review", missing_checks: 1 });
+  assert.deepEqual(store.query({
+    sql: "SELECT status,missing_checks FROM ka_listings WHERE ka_id=?",
+    params: ["unrelated-active-1"],
+  })[0], { status: "active", missing_checks: 0 });
+  assert.equal(store.acknowledgeLifecycleEvent(
+    result.events[0].listingId,
+    result.events[0].eventKey
+  ).acknowledged, true);
+});
+
 test("explicit paused and removed states alert, do not become false misses, and can recover", () => {
   store.query({
     sql: "UPDATE ka_listings SET status='removed' WHERE status IN ('active','needs_review')",

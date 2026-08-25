@@ -1120,6 +1120,29 @@ const TOOLS = {
     schema: objectSchema({}),
     fn: async () => (await ensureKleinanzeigenSessionFresh()).getAdBundles(),
   },
+  ka_check_reported_missing_ad: {
+    description:
+      "Nur nach Janniks Meldung, dass eine gespeicherte Anzeige verschwunden oder abgelaufen ist. " +
+      "Prüft genau dieses Asset einmal aktuell, aktualisiert seinen lokalen Status und liefert Lifecycle-Ereignisse plus gespeichertes Asset-Bundle. " +
+      "Vor dem Relist mit ka_get_ad_bundles eine pausierte Anzeige ausschließen.",
+    schema: objectSchema({
+      assetId: integer("Lokale Asset-ID der gemeldeten Anzeige", { minimum: 1 }),
+    }, ["assetId"]),
+    fn: async args => {
+      const assetId = Number(args.assetId);
+      const reconciliation = await checkListingLifecycle({
+        missingThreshold: 1,
+        assetIds: [assetId],
+      });
+      for (const event of reconciliation.events) {
+        acknowledgeLifecycleEvent(event.listingId, event.eventKey);
+      }
+      return {
+        ...reconciliation,
+        reportedAsset: getAssetBundle(assetId),
+      };
+    },
+  },
   ka_get_drafts: {
     description: "Gespeicherte Anzeigenentwürfe abrufen.",
     schema: objectSchema({}),
@@ -1810,12 +1833,6 @@ async function executeTool(toolName, args, context = {}) {
 
 function loadContext() {
   const agentMd = fs.readFileSync(path.join(__dirname, "agent.md"), "utf8");
-  const skillsDir = path.join(__dirname, "skills");
-  const skills = fs.readdirSync(skillsDir)
-    .filter(file => file.endsWith(".md"))
-    .sort()
-    .map(file => fs.readFileSync(path.join(skillsDir, file), "utf8").slice(0, 30000))
-    .join("\n\n---\n\n");
   const memoryDir = path.join(__dirname, "memory");
   const memoryKeys = fs.existsSync(memoryDir)
     ? fs.readdirSync(memoryDir)
@@ -1831,7 +1848,6 @@ function loadContext() {
     "## Tool-Nutzung\nDer feste Verkaufskatalog steht in jedem Turn unverändert bereit. " +
       "Seine Schemas sind verbindlich. Interne Toolnamen, Verfügbarkeit oder technische Grenzen werden dem Nutzer nie erklärt; " +
       "bei einem fehlerhaften Aufruf intern einmal sauber neu planen.",
-    `## Skill-Dokumentation\n${skills}`,
     `## Memory\n${preferences
       ? `Automatisch geladene dauerhafte Präferenzen:\n${preferences}\n\n`
       : ""}` +
@@ -2566,7 +2582,7 @@ async function handleCommand(chatId, userMessage, gateway, llmClient) {
       `• Es werden nur Einträge der letzten ${stats.retentionHours} Stunden berücksichtigt.`,
       `• Einzelne lange Einträge werden bei ${stats.perEntryCharLimit} Zeichen kompakt gekürzt.`,
       `• Schlanker Standardkontext: ca. ${stats.approximateFixedInputTokens} feste Eingabe-Tokens ` +
-        `(${stats.systemContextChars} Zeichen Regeln/Skills plus ${stats.toolSchemaChars} Zeichen Tool-Schemas).`,
+        `(${stats.systemContextChars} Zeichen Regeln/Memory plus ${stats.toolSchemaChars} Zeichen Tool-Schemas).`,
       "• Der kleine Verkaufskatalog bleibt in jedem Turn gleich; externe Änderungen bleiben unabhängig davon freigabepflichtig.",
       "• Tool-Ergebnisse eines laufenden Turns bleiben bis zur Antwort im Modellkontext; danach nur als begrenzter Verlauf.",
       "• Fotos werden nur im aktuellen Turn visuell mitgegeben. Inventar, Entwürfe und Freigaben liegen getrennt dauerhaft in Datenbank/Statusdateien.",
@@ -3172,11 +3188,14 @@ function validateConfig({ requireTelegram = true } = {}) {
 
 async function checkListingLifecycle({
   getMyAds = () => executeTool("ka_get_my_ads", { limit: 100 }),
+  missingThreshold = 2,
+  assetIds = null,
   now,
 } = {}) {
   const remoteAds = await getMyAds();
   return reconcileRemoteListings(remoteAds, {
-    missingThreshold: 2,
+    missingThreshold,
+    assetIds,
     ...(now ? { now } : {}),
   });
 }

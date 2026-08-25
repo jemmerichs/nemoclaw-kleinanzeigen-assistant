@@ -537,6 +537,7 @@ function reconcileRemoteListings(
   {
     marketplace = "kleinanzeigen",
     missingThreshold = 2,
+    assetIds = null,
     now = new Date().toISOString(),
   } = {}
 ) {
@@ -546,8 +547,20 @@ function reconcileRemoteListings(
     throw new Error("marketplace ist ungültig.");
   }
   const threshold = Number(missingThreshold);
-  if (!Number.isInteger(threshold) || threshold < 2 || threshold > 10) {
-    throw new Error("missingThreshold muss zwischen 2 und 10 liegen.");
+  if (!Number.isInteger(threshold) || threshold < 1 || threshold > 10) {
+    throw new Error("missingThreshold muss zwischen 1 und 10 liegen.");
+  }
+  const targetedAssetIds = assetIds === null
+    ? null
+    : new Set((Array.isArray(assetIds) ? assetIds : []).map(Number));
+  if (
+    targetedAssetIds
+    && (
+      targetedAssetIds.size === 0
+      || [...targetedAssetIds].some(id => !Number.isInteger(id) || id < 1)
+    )
+  ) {
+    throw new Error("assetIds muss eine nicht-leere Liste gültiger Asset-IDs sein.");
   }
   const remoteById = new Map(
     remoteAds
@@ -564,7 +577,9 @@ function reconcileRemoteListings(
       FROM ka_listings l
       JOIN assets a ON a.id=l.asset_id
       WHERE l.marketplace=? AND COALESCE(l.external_id,l.ka_id) IS NOT NULL
-    `).all(normalizedMarketplace);
+    `).all(normalizedMarketplace).filter(
+      listing => !targetedAssetIds || targetedAssetIds.has(Number(listing.asset_id))
+    );
     const queueEvent = (listing, event, eventKey) => {
       const pending = parseJson(listing.pending_event_json);
       if (listing.alerted_state === eventKey || pending?.eventKey === eventKey) return;

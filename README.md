@@ -63,7 +63,7 @@ NEMOCLAW_MODE=dry-run
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_CHAT_ID=123456789
 NEMOCLAW_INBOX_POLL_MINUTES=45
-NEMOCLAW_LISTING_POLL_MINUTES=360
+NEMOCLAW_LISTING_POLL_MINUTES=0
 
 # PLZ, Ort und Profilname werden aus dem sichtbaren Kleinanzeigen-Formular gelesen.
 ```
@@ -227,7 +227,7 @@ Send one or more photos as a Telegram album plus a caption. The bot visually ana
 
 If an album clearly contains different products and it is unclear whether they are a set or separate listings, the agent asks that one decision before researching or staging anything.
 
-When a tracked active listing disappears, the lifecycle monitor waits for a second successful check, verifies the account bundles when possible, and then shows the stored title, text, price and photo set as a relist proposal. Explicit expired/removed states can produce the same guarded proposal immediately. A paused listing is different: the bot recommends reactivating the existing listing and deterministically blocks creation of a duplicate until that paused listing is removed or active again. Manual title or price changes made on Kleinanzeigen are detected and copied back into the local canonical record. No lifecycle event bypasses the normal approval gate.
+When you report that a tracked listing disappeared, the bot checks only that asset against the current account, verifies account bundles to rule out a paused listing, and loads the stored title, text, price and photo set for a relist proposal. It keeps the old version by default; if you ask for a price or listing improvement, it researches comparables and proposes the smallest useful change. A paused listing is reactivated instead of duplicated. The optional proactive lifecycle monitor uses the same guarded flow, waits for a second successful miss, and is disabled by default. No relist bypasses the normal approval gate.
 
 For buyer messages, each changed unread conversation gets its own serialized agent turn. The bridge reads that full thread exactly once, attaches the matching local asset/listing bundle when the ad is tracked, and exposes only reply/Memory tools for that automatic turn. The model quotes the latest inbound text, identifies the intent, and proposes an exact reply without wandering through account APIs. Only a successfully delivered notification is marked as seen; other conversations and failed notifications remain eligible for the next check. It does not invent price floors, shipping availability, addresses or appointments. Payment links, verification codes, courier/overpayment patterns and conflict/legal messages are handed off instead of autonomously negotiated.
 
@@ -289,15 +289,14 @@ tools/
 workspace/
   agent.js            tools, approval contract, orchestration, heartbeat
   cli.js              local interactive transport
-  agent.md            agent identity and hard rules
-  skills/             concise task playbooks
+  agent.md            compact identity, policy and domain invariants
 ```
 
 ## Operational notes
 
 - The inbox monitor checks once 10 seconds after startup, then every configured interval with ±20% jitter (45 minutes by default). `0` disables it.
 - It performs one deterministic full-thread read and calls the model only when an unread conversation is new or changed. Each conversation is processed separately with its exact tracked asset bundle when available. A conversation is marked as seen only after its notification succeeds, so temporary model or network failures are retried on the next check.
-- The listing monitor checks once 30 seconds after startup, then every configured interval with ±15% jitter (six hours by default). `0` disables it. Network/API errors do not count as a missing listing.
+- The listing monitor is disabled by default. If configured to 30–1440 minutes, it checks once 30 seconds after startup and then at that interval with ±15% jitter. Network/API errors do not count as a missing listing.
 - A lifecycle alert is deduplicated; if the listing reappears, its missing counter and alert state reset. View/price snapshots remain available for later listing analysis.
 - Telegram media groups are processed as one item so the model sees the whole photo set together.
 - Photo, operation and listing records are durable local state under `workspace/images` and `workspace/ads.db`. Existing databases are migrated in place on first use. Back up the database with its WAL/SHM files and the image directory while the bot is stopped. Migrate only non-session `.env` values; never move marketplace cookies or browser profiles between Macs.

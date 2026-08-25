@@ -74,7 +74,7 @@ test("inbox polling is conservative, configurable, and jittered", () => {
 });
 
 test("listing polling is conservative, configurable, and jittered", () => {
-  assert.equal(normalizeListingPollMinutes(undefined), 360);
+  assert.equal(normalizeListingPollMinutes(undefined), 0);
   assert.equal(normalizeListingPollMinutes("0"), 0);
   assert.equal(normalizeListingPollMinutes("30"), 30);
   assert.equal(normalizeListingPollMinutes("1440"), 1440);
