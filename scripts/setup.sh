@@ -33,5 +33,5 @@ if [ "$(uname -s)" = "Darwin" ]; then
   fi
 fi
 
-echo "[setup] Fertig. Ziel-Mac-Reihenfolge: docs/TARGET_MAC_RUNBOOK.md"
-echo "[setup] Jetzt .env vervollständigen und anschließend npm run onboard ausführen."
+echo "[setup] Archivierter Prototyp. Einschränkungen siehe README.md."
+echo "[setup] Lokale Prüfung: npm test && npm run check."

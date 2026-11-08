@@ -1,7 +1,10 @@
-node_modules/
+node_modules
 .claude/
 .env
 .env.local
+.env.*
+!.env.example
+.DS_Store
 *.log
 .sessions.json
 .state.json
@@ -10,7 +13,6 @@ workspace/readiness.json
 .openrouter-usage.json
 .ka-category-contracts.json
 workspace/memory/*
-!workspace/memory/preferences.md
 workspace/ads.db
 workspace/ads.db-*
 workspace/agent.pid

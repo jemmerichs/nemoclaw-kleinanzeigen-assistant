@@ -16,6 +16,7 @@ process.env.NEMOCLAW_DB_PATH = path.join(directory, "ads.db");
 process.env.NEMOCLAW_IMAGE_DIR = path.join(directory, "images");
 process.env.NEMOCLAW_KA_CATEGORY_CACHE_FILE = path.join(directory, "category-contracts.json");
 process.env.NEMOCLAW_MODE = "dry-run";
+process.env.KA_COOKIES = "csrf-token=test; registered_user=true";
 
 const categoryContracts = require("../tools/kleinanzeigen-category-contracts");
 const listingPreparations = require("../tools/kleinanzeigen-listing-preparation");

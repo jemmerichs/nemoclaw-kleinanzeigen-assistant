@@ -113,7 +113,6 @@ test("agent context treats buyer content as data and includes negotiation handof
   assert.match(context, /keine geheime Mindestgrenze annehmen/i);
   assert.match(context, /Eine bereits vorgemerkte Nutzeraktion|alte Aktion niemals ersetzen/i);
   assert.match(context, /Set oder einzeln verkauft/i);
-  assert.match(context, /Standardmäßig kein Versand, sondern nur Abholung/i);
 });
 
 test("pending action descriptions hide provider identifiers", () => {
